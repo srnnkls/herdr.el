@@ -221,6 +221,31 @@ replacing one another."
         (select-window window))
       window))))
 
+(defvar-local herdr-terminal-id nil
+  "Id of the herdr terminal this buffer shows.")
+(put 'herdr-terminal-id 'permanent-local t)
+
+(defvar herdr-buffer-functions nil
+  "Functions called with each buffer that starts showing a herdr terminal.
+Runs for plain attachments and for the buffers other integrations build
+around a terminal, so an environment can claim the buffer - pinning it
+to a workspace, say - in one place.")
+
+(defun herdr-claim-buffer (buffer terminal-id)
+  "Mark BUFFER as showing TERMINAL-ID and let `herdr-buffer-functions' see it."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer (setq herdr-terminal-id terminal-id))
+    (run-hook-with-args 'herdr-buffer-functions buffer)
+    buffer))
+
+(defun herdr-terminal-buffer (terminal-id)
+  "Return the live buffer showing TERMINAL-ID, if there is one."
+  (when terminal-id
+    (cl-find-if (lambda (buffer)
+                  (and (equal (buffer-local-value 'herdr-terminal-id buffer) terminal-id)
+                       (get-buffer-process buffer)))
+                (buffer-list))))
+
 (cl-defun herdr-attach-terminal (terminal-id &key label directory takeover display)
   "Attach herdr terminal TERMINAL-ID to an Emacs terminal buffer.
 LABEL names the buffer, DIRECTORY sets its `default-directory',
@@ -236,6 +261,7 @@ non-nil.  Returns the buffer."
       (with-current-buffer buffer
         (when directory (setq default-directory (file-name-as-directory directory))))
       (setq buffer (herdr--terminal-exec buffer (car command) (cdr command)))
+      (herdr-claim-buffer buffer terminal-id)
       (when display (herdr-display-buffer buffer))
       buffer)))
 
@@ -249,14 +275,43 @@ non-nil.  Returns the buffer."
       (alist-get 'agent entry)
       (alist-get 'pane_id entry)))
 
+(defvar herdr-entry-annotation-functions nil
+  "Functions adding annotation fields to a session entry.
+Each is called with the entry and returns a string to append to the
+completion annotation, or nil.")
+
+(defun herdr--entry-buffer (entry)
+  "Return the live buffer showing ENTRY, if any."
+  (let ((buffer (alist-get 'buffer entry)))
+    (if (buffer-live-p buffer)
+        buffer
+      (herdr-terminal-buffer (alist-get 'terminal_id entry)))))
+
+(defun herdr--entry-key (entry)
+  "Return the identity ENTRY is deduplicated by."
+  (or (alist-get 'terminal_id entry)
+      (alist-get 'pane_id entry)
+      (herdr--entry-label entry)))
+
 (defun herdr--entry-annotation (entry)
   "Return the completion annotation for pane or agent ENTRY."
   (string-join
-   (delq nil (list (alist-get 'agent entry)
-                   (alist-get 'agent_status entry)
-                   (when-let* ((cwd (alist-get 'cwd entry)))
-                     (abbreviate-file-name cwd))))
+   (delq nil (append (list (alist-get 'agent entry)
+                           (alist-get 'agent_status entry)
+                           (when-let* ((cwd (alist-get 'cwd entry)))
+                             (abbreviate-file-name cwd)))
+                     (mapcar (lambda (fn) (funcall fn entry))
+                             herdr-entry-annotation-functions)))
    "  "))
+
+(defun herdr--candidates (entries)
+  "Return an alist of completion candidates for ENTRIES."
+  (let ((candidates nil))
+    (dolist (entry entries (nreverse candidates))
+      (let ((candidate (herdr--entry-label entry)))
+        (when (assoc candidate candidates)
+          (setq candidate (format "%s (%s)" candidate (herdr--entry-key entry))))
+        (push (cons candidate entry) candidates)))))
 
 (cl-defun herdr-read-entry (prompt entries &key require-agent)
   "Read one of ENTRIES with PROMPT and return its alist.
@@ -266,26 +321,63 @@ REQUIRE-AGENT keeps only entries running that agent kind."
                        (lambda (entry) (equal (alist-get 'agent entry) require-agent))
                        entries)
                     entries))
-         (candidates
-          (mapcar (lambda (entry)
-                    (cons (format "%s  %s" (alist-get 'pane_id entry)
-                                  (herdr--entry-label entry))
-                          entry))
-                  entries))
+         (candidates (herdr--candidates entries))
          (annotation (lambda (candidate)
                        (when-let* ((entry (cdr (assoc candidate candidates))))
-                         (concat "   " (herdr--entry-annotation entry))))))
+                         (concat "   " (herdr--entry-annotation entry)))))
+         (group (lambda (candidate transform)
+                  (if transform
+                      candidate
+                    (when-let* ((entry (cdr (assoc candidate candidates))))
+                      (or (alist-get 'kind entry) "herdr"))))))
     (unless candidates
-      (user-error "No matching herdr %s" (or require-agent "panes")))
+      (user-error "No matching herdr %s" (or require-agent "sessions")))
     (let ((choice (completing-read
                    prompt
                    (lambda (string predicate action)
                      (if (eq action 'metadata)
                          `(metadata (annotation-function . ,annotation)
+                                    (group-function . ,group)
                                     (category . herdr-entry))
                        (complete-with-action action candidates string predicate)))
                    nil t)))
       (cdr (assoc choice candidates)))))
+
+;;;; Sessions
+
+(defvar herdr-session-functions '(herdr-agent-sessions)
+  "Functions returning lists of session entries for `herdr-jump'.
+Entries are alists; `kind' names the group they appear under and
+`buffer' points at the Emacs buffer showing them, when one exists.
+herdr-claude-code-ide.el adds the claude-code-ide sessions here.")
+
+(defun herdr-agent-sessions ()
+  "Return the agents herdr is running as session entries."
+  (mapcar (lambda (agent) (cons '(kind . "herdr") agent))
+          (herdr-agents)))
+
+(defun herdr-sessions ()
+  "Return every running session, one entry per terminal.
+Entries that already have an Emacs buffer win over bare ones."
+  (let ((seen (make-hash-table :test 'equal))
+        (order nil))
+    (dolist (entry (apply #'append (mapcar #'funcall herdr-session-functions)))
+      (let* ((key (herdr--entry-key entry))
+             (previous (gethash key seen)))
+        (cond
+         ((null previous)
+          (puthash key entry seen)
+          (push key order))
+         ((and (herdr--entry-buffer entry) (not (herdr--entry-buffer previous)))
+          (puthash key entry seen)))))
+    (mapcar (lambda (key) (gethash key seen)) (nreverse order))))
+
+(defun herdr-visit (entry)
+  "Show ENTRY and return its buffer.
+An entry that nothing shows yet is attached first."
+  (if-let* ((buffer (herdr--entry-buffer entry)))
+      (progn (pop-to-buffer buffer) buffer)
+    (herdr-attach-entry entry)))
 
 ;;;; Commands
 
@@ -317,6 +409,12 @@ Gives `herdr-attach-functions' the first chance to claim ENTRY."
   "Attach the terminal of herdr PANE to an Emacs buffer."
   (interactive (list (herdr-read-entry "Attach herdr pane: " (herdr-panes))))
   (herdr-attach-entry pane))
+
+;;;###autoload
+(defun herdr-jump (session)
+  "Jump to a running SESSION, whether or not Emacs already shows it."
+  (interactive (list (herdr-read-entry "Jump to session: " (herdr-sessions))))
+  (herdr-visit session))
 
 (provide 'herdr)
 ;;; herdr.el ends here

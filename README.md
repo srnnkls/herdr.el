@@ -53,6 +53,32 @@ Only one writable client owns a terminal at a time, so attaching takes input
 ownership by default (`herdr-attach-takeover`). The herdr UI keeps rendering
 the same terminal, read-only, until it takes ownership back.
 
+## Jumping between sessions
+
+`M-x herdr-jump` completes over everything running — herdr's agents plus the
+claude-code-ide sessions this Emacs owns — and shows the one you pick, attaching
+its terminal first if no buffer has it yet. Entries are grouped by kind and
+annotated with agent, status and directory. One terminal appears once: an agent
+that already has a buffer wins over the bare herdr entry.
+
+`herdr-session-functions` collects the entries, so other session sources can add
+themselves.
+
+## Integration points
+
+| Hook / variable | Use |
+| --- | --- |
+| `herdr-attach-functions` | claim an entry before the plain terminal attach |
+| `herdr-buffer-functions` | see every buffer that starts showing a terminal |
+| `herdr-terminal-id` | buffer-local id of the terminal a buffer shows |
+| `herdr-terminal-buffer` | find the live buffer for a terminal id |
+| `herdr-session-functions` | contribute entries to `herdr-jump` |
+| `herdr-entry-annotation-functions` | add fields to completion annotations |
+
+Together they are enough to bind sessions to an editor-side notion of place —
+pinning each terminal to the workspace its project owns, say, and following that
+pin when jumping.
+
 ## claude-code-ide bridge
 
 With `herdr-claude-code-ide-mode` on, `M-x claude-code-ide` creates a herdr tab

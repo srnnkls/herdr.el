@@ -30,6 +30,10 @@
 (declare-function claude-code-ide "claude-code-ide" ())
 (declare-function claude-code-ide--build-claude-command "claude-code-ide"
                   (&optional continue resume session-id))
+(declare-function claude-code-ide--session-display-name "claude-code-ide" (session))
+(declare-function claude-code-ide-mcp--active-sessions "claude-code-ide-mcp" ())
+(declare-function claude-code-ide-mcp-session-buffer "claude-code-ide-mcp" (session))
+(declare-function claude-code-ide-mcp-session-project-dir "claude-code-ide-mcp" (session))
 (defvar claude-code-ide-focus-on-open)
 
 (defgroup herdr-claude-code-ide nil
@@ -132,7 +136,24 @@ the attach command instead of the Claude CLI."
                    (mapconcat #'identity
                               (herdr-attach-command terminal-id herdr-attach-takeover)
                               " "))))
-        (apply original args)))))
+        (let ((result (apply original args)))
+          (herdr-claim-buffer (car-safe result) terminal-id)
+          result)))))
+
+(defun herdr-claude-code-ide-sessions ()
+  "Return the claude-code-ide sessions as `herdr-jump' entries."
+  (when (fboundp 'claude-code-ide-mcp--active-sessions)
+    (mapcar (lambda (session)
+              (let ((buffer (claude-code-ide-mcp-session-buffer session)))
+                `((kind . "claude-code-ide")
+                  (label . ,(claude-code-ide--session-display-name session))
+                  (cwd . ,(claude-code-ide-mcp-session-project-dir session))
+                  (buffer . ,buffer)
+                  (terminal_id . ,(and (buffer-live-p buffer)
+                                       (buffer-local-value 'herdr-terminal-id buffer))))))
+            (claude-code-ide-mcp--active-sessions))))
+
+(add-to-list 'herdr-session-functions #'herdr-claude-code-ide-sessions t)
 
 ;;;###autoload
 (define-minor-mode herdr-claude-code-ide-mode

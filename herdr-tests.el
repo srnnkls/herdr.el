@@ -177,6 +177,59 @@ alist.  Returns the socket path."
   (should (equal (herdr-claude-code-ide-default-label "*scratch*" "/x/dotfiles")
                  "claude-dotfiles")))
 
+(ert-deftest herdr-claim-buffer-marks-and-announces-the-buffer ()
+  (let ((buffer (get-buffer-create "*herdr: claimed*"))
+        (announced nil))
+    (unwind-protect
+        (let ((herdr-buffer-functions (list (lambda (b) (push b announced)))))
+          (should (eq (herdr-claim-buffer buffer "term_claim") buffer))
+          (should (equal (buffer-local-value 'herdr-terminal-id buffer) "term_claim"))
+          (should (equal announced (list buffer))))
+      (kill-buffer buffer))))
+
+(ert-deftest herdr-terminal-buffer-needs-a-live-process ()
+  (let ((buffer (get-buffer-create "*herdr: lookup*")))
+    (unwind-protect
+        (progn
+          (herdr-claim-buffer buffer "term_lookup")
+          (should-not (herdr-terminal-buffer "term_lookup"))
+          (start-process "herdr-test-sleep" buffer "sleep" "30")
+          (should (eq (herdr-terminal-buffer "term_lookup") buffer))
+          (should-not (herdr-terminal-buffer "term_missing")))
+      (when-let* ((process (get-buffer-process buffer))) (delete-process process))
+      (kill-buffer buffer))))
+
+(ert-deftest herdr-sessions-dedups-terminals-preferring-live-buffers ()
+  (let ((buffer (get-buffer-create "*herdr: session*")))
+    (unwind-protect
+        (let* ((bare '((kind . "herdr") (terminal_id . "term_dup") (agent . "claude")
+                       (terminal_title_stripped . "bare")))
+               (rich `((kind . "claude-code-ide") (terminal_id . "term_dup")
+                       (label . "rich") (buffer . ,buffer)))
+               (other '((kind . "herdr") (terminal_id . "term_other") (agent . "codex")))
+               (herdr-session-functions
+                (list (lambda () (list bare other)) (lambda () (list rich)))))
+          (let ((sessions (herdr-sessions)))
+            (should (= (length sessions) 2))
+            (should (equal (herdr--entry-label (car sessions)) "rich"))
+            (should (equal (alist-get 'terminal_id (cadr sessions)) "term_other"))))
+      (kill-buffer buffer))))
+
+(ert-deftest herdr-visit-shows-a-live-buffer-instead-of-attaching ()
+  (let ((buffer (get-buffer-create "*herdr: visit*"))
+        (popped nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'pop-to-buffer) (lambda (b &rest _) (setq popped b)))
+                  ((symbol-function 'herdr-attach-entry)
+                   (lambda (&rest _) (error "Should not attach an attached session"))))
+          (should (eq (herdr-visit `((buffer . ,buffer))) buffer))
+          (should (eq popped buffer)))
+      (kill-buffer buffer))))
+
+(ert-deftest herdr-visit-attaches-a-session-without-a-buffer ()
+  (cl-letf (((symbol-function 'herdr-attach-entry) (lambda (_entry) 'attached)))
+    (should (eq (herdr-visit '((terminal_id . "term_cold"))) 'attached))))
+
 (ert-deftest herdr-attach-entry-lets-a-hook-claim-the-entry ()
   (let* ((claimed (get-buffer-create "*herdr: claimed*"))
          (seen nil)
@@ -227,6 +280,26 @@ alist.  Returns the socket path."
                         buffer))))
       (when-let* ((process (get-buffer-process buffer))) (delete-process process))
       (remhash "term_reuse" herdr-claude-code-ide--buffers)
+      (kill-buffer buffer))))
+
+(ert-deftest herdr-claude-code-ide-sessions-become-jump-entries ()
+  (let ((buffer (get-buffer-create "*claude-code[entries]*")))
+    (unwind-protect
+        (progn
+          (herdr-claim-buffer buffer "term_entry")
+          (cl-letf (((symbol-function 'claude-code-ide-mcp--active-sessions)
+                     (lambda () (list 'session)))
+                    ((symbol-function 'claude-code-ide--session-display-name)
+                     (lambda (_session) "entries"))
+                    ((symbol-function 'claude-code-ide-mcp-session-buffer)
+                     (lambda (_session) buffer))
+                    ((symbol-function 'claude-code-ide-mcp-session-project-dir)
+                     (lambda (_session) "/x/entries")))
+            (let ((entry (car (herdr-claude-code-ide-sessions))))
+              (should (equal (alist-get 'kind entry) "claude-code-ide"))
+              (should (equal (herdr--entry-label entry) "entries"))
+              (should (equal (alist-get 'terminal_id entry) "term_entry"))
+              (should (eq (alist-get 'buffer entry) buffer)))))
       (kill-buffer buffer))))
 
 (ert-deftest herdr-claude-code-ide-instance-name-from-agent ()
