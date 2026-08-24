@@ -121,6 +121,43 @@ alist.  Returns the socket path."
         (should (eq (alist-get 'focus seen) :false)))
     (herdr-tests--teardown)))
 
+(ert-deftest herdr-display-buffer-uses-a-side-window ()
+  (let ((buffer (get-buffer-create "*herdr: probe*"))
+        (herdr-use-side-window t)
+        (herdr-window-side 'right)
+        (herdr-window-width 20)
+        (herdr-display-buffer-action nil))
+    (unwind-protect
+        (let ((window (herdr-display-buffer buffer)))
+          (should window)
+          (should (eq (window-parameter window 'window-side) 'right))
+          (should (equal (window-parameter window 'window-slot)
+                         (buffer-local-value 'herdr--window-slot buffer)))
+          (should (>= (buffer-local-value 'herdr--window-slot buffer)
+                      herdr-window-slot-base))
+          (should (window-dedicated-p window)))
+      (kill-buffer buffer))))
+
+(ert-deftest herdr-display-buffer-gives-each-terminal-its-own-slot ()
+  (let ((first (get-buffer-create "*herdr: one*"))
+        (second (get-buffer-create "*herdr: two*"))
+        (herdr-window-width 20))
+    (unwind-protect
+        (progn
+          (herdr-display-buffer first)
+          (herdr-display-buffer second)
+          (should-not (equal (buffer-local-value 'herdr--window-slot first)
+                             (buffer-local-value 'herdr--window-slot second))))
+      (kill-buffer first)
+      (kill-buffer second))))
+
+(ert-deftest herdr-display-buffer-action-overrides-the-side-window ()
+  (let ((buffer (get-buffer-create "*herdr: override*"))
+        (herdr-display-buffer-action '(display-buffer-same-window)))
+    (unwind-protect
+        (should-not (window-parameter (herdr-display-buffer buffer) 'window-side))
+      (kill-buffer buffer))))
+
 (ert-deftest herdr-claude-code-ide-label-from-buffer-name ()
   (should (equal (herdr-claude-code-ide-default-label "*claude-code[dotfiles]*" "/x/dotfiles")
                  "claude-dotfiles"))

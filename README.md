@@ -36,6 +36,14 @@ one in an Emacs terminal buffer. `M-x herdr-attach-pane` does the same for any
 pane. Input goes straight to the herdr terminal; killing the buffer detaches
 and leaves the process running.
 
+Attached terminals open in a dedicated side window (`herdr-window-side`,
+`herdr-window-width`, `herdr-window-height`), each in its own slot so several
+of them sit next to each other. Slots start at `herdr-window-slot-base`, high
+enough to stay clear of other side-window users such as claude-code-ide. Set
+`herdr-display-buffer-action` for a different placement, or
+`herdr-use-side-window` to nil to hand placement over to `display-buffer-alist`
+or a popup framework.
+
 Only one writable client owns a terminal at a time, so attaching takes input
 ownership by default (`herdr-attach-takeover`). The herdr UI keeps rendering
 the same terminal, read-only, until it takes ownership back.

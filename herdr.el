@@ -63,9 +63,41 @@ another client holds it."
   :type 'function
   :group 'herdr)
 
+(defcustom herdr-use-side-window t
+  "Whether attached terminals are shown in a side window.
+Nil shows them like any other buffer, which leaves the placement to
+`display-buffer-alist' or a popup framework."
+  :type 'boolean
+  :group 'herdr)
+
+(defcustom herdr-window-side 'right
+  "Side of the frame attached terminals are shown on."
+  :type '(choice (const left) (const right) (const top) (const bottom))
+  :group 'herdr)
+
+(defcustom herdr-window-width 100
+  "Body width of attached terminal windows on the left or right side."
+  :type 'integer
+  :group 'herdr)
+
+(defcustom herdr-window-height 20
+  "Height of attached terminal windows on the top or bottom side."
+  :type 'integer
+  :group 'herdr)
+
+(defcustom herdr-window-slot-base 100
+  "First side-window slot attached terminals may claim.
+Other packages place their own side windows on low slots -
+claude-code-ide reserves blocks of 16 per project - and two buffers
+sharing a slot evict each other."
+  :type 'integer
+  :group 'herdr)
+
 (defcustom herdr-display-buffer-action nil
-  "Display action used when a command shows an attached terminal buffer."
-  :type '(choice (const :tag "Standard `pop-to-buffer'" nil) sexp)
+  "Display action used when a command shows an attached terminal buffer.
+When set it replaces the side window built from `herdr-window-side'
+and friends."
+  :type '(choice (const :tag "Side window" nil) sexp)
   :group 'herdr)
 
 ;;;; Snapshot helpers
@@ -142,6 +174,45 @@ TAKEOVER claims input ownership from any other attached client."
   "Return the Emacs buffer name for an attached terminal named LABEL."
   (format "*herdr: %s*" label))
 
+;;;; Windows
+
+(defvar-local herdr--window-slot nil
+  "Side-window slot this attached terminal owns.")
+
+(defun herdr--window-slot (buffer)
+  "Return the side-window slot BUFFER owns, claiming a free one if needed."
+  (or (buffer-local-value 'herdr--window-slot buffer)
+      (let ((taken (delq nil (mapcar (lambda (other)
+                                       (buffer-local-value 'herdr--window-slot other))
+                                     (buffer-list))))
+            (slot herdr-window-slot-base))
+        (while (memq slot taken) (cl-incf slot))
+        (with-current-buffer buffer (setq herdr--window-slot slot)))))
+
+(defun herdr-display-buffer (buffer)
+  "Show BUFFER and return its window.
+Attached terminals go to their own slot of the `herdr-window-side'
+side window, so several of them sit next to each other instead of
+replacing one another."
+  (cond
+   (herdr-display-buffer-action (display-buffer buffer herdr-display-buffer-action))
+   ((not herdr-use-side-window) (pop-to-buffer buffer))
+   (t
+    (let* ((display-buffer-alist
+            `((,(regexp-quote (buffer-name buffer))
+               (display-buffer-in-side-window)
+               (side . ,herdr-window-side)
+               (slot . ,(herdr--window-slot buffer))
+               ,@(if (memq herdr-window-side '(left right))
+                     `((window-width . ,herdr-window-width))
+                   `((window-height . ,herdr-window-height)))
+               (window-parameters . ((no-delete-other-windows . t))))))
+           (window (display-buffer buffer)))
+      (when window
+        (set-window-dedicated-p window t)
+        (select-window window))
+      window))))
+
 (cl-defun herdr-attach-terminal (terminal-id &key label directory takeover display)
   "Attach herdr terminal TERMINAL-ID to an Emacs terminal buffer.
 LABEL names the buffer, DIRECTORY sets its `default-directory',
@@ -157,10 +228,7 @@ non-nil.  Returns the buffer."
       (with-current-buffer buffer
         (when directory (setq default-directory (file-name-as-directory directory))))
       (setq buffer (herdr--terminal-exec buffer (car command) (cdr command)))
-      (when display
-        (if herdr-display-buffer-action
-            (display-buffer buffer herdr-display-buffer-action)
-          (pop-to-buffer buffer)))
+      (when display (herdr-display-buffer buffer))
       buffer)))
 
 ;;;; Completion
