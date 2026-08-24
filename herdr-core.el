@@ -38,6 +38,14 @@ configuration directory."
   "Name of the herdr session to talk to, or nil for the default session."
   :type '(choice (const :tag "Default session" nil) string))
 
+(defcustom herdr-auto-start-server t
+  "Whether Emacs starts a headless herdr server when none is running."
+  :type 'boolean)
+
+(defcustom herdr-server-start-timeout 15.0
+  "Seconds to wait for a herdr server Emacs started to answer."
+  :type 'number)
+
 (defcustom herdr-request-timeout 5.0
   "Seconds to wait for a response from the herdr API socket.
 Bind this around calls that wait on the server, such as
@@ -55,10 +63,11 @@ Bind this around calls that wait on the server, such as
       (let ((dir (expand-file-name
                   "herdr" (or (getenv "XDG_CONFIG_HOME")
                               (expand-file-name "~/.config")))))
-        (expand-file-name (if herdr-session
-                              (format "herdr-%s.sock" herdr-session)
-                            "herdr.sock")
-                          dir))))
+        (expand-file-name "herdr.sock"
+                          (if herdr-session
+                              (expand-file-name herdr-session
+                                                (expand-file-name "sessions" dir))
+                            dir)))))
 
 (defun herdr--params (pairs)
   "Return PAIRS without the entries whose value is nil.
@@ -135,6 +144,30 @@ answers with an error, and `herdr-error' when it cannot be reached."
   (condition-case nil
       (and (herdr-request "ping") t)
     (herdr-error nil)))
+
+(defun herdr-start-server ()
+  "Start a headless herdr server and wait for it to answer.
+Returns non-nil once it does.  The server is detached from Emacs, so
+it outlives this session the way a herdr server started from a shell
+does."
+  (let ((command (format "%s %sserver >/dev/null 2>&1 &"
+                         (shell-quote-argument herdr-executable)
+                         (if herdr-session
+                             (format "--session %s " (shell-quote-argument herdr-session))
+                           ""))))
+    (call-process-shell-command command nil 0)
+    (let ((deadline (+ (float-time) herdr-server-start-timeout)))
+      (while (and (< (float-time) deadline) (not (herdr-available-p)))
+        (sleep-for 0.1))
+      (herdr-available-p))))
+
+(defun herdr-ensure-server ()
+  "Return non-nil once a herdr server answers, starting one when allowed.
+Signals `herdr-error' when none can be reached."
+  (or (herdr-available-p)
+      (and herdr-auto-start-server (herdr-start-server))
+      (signal 'herdr-error
+              (list (format "no herdr server answering on %s" (herdr-socket-file))))))
 
 (defun herdr-subscribe (types callback)
   "Subscribe to herdr event TYPES and call CALLBACK for each event.

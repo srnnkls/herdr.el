@@ -62,6 +62,13 @@ It is called with the Emacs buffer name and the working directory."
 Called with the agent alist herdr reports."
   :type 'function)
 
+(defcustom herdr-claude-code-ide-require-herdr t
+  "Whether Claude Code sessions must run inside herdr.
+Non-nil refuses to start a session when no herdr server can be reached,
+rather than letting claude-code-ide spawn the CLI in an Emacs-owned
+process.  See `herdr-auto-start-server', which starts one first."
+  :type 'boolean)
+
 (defcustom herdr-claude-code-ide-adopt-on-attach t
   "Whether attaching a claude agent opens a claude-code-ide session.
 With this on, `herdr-attach-agent' and `herdr-attach-pane' hand claude
@@ -120,25 +127,46 @@ shell carries the claude-code-ide MCP environment for PORT."
     (herdr-api-pane-send-text (alist-get 'pane_id pane) (concat command "\n"))
     (alist-get 'terminal_id pane)))
 
+(defun herdr-claude-code-ide--host-ready-p ()
+  "Return non-nil when herdr can host a session, starting a server if needed.
+Refuses with a `user-error' instead of returning nil while
+`herdr-claude-code-ide-require-herdr' is on."
+  (condition-case err
+      (herdr-ensure-server)
+    (herdr-error
+     (when herdr-claude-code-ide-require-herdr
+       (user-error "Claude Code sessions run inside herdr, which is unreachable: %s"
+                   (error-message-string err)))
+     nil)))
+
+(defun herdr-claude-code-ide--terminal-for (buffer-name working-dir port continue resume session-id)
+  "Return the herdr terminal the session in BUFFER-NAME should attach to.
+Adoption reuses its terminal; everything else gets a fresh herdr tab in
+WORKING-DIR whose CLI carries PORT and the CONTINUE, RESUME and
+SESSION-ID flags.  Nil means claude-code-ide keeps the session itself."
+  (or herdr-claude-code-ide--attach-terminal
+      (when (herdr-claude-code-ide--host-ready-p)
+        (herdr-claude-code-ide--spawn
+         buffer-name working-dir port
+         (claude-code-ide--build-claude-command continue resume session-id)))))
+
 (defun herdr-claude-code-ide--create-terminal-session (original &rest args)
   "Attach ARGS' claude-code-ide session to a herdr terminal.
 ORIGINAL is `claude-code-ide--create-terminal-session', which ends up running
 the attach command instead of the Claude CLI."
   (cl-destructuring-bind (buffer-name working-dir port continue resume session-id) args
     (setq herdr-claude-code-ide--session-buffer buffer-name)
-    (let ((terminal-id
-           (or herdr-claude-code-ide--attach-terminal
-               (herdr-claude-code-ide--spawn
-                buffer-name working-dir port
-                (claude-code-ide--build-claude-command continue resume session-id)))))
-      (cl-letf (((symbol-function 'claude-code-ide--build-claude-command)
-                 (lambda (&rest _)
-                   (mapconcat #'identity
-                              (herdr-attach-command terminal-id herdr-attach-takeover)
-                              " "))))
-        (let ((result (apply original args)))
-          (herdr-claim-buffer (car-safe result) terminal-id)
-          result)))))
+    (if-let* ((terminal-id (herdr-claude-code-ide--terminal-for
+                            buffer-name working-dir port continue resume session-id)))
+        (cl-letf (((symbol-function 'claude-code-ide--build-claude-command)
+                   (lambda (&rest _)
+                     (mapconcat #'identity
+                                (herdr-attach-command terminal-id herdr-attach-takeover)
+                                " "))))
+          (let ((result (apply original args)))
+            (herdr-claim-buffer (car-safe result) terminal-id)
+            result))
+      (apply original args))))
 
 (defun herdr-claude-code-ide-sessions ()
   "Return the claude-code-ide sessions as `herdr-jump' entries."

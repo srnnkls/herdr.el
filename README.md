@@ -83,7 +83,12 @@ pin when jumping.
 
 With `herdr-claude-code-ide-mode` on, `M-x claude-code-ide` creates a herdr tab
 in the project directory, starts the Claude CLI there, and attaches the
-claude-code-ide buffer to it. The CLI inherits `CLAUDE_CODE_SSE_PORT`, so MCP —
+claude-code-ide buffer to it. No session escapes that route:
+`herdr-claude-code-ide-require-herdr` refuses to start one when herdr cannot be
+reached rather than falling back to an Emacs-owned CLI, and
+`herdr-auto-start-server` starts a headless herdr server first when none is
+running (detached, so it outlives Emacs). Set the first to nil to allow the
+plain claude-code-ide behaviour as a fallback. The CLI inherits `CLAUDE_CODE_SSE_PORT`, so MCP —
 ediff, at-mentions, diagnostics — works exactly as it does with a locally
 spawned CLI. The conversation survives Emacs restarts and shows up in the herdr
 UI alongside every other agent.
