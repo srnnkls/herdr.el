@@ -302,6 +302,12 @@ alist.  Returns the socket path."
              (lambda () (error "Should not start a second server"))))
     (should (herdr-ensure-server))))
 
+(ert-deftest herdr-start-server-needs-the-executable ()
+  (let ((herdr-executable "herdr-that-is-not-installed"))
+    (cl-letf (((symbol-function 'call-process-shell-command)
+               (lambda (&rest _) (error "Should not run a missing executable"))))
+      (should-error (herdr-start-server) :type 'herdr-error))))
+
 (ert-deftest herdr-claude-code-ide-refuses-to-run-outside-herdr ()
   (let ((herdr-claude-code-ide--attach-terminal nil))
     (cl-letf (((symbol-function 'herdr-ensure-server)

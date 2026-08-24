@@ -150,6 +150,9 @@ answers with an error, and `herdr-error' when it cannot be reached."
 Returns non-nil once it does.  The server is detached from Emacs, so
 it outlives this session the way a herdr server started from a shell
 does."
+  (unless (executable-find herdr-executable)
+    (signal 'herdr-error
+            (list (format "herdr executable not found: %s" herdr-executable))))
   (let ((command (format "%s %sserver >/dev/null 2>&1 &"
                          (shell-quote-argument herdr-executable)
                          (if herdr-session
