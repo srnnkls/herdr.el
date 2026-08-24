@@ -196,7 +196,10 @@ side window, so several of them sit next to each other instead of
 replacing one another."
   (cond
    (herdr-display-buffer-action (display-buffer buffer herdr-display-buffer-action))
-   ((not herdr-use-side-window) (pop-to-buffer buffer))
+   ((not herdr-use-side-window)
+    (let ((window (display-buffer buffer)))
+      (when window (select-window window))
+      window))
    (t
     (let* ((display-buffer-alist
             `((,(regexp-quote (buffer-name buffer))

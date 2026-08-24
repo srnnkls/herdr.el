@@ -151,6 +151,17 @@ alist.  Returns the socket path."
       (kill-buffer first)
       (kill-buffer second))))
 
+(ert-deftest herdr-display-buffer-returns-a-window-without-side-windows ()
+  (let ((buffer (get-buffer-create "*herdr: plain*"))
+        (herdr-use-side-window nil)
+        (herdr-display-buffer-action nil))
+    (unwind-protect
+        (let ((window (herdr-display-buffer buffer)))
+          (should (windowp window))
+          (should (eq (window-buffer window) buffer))
+          (should-not (window-parameter window 'window-side)))
+      (kill-buffer buffer))))
+
 (ert-deftest herdr-display-buffer-action-overrides-the-side-window ()
   (let ((buffer (get-buffer-create "*herdr: override*"))
         (herdr-display-buffer-action '(display-buffer-same-window)))
