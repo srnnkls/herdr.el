@@ -204,7 +204,12 @@ replacing one another."
                (side . ,herdr-window-side)
                (slot . ,(herdr--window-slot buffer))
                ,@(if (memq herdr-window-side '(left right))
-                     `((window-width . ,herdr-window-width))
+                     `((window-width
+                        . ,(lambda (window)
+                             (let ((delta (- herdr-window-width
+                                             (window-body-width window))))
+                               (unless (zerop delta)
+                                 (ignore-errors (window-resize window delta t)))))))
                    `((window-height . ,herdr-window-height)))
                (window-parameters . ((no-delete-other-windows . t))))))
            (window (display-buffer buffer)))
