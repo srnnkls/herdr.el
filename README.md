@@ -36,6 +36,11 @@ one in an Emacs terminal buffer. `M-x herdr-attach-pane` does the same for any
 pane. Input goes straight to the herdr terminal; killing the buffer detaches
 and leaves the process running.
 
+With the claude-code-ide bridge loaded, picking a claude agent opens a real
+claude-code-ide session around it instead of a bare terminal. Anything else in
+`herdr-attach-functions` gets the same chance to claim an entry first; the plain
+terminal attach runs when they all decline.
+
 Attached terminals open in a dedicated side window (`herdr-window-side`,
 `herdr-window-width`, `herdr-window-height`), each in its own slot so several
 of them sit next to each other. Slots start at `herdr-window-slot-base`, high
@@ -57,16 +62,25 @@ ediff, at-mentions, diagnostics — works exactly as it does with a locally
 spawned CLI. The conversation survives Emacs restarts and shows up in the herdr
 UI alongside every other agent.
 
-The other direction:
+The other direction — a claude that herdr already runs becomes a session:
 
-- `M-x herdr-claude-code-ide-adopt` wraps a claude that is already running in
-  herdr in a claude-code-ide session.
-- `herdr-claude-code-ide-auto-adopt-mode` does that for every claude herdr
-  detects whose directory is a project Emacs knows
+- attaching it (`herdr-attach-agent`, `herdr-attach-pane`) adopts it, unless
+  `herdr-claude-code-ide-adopt-on-attach` is nil.
+- `M-x herdr-claude-code-ide-adopt` does the same on demand.
+- `herdr-claude-code-ide-auto-adopt-mode` adopts every claude herdr detects
+  whose directory is a project Emacs knows
   (`herdr-claude-code-ide-auto-adopt-predicate`).
-- An adopted CLI started before its MCP server existed, so it is not connected
-  yet: `M-x herdr-claude-code-ide-connect-ide` sends `/ide` to it, and you pick
-  the Emacs entry in Claude's picker.
+
+The session is named after the herdr agent — its rename, else its terminal
+title (`herdr-claude-code-ide-instance-name-function`) — so several agents in
+one project become `*claude-code[project:name]*` buffers without prompting.
+Adopting the same terminal twice reuses the session it already has.
+
+An adopted CLI started before its MCP server existed, so it is not connected to
+Emacs yet. `herdr-claude-code-ide-connect-on-adopt` sends `/ide` for you while
+the agent is idle (the default), always, or never; `M-x
+herdr-claude-code-ide-connect-ide` does it on demand. Claude answers with its
+IDE picker — pick the Emacs entry there.
 
 Caveat worth knowing: `claude-code-ide-stop` and killing the buffer end the
 *attachment*, not the CLI. Close the herdr tab to end the conversation.

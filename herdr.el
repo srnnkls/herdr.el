@@ -289,25 +289,34 @@ REQUIRE-AGENT keeps only entries running that agent kind."
 
 ;;;; Commands
 
+(defvar herdr-attach-functions nil
+  "Functions that may claim an entry before it is attached as a terminal.
+Each is called with the pane or agent alist and returns the buffer it
+opened, or nil to let the next one try.  The plain terminal attach runs
+only when all of them decline.  herdr-claude-code-ide.el uses this to
+open claude agents as claude-code-ide sessions.")
+
+(defun herdr-attach-entry (entry)
+  "Attach pane or agent ENTRY and return the buffer showing it.
+Gives `herdr-attach-functions' the first chance to claim ENTRY."
+  (or (run-hook-with-args-until-success 'herdr-attach-functions entry)
+      (herdr-attach-terminal (alist-get 'terminal_id entry)
+                             :label (herdr--entry-label entry)
+                             :directory (alist-get 'cwd entry)
+                             :takeover herdr-attach-takeover
+                             :display t)))
+
 ;;;###autoload
 (defun herdr-attach-agent (agent)
   "Attach the terminal of herdr AGENT to an Emacs buffer."
   (interactive (list (herdr-read-entry "Attach herdr agent: " (herdr-agents))))
-  (herdr-attach-terminal (alist-get 'terminal_id agent)
-                         :label (herdr--entry-label agent)
-                         :directory (alist-get 'cwd agent)
-                         :takeover herdr-attach-takeover
-                         :display t))
+  (herdr-attach-entry agent))
 
 ;;;###autoload
 (defun herdr-attach-pane (pane)
   "Attach the terminal of herdr PANE to an Emacs buffer."
   (interactive (list (herdr-read-entry "Attach herdr pane: " (herdr-panes))))
-  (herdr-attach-terminal (alist-get 'terminal_id pane)
-                         :label (herdr--entry-label pane)
-                         :directory (alist-get 'cwd pane)
-                         :takeover herdr-attach-takeover
-                         :display t))
+  (herdr-attach-entry pane))
 
 (provide 'herdr)
 ;;; herdr.el ends here

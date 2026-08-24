@@ -177,6 +177,91 @@ alist.  Returns the socket path."
   (should (equal (herdr-claude-code-ide-default-label "*scratch*" "/x/dotfiles")
                  "claude-dotfiles")))
 
+(ert-deftest herdr-attach-entry-lets-a-hook-claim-the-entry ()
+  (let* ((claimed (get-buffer-create "*herdr: claimed*"))
+         (seen nil)
+         (herdr-attach-functions
+          (list (lambda (entry) (setq seen entry) claimed))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'herdr-attach-terminal)
+                   (lambda (&rest _) (error "Should not attach a terminal"))))
+          (should (eq (herdr-attach-entry '((agent . "claude") (terminal_id . "term_1")))
+                      claimed))
+          (should (equal (alist-get 'terminal_id seen) "term_1")))
+      (kill-buffer claimed))))
+
+(ert-deftest herdr-attach-entry-falls-through-to-the-terminal ()
+  (let ((herdr-attach-functions (list (lambda (_entry) nil)))
+        (attached nil))
+    (cl-letf (((symbol-function 'herdr-attach-terminal)
+               (lambda (terminal-id &rest _) (setq attached terminal-id) 'buffer)))
+      (should (eq (herdr-attach-entry '((agent . "codex") (terminal_id . "term_2")))
+                  'buffer))
+      (should (equal attached "term_2")))))
+
+(ert-deftest herdr-claude-code-ide-claims-only-claude-agents ()
+  (let ((herdr-claude-code-ide-adopt-on-attach t))
+    (cl-letf (((symbol-function 'claude-code-ide) #'ignore)
+              ((symbol-function 'herdr-claude-code-ide-adopt) (lambda (_agent) 'adopted)))
+      (should (eq (herdr-claude-code-ide--attach-entry
+                   '((agent . "claude") (cwd . "/tmp") (terminal_id . "term_3")))
+                  'adopted))
+      (should-not (herdr-claude-code-ide--attach-entry
+                   '((agent . "codex") (cwd . "/tmp") (terminal_id . "term_4"))))
+      (let ((herdr-claude-code-ide-adopt-on-attach nil))
+        (should-not (herdr-claude-code-ide--attach-entry
+                     '((agent . "claude") (cwd . "/tmp") (terminal_id . "term_5"))))))))
+
+(ert-deftest herdr-claude-code-ide-adopt-reuses-a-live-session ()
+  (let ((buffer (get-buffer-create "*claude-code[reuse]*"))
+        (herdr-claude-code-ide-mode t))
+    (unwind-protect
+        (progn
+          (start-process "herdr-test-sleep" buffer "sleep" "30")
+          (puthash "term_reuse" buffer herdr-claude-code-ide--buffers)
+          (cl-letf (((symbol-function 'claude-code-ide)
+                     (lambda () (error "Should reuse the running session")))
+                    ((symbol-function 'pop-to-buffer) #'ignore))
+            (should (eq (herdr-claude-code-ide-adopt
+                         '((agent . "claude") (cwd . "/tmp") (terminal_id . "term_reuse")))
+                        buffer))))
+      (when-let* ((process (get-buffer-process buffer))) (delete-process process))
+      (remhash "term_reuse" herdr-claude-code-ide--buffers)
+      (kill-buffer buffer))))
+
+(ert-deftest herdr-claude-code-ide-instance-name-from-agent ()
+  (should (equal (herdr-claude-code-ide-default-instance-name
+                  '((terminal_title_stripped . "Pinned frame detection")))
+                 "Pinned frame detection"))
+  (should (equal (herdr-claude-code-ide-default-instance-name
+                  '((name . "review") (terminal_title_stripped . "ignored")))
+                 "review"))
+  (should (equal (herdr-claude-code-ide-default-instance-name
+                  '((terminal_title_stripped . "  [weird]  *title*  ")))
+                 "weird title"))
+  (should-not (herdr-claude-code-ide-default-instance-name
+               '((terminal_title_stripped . "42"))))
+  (should-not (herdr-claude-code-ide-default-instance-name '())))
+
+(ert-deftest herdr-claude-code-ide-answers-the-instance-prompt-once ()
+  (let ((answer (herdr-claude-code-ide--instance-prompt-answer "review")))
+    (should (equal (funcall answer "Instance name: ") "review"))
+    (should (equal (funcall answer "Instance name: ") ""))
+    (should (equal (funcall answer "Instance name: ") "")))
+  (let ((answer (herdr-claude-code-ide--instance-prompt-answer nil)))
+    (should (equal (funcall answer "Instance name: ") ""))))
+
+(ert-deftest herdr-claude-code-ide-connect-p-follows-agent-status ()
+  (let ((idle '((agent_status . "idle")))
+        (working '((agent_status . "working"))))
+    (let ((herdr-claude-code-ide-connect-on-adopt 'idle))
+      (should (herdr-claude-code-ide--connect-p idle))
+      (should-not (herdr-claude-code-ide--connect-p working)))
+    (let ((herdr-claude-code-ide-connect-on-adopt t))
+      (should (herdr-claude-code-ide--connect-p working)))
+    (let ((herdr-claude-code-ide-connect-on-adopt nil))
+      (should-not (herdr-claude-code-ide--connect-p idle)))))
+
 (ert-deftest herdr-claude-code-ide-attaches-instead-of-spawning ()
   (let* ((built nil)
          (herdr-claude-code-ide--attach-terminal "term_adopted")

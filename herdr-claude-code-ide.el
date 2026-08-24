@@ -58,8 +58,38 @@ It is called with the Emacs buffer name and the working directory."
 Called with the agent alist herdr reports."
   :type 'function)
 
+(defcustom herdr-claude-code-ide-adopt-on-attach t
+  "Whether attaching a claude agent opens a claude-code-ide session.
+With this on, `herdr-attach-agent' and `herdr-attach-pane' hand claude
+agents to `herdr-claude-code-ide-adopt' instead of opening a plain
+terminal buffer."
+  :type 'boolean)
+
+(defcustom herdr-claude-code-ide-instance-name-function
+  #'herdr-claude-code-ide-default-instance-name
+  "Function naming the claude-code-ide instance an adopted agent becomes.
+It is called with the agent alist and returns a name, or nil to let
+claude-code-ide number the instance."
+  :type 'function)
+
+(defcustom herdr-claude-code-ide-connect-on-adopt 'idle
+  "When an adopted claude is asked to connect to this Emacs.
+A CLI that herdr started has no MCP port in its environment, so it
+needs `/ide' to find the session's server.  Claude answers with its
+picker, which you finish by hand.  `idle' only sends it while herdr
+reports the agent idle, t always sends it, nil never does."
+  :type '(choice (const :tag "Never" nil)
+                 (const :tag "While the agent is idle" idle)
+                 (const :tag "Always" t)))
+
 (defvar herdr-claude-code-ide--attach-terminal nil
   "Terminal id an in-flight session attaches to instead of starting Claude.")
+
+(defvar herdr-claude-code-ide--session-buffer nil
+  "Buffer name the in-flight claude-code-ide session was given.")
+
+(defvar herdr-claude-code-ide--buffers (make-hash-table :test 'equal)
+  "Terminal id to the claude-code-ide buffer adopting it.")
 
 (defvar herdr-claude-code-ide--auto-adopt-process nil)
 
@@ -91,6 +121,7 @@ shell carries the claude-code-ide MCP environment for PORT."
 ORIGINAL is `claude-code-ide--create-terminal-session', which ends up running
 the attach command instead of the Claude CLI."
   (cl-destructuring-bind (buffer-name working-dir port continue resume session-id) args
+    (setq herdr-claude-code-ide--session-buffer buffer-name)
     (let ((terminal-id
            (or herdr-claude-code-ide--attach-terminal
                (herdr-claude-code-ide--spawn
@@ -115,19 +146,83 @@ the attach command instead of the Claude CLI."
           (setq herdr-claude-code-ide-mode nil)
           (user-error "This claude-code-ide has no `claude-code-ide--create-terminal-session' to bridge"))
         (advice-add 'claude-code-ide--create-terminal-session :around
-                    #'herdr-claude-code-ide--create-terminal-session))
+                    #'herdr-claude-code-ide--create-terminal-session)
+        (add-hook 'herdr-attach-functions #'herdr-claude-code-ide--attach-entry))
     (advice-remove 'claude-code-ide--create-terminal-session
-                   #'herdr-claude-code-ide--create-terminal-session)))
+                   #'herdr-claude-code-ide--create-terminal-session)
+    (remove-hook 'herdr-attach-functions #'herdr-claude-code-ide--attach-entry)))
+
+(defun herdr-claude-code-ide-default-instance-name (agent)
+  "Return the claude-code-ide instance name for herdr AGENT.
+Nil lets claude-code-ide number the instance itself."
+  (when-let* ((raw (or (alist-get 'name agent)
+                       (alist-get 'terminal_title_stripped agent)
+                       (alist-get 'pane_id agent))))
+    (let ((name (string-trim
+                 (replace-regexp-in-string
+                  "[[:space:]]+" " "
+                  (replace-regexp-in-string "[][*[:cntrl:]]" "" raw)))))
+      (unless (or (string-empty-p name) (string-match-p "\\`[0-9]+\\'" name))
+        (truncate-string-to-width name 40)))))
+
+(defun herdr-claude-code-ide--instance-prompt-answer (name)
+  "Return a `read-string' stand-in that answers NAME once, then empty.
+claude-code-ide asks for an instance name while starting a session, and
+the adopt paths run where no one can answer; an empty answer makes it
+auto-number, including when NAME turns out to be taken."
+  (let ((answered nil))
+    (lambda (&rest _)
+      (if answered "" (progn (setq answered t) (or name ""))))))
+
+(defun herdr-claude-code-ide--adopted-buffer (terminal-id)
+  "Return the live claude-code-ide buffer already adopting TERMINAL-ID."
+  (let ((buffer (gethash terminal-id herdr-claude-code-ide--buffers)))
+    (if (and (buffer-live-p buffer) (get-buffer-process buffer))
+        buffer
+      (remhash terminal-id herdr-claude-code-ide--buffers)
+      nil)))
+
+(defun herdr-claude-code-ide--connect-p (agent)
+  "Return non-nil when AGENT should be asked to connect to this Emacs."
+  (pcase herdr-claude-code-ide-connect-on-adopt
+    ('nil nil)
+    ('idle (equal (alist-get 'agent_status agent) "idle"))
+    (_ t)))
 
 ;;;###autoload
 (defun herdr-claude-code-ide-adopt (agent)
-  "Open a claude-code-ide session attached to the herdr AGENT."
+  "Open a claude-code-ide session attached to the herdr AGENT.
+Returns the session buffer.  A session already adopting that terminal
+is reused rather than started a second time."
   (interactive (list (herdr-read-entry "Adopt herdr claude: " (herdr-agents)
                                        :require-agent "claude")))
   (unless herdr-claude-code-ide-mode (herdr-claude-code-ide-mode 1))
-  (let* ((default-directory (file-name-as-directory (alist-get 'cwd agent)))
-         (herdr-claude-code-ide--attach-terminal (alist-get 'terminal_id agent)))
-    (claude-code-ide)))
+  (let ((terminal-id (alist-get 'terminal_id agent)))
+    (if-let* ((buffer (herdr-claude-code-ide--adopted-buffer terminal-id)))
+        (progn (pop-to-buffer buffer) buffer)
+      (let* ((default-directory (file-name-as-directory (alist-get 'cwd agent)))
+             (herdr-claude-code-ide--attach-terminal terminal-id)
+             (herdr-claude-code-ide--session-buffer nil)
+             (suggested (funcall herdr-claude-code-ide-instance-name-function agent)))
+        (cl-letf (((symbol-function 'read-string)
+                   (herdr-claude-code-ide--instance-prompt-answer suggested)))
+          (claude-code-ide))
+        (let ((buffer (and herdr-claude-code-ide--session-buffer
+                           (get-buffer herdr-claude-code-ide--session-buffer))))
+          (when buffer
+            (puthash terminal-id buffer herdr-claude-code-ide--buffers)
+            (when (herdr-claude-code-ide--connect-p agent)
+              (herdr-api-pane-send-text (alist-get 'pane_id agent) "/ide\n")))
+          buffer)))))
+
+(defun herdr-claude-code-ide--attach-entry (entry)
+  "Open ENTRY as a claude-code-ide session when it is a claude agent."
+  (when (and herdr-claude-code-ide-adopt-on-attach
+             (fboundp 'claude-code-ide)
+             (equal (alist-get 'agent entry) "claude")
+             (alist-get 'cwd entry)
+             (alist-get 'terminal_id entry))
+    (herdr-claude-code-ide-adopt entry)))
 
 ;;;###autoload
 (defun herdr-claude-code-ide-connect-ide (pane-id)
