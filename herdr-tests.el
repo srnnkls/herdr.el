@@ -600,13 +600,17 @@ alist.  Returns the socket path."
 
 (ert-deftest herdr-claude-code-ide-connect-p-follows-agent-status ()
   (let ((idle '((agent_status . "idle")))
-        (working '((agent_status . "working"))))
+        (working '((agent_status . "working")))
+        (herdr-attach-takeover t))
     (let ((herdr-claude-code-ide-connect-on-adopt 'idle))
       (should (herdr-claude-code-ide--connect-p idle))
       (should-not (herdr-claude-code-ide--connect-p working)))
     (let ((herdr-claude-code-ide-connect-on-adopt t))
       (should (herdr-claude-code-ide--connect-p working)))
     (let ((herdr-claude-code-ide-connect-on-adopt nil))
+      (should-not (herdr-claude-code-ide--connect-p idle)))
+    (let ((herdr-claude-code-ide-connect-on-adopt t)
+          (herdr-attach-takeover nil))
       (should-not (herdr-claude-code-ide--connect-p idle)))))
 
 (ert-deftest herdr-claude-code-ide-attaches-instead-of-spawning ()

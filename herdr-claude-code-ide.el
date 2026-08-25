@@ -238,11 +238,14 @@ auto-number, including when NAME turns out to be taken."
       nil)))
 
 (defun herdr-claude-code-ide--connect-p (agent)
-  "Return non-nil when AGENT should be asked to connect to this Emacs."
-  (pcase herdr-claude-code-ide-connect-on-adopt
-    ('nil nil)
-    ('idle (equal (alist-get 'agent_status agent) "idle"))
-    (_ t)))
+  "Return non-nil when AGENT should be asked to connect to this Emacs.
+Connecting types `/ide' into the agent, so it waits until Emacs owns
+the terminal's input: attaching a whole session only looks on."
+  (and herdr-attach-takeover
+       (pcase herdr-claude-code-ide-connect-on-adopt
+         ('nil nil)
+         ('idle (equal (alist-get 'agent_status agent) "idle"))
+         (_ t))))
 
 ;;;###autoload
 (defun herdr-claude-code-ide-adopt (agent)
