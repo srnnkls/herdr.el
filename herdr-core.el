@@ -140,21 +140,25 @@ disk right now, and by identity when both are."
     (or (string-equal a b)
         (and (file-directory-p a) (file-directory-p b) (file-equal-p a b)))))
 
-(defvar herdr--stored-assignments 'unread
-  "Assignments read from `herdr-state-file', or `unread' before it is.")
+(defvar herdr--stored-assignments nil
+  "Cons of the state file last read and the assignments it held.")
+
+(defun herdr--read-state-file ()
+  "Return the assignments in `herdr-state-file', or nil when it has none."
+  (when (and herdr-state-file (file-readable-p herdr-state-file))
+    (with-temp-buffer
+      (insert-file-contents herdr-state-file)
+      (condition-case nil
+          (let ((stored (read (current-buffer))))
+            (and (listp stored) stored))
+        (error nil)))))
 
 (defun herdr-stored-assignments ()
-  "Return the assignments saved in `herdr-state-file'."
-  (when (eq herdr--stored-assignments 'unread)
-    (setq herdr--stored-assignments
-          (when (and herdr-state-file (file-readable-p herdr-state-file))
-            (with-temp-buffer
-              (insert-file-contents herdr-state-file)
-              (condition-case nil
-                  (let ((stored (read (current-buffer))))
-                    (and (listp stored) stored))
-                (error nil))))))
-  herdr--stored-assignments)
+  "Return the assignments saved in `herdr-state-file'.
+The file is read again whenever `herdr-state-file' names another one."
+  (unless (equal (car herdr--stored-assignments) herdr-state-file)
+    (setq herdr--stored-assignments (cons herdr-state-file (herdr--read-state-file))))
+  (cdr herdr--stored-assignments))
 
 (defun herdr-save-assignments ()
   "Write the stored assignments to `herdr-state-file'."
@@ -219,13 +223,12 @@ An assignment in `herdr-project-sessions' wins, then a rule in
   "Assign the project at ROOT to herdr SESSION.
 A nil SESSION drops the assignment.  The store is written to
 `herdr-state-file' unless NO-SAVE is non-nil.  Returns SESSION."
-  (let ((root (file-name-as-directory (expand-file-name root))))
-    (setq herdr--stored-assignments
-          (cl-remove-if (lambda (assignment)
-                          (herdr--same-directory-p (car assignment) root))
-                        (herdr-stored-assignments)))
-    (when session
-      (push (cons root session) herdr--stored-assignments))
+  (let* ((root (file-name-as-directory (expand-file-name root)))
+         (assignments (cl-remove-if (lambda (assignment)
+                                      (herdr--same-directory-p (car assignment) root))
+                                    (herdr-stored-assignments))))
+    (when session (push (cons root session) assignments))
+    (setq herdr--stored-assignments (cons herdr-state-file assignments))
     (unless no-save (herdr-save-assignments))
     session))
 

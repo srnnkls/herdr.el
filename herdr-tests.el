@@ -358,7 +358,7 @@ alist.  Returns the socket path."
 
 (ert-deftest herdr-assign-project-replaces-and-drops ()
   (let ((herdr-project-sessions nil)
-        (herdr--stored-assignments nil))
+        (herdr--stored-assignments (cons herdr-state-file nil)))
     (herdr-assign-project "/tmp/proj" "work" t)
     (should (equal (cdar (herdr-stored-assignments)) "work"))
     (herdr-assign-project "/tmp/proj/" "private" t)
@@ -376,14 +376,14 @@ alist.  Returns the socket path."
         (progn
           (herdr-assign-project "/tmp/work" "work")
           (should (file-readable-p herdr-state-file))
-          (let ((herdr--stored-assignments 'unread))
+          (let ((herdr--stored-assignments nil))
             (should (equal (herdr-stored-assignments) '(("/tmp/work/" . "work"))))
             (should (equal (herdr-project-session "/tmp/work/sub") "work"))))
       (delete-directory directory t))))
 
 (ert-deftest herdr-configured-assignments-win-over-stored-ones ()
   (let ((herdr-project-sessions '(("/tmp/proj/" . "configured")))
-        (herdr--stored-assignments '(("/tmp/proj/" . "stored")))
+        (herdr--stored-assignments (cons herdr-state-file '(("/tmp/proj/" . "stored"))))
         (herdr-project-root-function (lambda (&rest _) "/tmp/proj/")))
     (should (equal (herdr-project-session "/tmp/proj/sub") "configured"))
     (should (equal (herdr-known-sessions) '(shared "configured" "stored")))))
@@ -391,7 +391,7 @@ alist.  Returns the socket path."
 (ert-deftest herdr-stored-assignments-tolerate-a-broken-state-file ()
   (let* ((directory (make-temp-file "herdr-state" t))
          (herdr-state-file (expand-file-name "broken.eld" directory))
-         (herdr--stored-assignments 'unread))
+         (herdr--stored-assignments nil))
     (unwind-protect
         (progn
           (with-temp-file herdr-state-file (insert "(((("))
