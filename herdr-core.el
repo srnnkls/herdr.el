@@ -34,9 +34,20 @@ When nil the path is derived from `herdr-session' and the herdr
 configuration directory."
   :type '(choice (const :tag "Derive from session" nil) file))
 
-(defcustom herdr-session nil
-  "Name of the herdr session to talk to, or nil for the default session."
-  :type '(choice (const :tag "Default session" nil) string))
+(defcustom herdr-session 'shared
+  "Which herdr server Emacs talks to.
+`shared' uses the default session - the one a bare `herdr' attaches to -
+so Emacs sessions sit next to the terminal ones in the herdr UI.
+`emacs' keeps Emacs on a session of its own, named by
+`herdr-emacs-session-name', leaving the shared session to hand-run
+agents.  A string names a session directly."
+  :type '(choice (const :tag "Shared default session" shared)
+                 (const :tag "Session of its own" emacs)
+                 (string :tag "Named session")))
+
+(defcustom herdr-emacs-session-name "emacs"
+  "Name of the session `herdr-session' set to `emacs' uses."
+  :type 'string)
 
 (defcustom herdr-auto-start-server t
   "Whether Emacs starts a headless herdr server when none is running."
@@ -57,17 +68,41 @@ Bind this around calls that wait on the server, such as
 
 (defvar herdr--request-counter 0)
 
+(defun herdr-session-name ()
+  "Return the herdr session Emacs talks to, or nil for the default one."
+  (pcase herdr-session
+    ((or 'nil 'shared) nil)
+    ('emacs herdr-emacs-session-name)
+    ((and (pred stringp) name) name)
+    (other (signal 'herdr-error (list (format "invalid herdr-session: %S" other))))))
+
 (defun herdr-socket-file ()
   "Return the path of the herdr JSON API socket."
   (or herdr-socket-path
       (let ((dir (expand-file-name
                   "herdr" (or (getenv "XDG_CONFIG_HOME")
-                              (expand-file-name "~/.config")))))
+                              (expand-file-name "~/.config"))))
+            (session (herdr-session-name)))
         (expand-file-name "herdr.sock"
-                          (if herdr-session
-                              (expand-file-name herdr-session
-                                                (expand-file-name "sessions" dir))
+                          (if session
+                              (expand-file-name session (expand-file-name "sessions" dir))
                             dir)))))
+
+(defun herdr-global-args ()
+  "Return the herdr CLI flags selecting the session Emacs talks to.
+A session flag carries the server's data directory as well as its
+socket, which HERDR_SOCKET_PATH alone does not; an explicit
+`herdr-socket-path' is left to speak for itself."
+  (unless herdr-socket-path
+    (when-let* ((session (herdr-session-name)))
+      (list "--session" session))))
+
+(defun herdr-process-environment ()
+  "Return `process-environment' pointing herdr commands at our socket.
+The herdr CLI derives both its API and client sockets from
+HERDR_SOCKET_PATH, so an attach started from Emacs reaches the same
+server `herdr-request' does."
+  (cons (format "HERDR_SOCKET_PATH=%s" (herdr-socket-file)) process-environment))
 
 (defun herdr--params (pairs)
   "Return PAIRS without the entries whose value is nil.
@@ -153,20 +188,25 @@ does."
   (unless (executable-find herdr-executable)
     (signal 'herdr-error
             (list (format "herdr executable not found: %s" herdr-executable))))
-  (let ((command (format "%s %sserver >/dev/null 2>&1 &"
-                         (shell-quote-argument herdr-executable)
-                         (if herdr-session
-                             (format "--session %s " (shell-quote-argument herdr-session))
-                           ""))))
+  (let ((command (format "%s >/dev/null 2>&1 &"
+                         (mapconcat #'shell-quote-argument
+                                    (append (list herdr-executable)
+                                            (herdr-global-args)
+                                            (list "server"))
+                                    " ")))
+        (process-environment (herdr-process-environment)))
     (call-process-shell-command command nil 0)
     (let ((deadline (+ (float-time) herdr-server-start-timeout)))
       (while (and (< (float-time) deadline) (not (herdr-available-p)))
         (sleep-for 0.1))
       (herdr-available-p))))
 
-(defun herdr-ensure-server ()
-  "Return non-nil once a herdr server answers, starting one when allowed.
-Signals `herdr-error' when none can be reached."
+(defun herdr-start-server-if-needed ()
+  "Return non-nil once a herdr server answers on our socket.
+A server that already answers is left alone.  Otherwise one is started
+detached, unless `herdr-auto-start-server' is nil, and this waits up to
+`herdr-server-start-timeout' seconds for it to come up.  Signals
+`herdr-error' when no server can be reached."
   (or (herdr-available-p)
       (and herdr-auto-start-server (herdr-start-server))
       (signal 'herdr-error

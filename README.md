@@ -53,6 +53,25 @@ Only one writable client owns a terminal at a time, so attaching takes input
 ownership by default (`herdr-attach-takeover`). The herdr UI keeps rendering
 the same terminal, read-only, until it takes ownership back.
 
+## One herdr server, or one of your own
+
+`herdr-session` picks which server Emacs talks to:
+
+| Value | Meaning |
+| --- | --- |
+| `shared` (default) | the session a bare `herdr` attaches to, so Emacs sessions sit next to hand-run agents in the herdr UI |
+| `emacs` | a session of its own, named by `herdr-emacs-session-name` — reach it from a terminal with `herdr --session emacs` |
+| a string | that session by name |
+
+A session is a whole server namespace: its own socket, state directory and
+persistence. Emacs passes the choice to every herdr command it runs, so an
+attached terminal reaches the same server the API calls do. `herdr-socket-path`
+overrides the lot with a raw socket path when you know exactly which server you
+mean.
+
+Sessions of your own start empty, and tabs need a workspace, so `herdr-new-tab`
+opens one in a session that has none.
+
 ## Jumping between sessions
 
 `M-x herdr-jump` completes over everything running — herdr's agents plus the

@@ -114,11 +114,11 @@ reports the agent idle, t always sends it, nil never does."
   "Start COMMAND in a new herdr tab and return its terminal id.
 The tab runs in WORKING-DIR, is labelled after BUFFER-NAME, and its
 shell carries the claude-code-ide MCP environment for PORT."
-  (let* ((tab (herdr-api-tab-create
+  (let* ((tab (herdr-new-tab
                :cwd (expand-file-name working-dir)
                :label (funcall herdr-claude-code-ide-label-function
                                buffer-name working-dir)
-               :workspace-id herdr-claude-code-ide-workspace
+               :workspace herdr-claude-code-ide-workspace
                :focus (if herdr-claude-code-ide-focus-herdr t :false)
                :env `((CLAUDE_CODE_SSE_PORT . ,(number-to-string port))
                       (TERM_PROGRAM . "emacs")
@@ -132,7 +132,7 @@ shell carries the claude-code-ide MCP environment for PORT."
 Refuses with a `user-error' instead of returning nil while
 `herdr-claude-code-ide-require-herdr' is on."
   (condition-case err
-      (herdr-ensure-server)
+      (herdr-start-server-if-needed)
     (herdr-error
      (when herdr-claude-code-ide-require-herdr
        (user-error "Claude Code sessions run inside herdr, which is unreachable: %s"
@@ -163,7 +163,8 @@ the attach command instead of the Claude CLI."
                      (mapconcat #'identity
                                 (herdr-attach-command terminal-id herdr-attach-takeover)
                                 " "))))
-          (let ((result (apply original args)))
+          (let* ((process-environment (herdr-process-environment))
+                 (result (apply original args)))
             (herdr-claim-buffer (car-safe result) terminal-id)
             result))
       (apply original args))))

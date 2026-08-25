@@ -122,6 +122,15 @@ and friends."
   "Return the full herdr session snapshot."
   (alist-get 'snapshot (herdr-api-session-snapshot)))
 
+(cl-defun herdr-new-tab (&key cwd label env workspace focus)
+  "Open a tab in the herdr session and return the server's reply.
+Tabs live in workspaces, so a session that has none opens a workspace
+instead; either reply carries `root_pane' and `tab'."
+  (if (or workspace (herdr-workspaces))
+      (herdr-api-tab-create :cwd cwd :label label :env env
+                            :workspace-id workspace :focus focus)
+    (herdr-api-workspace-create :cwd cwd :label label :env env :focus focus)))
+
 (defun herdr-pane-text (pane-id &optional source lines)
   "Return terminal output of PANE-ID.
 SOURCE is one of `visible' (default), `recent', `recent_unwrapped'
@@ -146,11 +155,17 @@ or `detection'.  LINES limits how many lines are returned."
 (defun herdr-attach-command (terminal-id &optional takeover)
   "Return the command list attaching to TERMINAL-ID.
 TAKEOVER claims input ownership from any other attached client."
-  `(,herdr-executable "terminal" "attach" ,terminal-id
+  `(,herdr-executable ,@(herdr-global-args)
+                      "terminal" "attach" ,terminal-id
                       ,@(when takeover '("--takeover"))))
 
 (defun herdr--terminal-exec (buffer program args)
   "Run PROGRAM with ARGS inside BUFFER and return the buffer used."
+  (let ((process-environment (herdr-process-environment)))
+    (herdr--terminal-exec-1 buffer program args)))
+
+(defun herdr--terminal-exec-1 (buffer program args)
+  "Run PROGRAM with ARGS inside BUFFER using the configured backend."
   (pcase (herdr--backend)
     ('ghostel
      (require 'ghostel)
