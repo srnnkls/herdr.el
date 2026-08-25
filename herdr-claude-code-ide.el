@@ -42,9 +42,10 @@
   :prefix "herdr-claude-code-ide-")
 
 (defcustom herdr-claude-code-ide-workspace nil
-  "Workspace id that new Claude tabs are created in.
-Nil creates them in the workspace herdr currently has focused."
-  :type '(choice (const :tag "Focused workspace" nil) string))
+  "Herdr workspace label that new Claude tabs are created in.
+Nil asks `herdr-workspace-label-function' about the session's
+directory, which is what lines herdr's workspaces up with the editor's."
+  :type '(choice (const :tag "Workspace of the session's directory" nil) string))
 
 (defcustom herdr-claude-code-ide-focus-herdr nil
   "Whether herdr focuses a tab it creates for a Claude session."
@@ -104,21 +105,22 @@ reports the agent idle, t always sends it, nil never does."
 
 (defvar herdr-claude-code-ide--auto-adopt-process nil)
 
-(defun herdr-claude-code-ide-default-label (buffer-name directory)
-  "Return a herdr tab label for BUFFER-NAME in DIRECTORY."
-  (if (string-match "\\*claude-code\\[\\(.*\\)\\]\\*" buffer-name)
-      (format "claude-%s" (match-string 1 buffer-name))
-    (format "claude-%s" (file-name-nondirectory (directory-file-name directory)))))
+(defun herdr-claude-code-ide-default-label (_buffer-name directory)
+  "Return a herdr tab label for a session running in DIRECTORY.
+Sessions are named after the checkout they work in, so a tab in a
+worktree carries the worktree's name."
+  (file-name-nondirectory (directory-file-name (expand-file-name directory))))
 
 (defun herdr-claude-code-ide--spawn (buffer-name working-dir port command)
   "Start COMMAND in a new herdr tab and return its terminal id.
-The tab runs in WORKING-DIR, is labelled after BUFFER-NAME, and its
-shell carries the claude-code-ide MCP environment for PORT."
-  (let* ((tab (herdr-new-tab
+The tab runs in WORKING-DIR, sits in that directory's herdr workspace,
+and its shell carries the claude-code-ide MCP environment for PORT."
+  (let* ((tab (herdr-open-tab
                :cwd (expand-file-name working-dir)
                :label (funcall herdr-claude-code-ide-label-function
                                buffer-name working-dir)
-               :workspace herdr-claude-code-ide-workspace
+               :workspace (or herdr-claude-code-ide-workspace
+                              (herdr-workspace-label working-dir))
                :focus (if herdr-claude-code-ide-focus-herdr t :false)
                :env `((CLAUDE_CODE_SSE_PORT . ,(number-to-string port))
                       (TERM_PROGRAM . "emacs")

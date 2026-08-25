@@ -139,6 +139,20 @@ Together they are enough to bind sessions to an editor-side notion of place —
 pinning each terminal to the workspace its project owns, say, and following that
 pin when jumping.
 
+## Lining up with an editor's own layout
+
+Three levels correspond, so the herdr UI mirrors how the editor is arranged:
+an Emacs instance talks to one herdr session, `herdr-workspace-label-function`
+maps a directory to the herdr workspace its sessions belong in — return the
+editor workspace's name and the two line up — and each agent session becomes a
+tab inside it, named by `herdr-claude-code-ide-label-function`, which defaults
+to the checkout the session runs in, so a worktree's tab carries the worktree's
+name.
+
+`herdr-open-tab` does the work: it finds the workspace by label, creates it when
+it is missing — labelling the tab that comes with it rather than leaving an
+empty one behind — and otherwise opens a tab inside it.
+
 ## claude-code-ide bridge
 
 With `herdr-claude-code-ide-mode` on, `M-x claude-code-ide` creates a herdr tab

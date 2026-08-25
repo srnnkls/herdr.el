@@ -122,14 +122,46 @@ and friends."
   "Return the full herdr session snapshot."
   (alist-get 'snapshot (herdr-api-session-snapshot)))
 
-(cl-defun herdr-new-tab (&key cwd label env workspace focus)
-  "Open a tab in the herdr session and return the server's reply.
-Tabs live in workspaces, so a session that has none opens a workspace
-instead; either reply carries `root_pane' and `tab'."
-  (if (or workspace (herdr-workspaces))
-      (herdr-api-tab-create :cwd cwd :label label :env env
-                            :workspace-id workspace :focus focus)
-    (herdr-api-workspace-create :cwd cwd :label label :env env :focus focus)))
+(defcustom herdr-workspace-label-function #'herdr-default-workspace-label
+  "Function returning the herdr workspace a directory's sessions belong in.
+It is called with a directory and returns the workspace's label.  An
+editor that groups work into workspaces of its own should return the
+name of the one owning the directory, so the two line up."
+  :type 'function
+  :group 'herdr)
+
+(defun herdr-default-workspace-label (directory)
+  "Return the herdr workspace label for DIRECTORY: its own name."
+  (file-name-nondirectory (directory-file-name (expand-file-name directory))))
+
+(defun herdr-workspace-label (directory)
+  "Return the herdr workspace label DIRECTORY's sessions belong in."
+  (funcall herdr-workspace-label-function directory))
+
+(defun herdr-workspace-id (label)
+  "Return the id of the herdr workspace labelled LABEL, or nil."
+  (when label
+    (alist-get 'workspace_id
+               (cl-find-if (lambda (workspace)
+                             (equal (alist-get 'label workspace) label))
+                           (herdr-workspaces)))))
+
+(cl-defun herdr-open-tab (&key cwd label workspace env focus)
+  "Open a tab labelled LABEL in the herdr workspace labelled WORKSPACE.
+Creates that workspace when it does not exist yet, and labels the tab
+it comes with rather than leaving an empty one behind.  Without a
+WORKSPACE the tab goes to the focused workspace, or to a new one when
+the session has none.  The reply carries `root_pane' and `tab'."
+  (let ((id (herdr-workspace-id workspace)))
+    (if (or id (and (not workspace) (herdr-workspaces)))
+        (herdr-api-tab-create :cwd cwd :label label :env env
+                              :workspace-id id :focus focus)
+      (let ((created (herdr-api-workspace-create
+                      :cwd cwd :label (or workspace label) :env env :focus focus)))
+        (when-let* ((label label)
+                    (tab (alist-get 'tab created)))
+          (herdr-api-tab-rename label (alist-get 'tab_id tab)))
+        created))))
 
 (defun herdr-pane-text (pane-id &optional source lines)
   "Return terminal output of PANE-ID.
