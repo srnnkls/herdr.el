@@ -81,8 +81,17 @@ explicit and per project:
 M-x herdr-assign-project-session      ; assigns the current project, saved
 ```
 
-It fills `herdr-project-sessions`, an alist of `(PROJECT-ROOT . SESSION)` you
-can also write by hand. `C-u` assigns for this Emacs only, without saving.
+Assignments made that way are written to `herdr-state-file`, an alist in your
+setup's state directory — point it at a durable one, since
+`locate-user-emacs-file` lands in the cache directory under Doom:
+
+```elisp
+(setq herdr-state-file (file-name-concat doom-state-dir "herdr/project-sessions.eld"))
+```
+
+`C-u` assigns for this Emacs only, writing nothing. Assignments you'd rather
+keep in configuration go in `herdr-project-sessions`, an alist of
+`(PROJECT-ROOT . SESSION)`, and those win over the stored ones.
 
 The project root comes from `herdr-project-root-function`, which asks projectile
 when projectile is loaded and project.el otherwise — override it to decide

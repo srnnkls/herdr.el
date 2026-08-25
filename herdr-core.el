@@ -78,6 +78,14 @@ non-nil when the rule applies.  The first matching rule wins;
   :type '(alist :key-type (choice directory function)
                 :value-type (choice (const shared) (const emacs) string)))
 
+(defcustom herdr-state-file (locate-user-emacs-file "herdr/project-sessions.eld")
+  "File the assignments made with `herdr-assign-project' persist in.
+Point this at your setup's durable state directory - Doom's
+`doom-state-dir', say - since `locate-user-emacs-file' lands in the
+cache directory there.  Assignments written in configuration through
+`herdr-project-sessions' need no file and win over the stored ones."
+  :type 'file)
+
 (defcustom herdr-project-root-function #'herdr-project-root
   "Function returning the project root a directory belongs to, or nil.
 The default asks projectile, then project.el."
@@ -132,24 +140,54 @@ disk right now, and by identity when both are."
     (or (string-equal a b)
         (and (file-directory-p a) (file-directory-p b) (file-equal-p a b)))))
 
+(defvar herdr--stored-assignments 'unread
+  "Assignments read from `herdr-state-file', or `unread' before it is.")
+
+(defun herdr-stored-assignments ()
+  "Return the assignments saved in `herdr-state-file'."
+  (when (eq herdr--stored-assignments 'unread)
+    (setq herdr--stored-assignments
+          (when (and herdr-state-file (file-readable-p herdr-state-file))
+            (with-temp-buffer
+              (insert-file-contents herdr-state-file)
+              (condition-case nil
+                  (let ((stored (read (current-buffer))))
+                    (and (listp stored) stored))
+                (error nil))))))
+  herdr--stored-assignments)
+
+(defun herdr-save-assignments ()
+  "Write the stored assignments to `herdr-state-file'."
+  (when herdr-state-file
+    (make-directory (file-name-directory herdr-state-file) t)
+    (with-temp-file herdr-state-file
+      (let ((print-length nil) (print-level nil))
+        (prin1 (herdr-stored-assignments) (current-buffer))
+        (insert "\n")))
+    herdr-state-file))
+
+(defun herdr-project-assignments ()
+  "Return every project assignment, configured ones before stored ones."
+  (append herdr-project-sessions (herdr-stored-assignments)))
+
 (defun herdr-project-session (&optional directory)
   "Return the session DIRECTORY's project was assigned to, or nil.
 An assignment matches its project root, and otherwise the deepest
 assigned root the directory sits under, so a root that projectile and
 project.el disagree about still resolves."
-  (when herdr-project-sessions
+  (when-let* ((assignments (herdr-project-assignments)))
     (let* ((directory (expand-file-name (or directory default-directory)))
-           (root (funcall herdr-project-root-function directory)))
+           (root (funcall herdr-project-root-function directory))
+           (covering (cl-sort (cl-remove-if-not
+                               (lambda (assignment)
+                                 (herdr--directory-covers-p (car assignment) directory))
+                               (copy-sequence assignments))
+                              #'> :key (lambda (assignment) (length (car assignment))))))
       (or (when root
             (cdr (cl-find-if (lambda (assignment)
                                (herdr--same-directory-p (car assignment) root))
-                             herdr-project-sessions)))
-          (cdr (car (last (cl-sort
-                           (cl-remove-if-not
-                            (lambda (assignment)
-                              (herdr--directory-covers-p (car assignment) directory))
-                            (copy-sequence herdr-project-sessions))
-                           #'< :key (lambda (assignment) (length (car assignment)))))))))))
+                             assignments)))
+          (cdar covering)))))
 
 (defun herdr--directory-covers-p (parent directory)
   "Return non-nil when DIRECTORY is PARENT or below it.
@@ -177,16 +215,18 @@ An assignment in `herdr-project-sessions' wins, then a rule in
         (herdr--derived-session directory)
         herdr-session)))
 
-(defun herdr-assign-project (root session)
+(defun herdr-assign-project (root session &optional no-save)
   "Assign the project at ROOT to herdr SESSION.
-A nil SESSION drops the assignment.  Returns SESSION."
+A nil SESSION drops the assignment.  The store is written to
+`herdr-state-file' unless NO-SAVE is non-nil.  Returns SESSION."
   (let ((root (file-name-as-directory (expand-file-name root))))
-    (setq herdr-project-sessions
+    (setq herdr--stored-assignments
           (cl-remove-if (lambda (assignment)
                           (herdr--same-directory-p (car assignment) root))
-                        herdr-project-sessions))
+                        (herdr-stored-assignments)))
     (when session
-      (push (cons root session) herdr-project-sessions))
+      (push (cons root session) herdr--stored-assignments))
+    (unless no-save (herdr-save-assignments))
     session))
 
 (defmacro herdr-with-session (session &rest body)
@@ -203,7 +243,7 @@ whatever an entry carries."
 (defun herdr-known-sessions ()
   "Return every session Emacs may talk to, `herdr-session' first."
   (delete-dups (append (list herdr-session)
-                       (mapcar #'cdr herdr-project-sessions)
+                       (mapcar #'cdr (herdr-project-assignments))
                        (mapcar #'cdr herdr-session-alist))))
 
 (defun herdr-socket-file ()

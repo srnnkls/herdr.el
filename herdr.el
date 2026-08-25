@@ -493,26 +493,24 @@ Offers the panes of the session this directory routes to."
                       nil nil nil nil default))))
 
 ;;;###autoload
-(defun herdr-assign-project-session (session &optional root save)
+(defun herdr-assign-project-session (session &optional root no-save)
   "Route the project at ROOT to herdr SESSION.
-ROOT defaults to the current project, and the assignment is saved for
-future Emacs sessions unless SAVE is nil, which a prefix argument asks
-for.  The sessions of projects nothing was assigned to are derived from
+ROOT defaults to the current project.  The assignment is written to
+`herdr-state-file' unless NO-SAVE is non-nil, which a prefix argument
+asks for.  Projects nothing was assigned to take their session from
 `herdr-session-alist' and `herdr-session'."
   (interactive
    (let ((root (or (funcall herdr-project-root-function) default-directory)))
      (list (herdr-read-session (format "Session for %s" (abbreviate-file-name root))
                                (herdr-session-for root))
            root
-           (not current-prefix-arg))))
+           current-prefix-arg)))
   (let ((root (or root (funcall herdr-project-root-function) default-directory)))
-    (herdr-assign-project root session)
-    (if save
-        (customize-save-variable 'herdr-project-sessions herdr-project-sessions)
-      (customize-set-variable 'herdr-project-sessions herdr-project-sessions))
-    (message "%s runs in the %s herdr session"
+    (herdr-assign-project root session no-save)
+    (message "%s runs in the %s herdr session%s"
              (abbreviate-file-name root)
-             (or (herdr-session-name session) "shared"))
+             (or (herdr-session-name session) "shared")
+             (if no-save " for now" ""))
     session))
 
 (provide 'herdr)
