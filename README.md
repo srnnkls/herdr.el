@@ -72,6 +72,38 @@ mean.
 Sessions of your own start empty, and tabs need a workspace, so `herdr-new-tab`
 opens one in a session that has none.
 
+### Routing projects to sessions
+
+Work and private projects can live on different herdr servers. Assignment is
+explicit and per project:
+
+```elisp
+M-x herdr-assign-project-session      ; assigns the current project, saved
+```
+
+It fills `herdr-project-sessions`, an alist of `(PROJECT-ROOT . SESSION)` you
+can also write by hand. `C-u` assigns for this Emacs only, without saving.
+
+The project root comes from `herdr-project-root-function`, which asks projectile
+when projectile is loaded and project.el otherwise — override it to decide
+project identity your own way.
+
+Projects nothing was assigned to fall back to `herdr-session-alist`, directory
+rules whose key is a directory or a predicate:
+
+```elisp
+(setq herdr-session-alist '(("~/work" . "work") ("~/src" . "private")))
+```
+
+and then to `herdr-session`. `herdr-session-for` answers what a directory
+resolves to; `herdr-with-session` runs code against one server.
+
+Routing reaches everything that talks to herdr: a Claude session starts on the
+server its project routes to, `herdr-attach-agent` offers the agents of that
+server, and `herdr-jump` scans every known session at once, tagging each entry
+with the server it came from and attaching it there. Servers that are not
+running are skipped rather than started while listing.
+
 ## Jumping between sessions
 
 `M-x herdr-jump` completes over everything running — herdr's agents plus the

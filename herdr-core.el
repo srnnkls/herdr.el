@@ -19,6 +19,10 @@
 (require 'cl-lib)
 (require 'subr-x)
 
+(declare-function projectile-project-root "projectile" (&optional dir))
+(declare-function project-current "project" (&optional maybe-prompt directory))
+(declare-function project-root "project" (project))
+
 (defgroup herdr nil
   "Control herdr terminal workspaces from Emacs."
   :group 'external
@@ -49,6 +53,36 @@ agents.  A string names a session directly."
   "Name of the session `herdr-session' set to `emacs' uses."
   :type 'string)
 
+(defcustom herdr-project-sessions nil
+  "Projects assigned to a herdr session, as (PROJECT-ROOT . SESSION).
+This is the explicit half of session routing; `herdr-assign-project'
+and `herdr-assign-project-session' maintain it.  SESSION takes the
+values `herdr-session' does.
+
+  (setq herdr-project-sessions
+        \\='((\"~/work/backend\" . \"work\")
+          (\"~/src/herdr.el\" . \"private\")))"
+  :type '(alist :key-type directory
+                :value-type (choice (const shared) (const emacs) string)))
+
+(defcustom herdr-session-alist nil
+  "Rules deriving a herdr session for projects nothing was assigned to.
+Each entry is (MATCHER . SESSION).  MATCHER is a directory whose tree
+the rule covers, or a function called with a directory that returns
+non-nil when the rule applies.  The first matching rule wins;
+`herdr-session' is the answer when none do.
+
+  (setq herdr-session-alist
+        \\='((\"~/work\" . \"work\")
+          (\"~/src\"  . \"private\")))"
+  :type '(alist :key-type (choice directory function)
+                :value-type (choice (const shared) (const emacs) string)))
+
+(defcustom herdr-project-root-function #'herdr-project-root
+  "Function returning the project root a directory belongs to, or nil.
+The default asks projectile, then project.el."
+  :type 'function)
+
 (defcustom herdr-auto-start-server t
   "Whether Emacs starts a headless herdr server when none is running."
   :type 'boolean)
@@ -68,13 +102,98 @@ Bind this around calls that wait on the server, such as
 
 (defvar herdr--request-counter 0)
 
-(defun herdr-session-name ()
-  "Return the herdr session Emacs talks to, or nil for the default one."
-  (pcase herdr-session
+(defun herdr-session-name (&optional session)
+  "Return the name of SESSION, or nil when it is the default one.
+SESSION defaults to `herdr-session' and takes the same values."
+  (pcase (or session herdr-session)
     ((or 'nil 'shared) nil)
     ('emacs herdr-emacs-session-name)
     ((and (pred stringp) name) name)
-    (other (signal 'herdr-error (list (format "invalid herdr-session: %S" other))))))
+    (other (signal 'herdr-error (list (format "invalid herdr session: %S" other))))))
+
+(defun herdr-project-root (&optional directory)
+  "Return the root of the project holding DIRECTORY, or nil.
+Asks projectile when it is loaded, otherwise project.el."
+  (let ((default-directory (file-name-as-directory
+                            (expand-file-name (or directory default-directory)))))
+    (or (and (featurep 'projectile)
+             (fboundp 'projectile-project-root)
+             (projectile-project-root))
+        (and (require 'project nil t)
+             (when-let* ((project (project-current)))
+               (project-root project))))))
+
+(defun herdr--same-directory-p (a b)
+  "Return non-nil when A and B name the same directory.
+Compares by name so assignments survive directories that are not on
+disk right now, and by identity when both are."
+  (let ((a (file-name-as-directory (expand-file-name a)))
+        (b (file-name-as-directory (expand-file-name b))))
+    (or (string-equal a b)
+        (and (file-directory-p a) (file-directory-p b) (file-equal-p a b)))))
+
+(defun herdr-project-session (&optional directory)
+  "Return the session DIRECTORY's project was assigned to, or nil."
+  (when herdr-project-sessions
+    (when-let* ((root (funcall herdr-project-root-function directory)))
+      (cdr (cl-find-if (lambda (assignment)
+                         (herdr--same-directory-p (car assignment) root))
+                       herdr-project-sessions)))))
+
+(defun herdr--directory-covers-p (parent directory)
+  "Return non-nil when DIRECTORY is PARENT or below it.
+Compares by name, so a rule covers directories that are not checked
+out yet."
+  (string-prefix-p (file-name-as-directory (expand-file-name parent))
+                   (file-name-as-directory (expand-file-name directory))))
+
+(defun herdr--derived-session (directory)
+  "Return the session `herdr-session-alist' derives for DIRECTORY, or nil."
+  (cdr (cl-find-if
+        (lambda (rule)
+          (let ((matcher (car rule)))
+            (if (functionp matcher)
+                (funcall matcher directory)
+              (herdr--directory-covers-p matcher directory))))
+        herdr-session-alist)))
+
+(defun herdr-session-for (&optional directory)
+  "Return the herdr session DIRECTORY belongs to.
+An assignment in `herdr-project-sessions' wins, then a rule in
+`herdr-session-alist', then `herdr-session'."
+  (let ((directory (expand-file-name (or directory default-directory))))
+    (or (herdr-project-session directory)
+        (herdr--derived-session directory)
+        herdr-session)))
+
+(defun herdr-assign-project (root session)
+  "Assign the project at ROOT to herdr SESSION.
+A nil SESSION drops the assignment.  Returns SESSION."
+  (let ((root (file-name-as-directory (expand-file-name root))))
+    (setq herdr-project-sessions
+          (cl-remove-if (lambda (assignment)
+                          (herdr--same-directory-p (car assignment) root))
+                        herdr-project-sessions))
+    (when session
+      (push (cons root session) herdr-project-sessions))
+    session))
+
+(defmacro herdr-with-session (session &rest body)
+  "Run BODY talking to SESSION.
+A nil SESSION leaves the current choice alone, so callers can pass
+whatever an entry carries."
+  (declare (indent 1) (debug (form body)))
+  (let ((value (make-symbol "session")))
+    `(let* ((,value ,session)
+            (herdr-session (or ,value herdr-session))
+            (herdr-socket-path (if ,value nil herdr-socket-path)))
+       ,@body)))
+
+(defun herdr-known-sessions ()
+  "Return every session Emacs may talk to, `herdr-session' first."
+  (delete-dups (append (list herdr-session)
+                       (mapcar #'cdr herdr-project-sessions)
+                       (mapcar #'cdr herdr-session-alist))))
 
 (defun herdr-socket-file ()
   "Return the path of the herdr JSON API socket."

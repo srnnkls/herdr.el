@@ -324,6 +324,44 @@ alist.  Returns the socket path."
     (let ((herdr-session "agents")) (should (equal (herdr-session-name) "agents")))
     (let ((herdr-session 42)) (should-error (herdr-session-name) :type 'herdr-error))))
 
+(ert-deftest herdr-project-root-asks-projectile-only-when-loaded ()
+  (cl-letf (((symbol-function 'projectile-project-root) (lambda (&rest _) "/p/projectile/"))
+            ((symbol-function 'project-current) (lambda (&rest _) nil)))
+    (should-not (featurep 'projectile))
+    (should-not (herdr-project-root "/tmp"))
+    (unwind-protect
+        (progn
+          (provide 'projectile)
+          (should (equal (herdr-project-root "/tmp") "/p/projectile/")))
+      (setq features (delq 'projectile features)))))
+
+(ert-deftest herdr-session-for-prefers-assignments-over-rules ()
+  (let ((herdr-session 'shared)
+        (herdr-session-alist '(("/src" . "derived")))
+        (herdr-project-sessions '(("/src/work/" . "work")))
+        (herdr-project-root-function
+         (lambda (&optional directory)
+           (when (string-prefix-p "/src/work" (or directory "")) "/src/work/"))))
+    (should (equal (herdr-session-for "/src/work/sub") "work"))
+    (should (equal (herdr-session-for "/src/other") "derived"))
+    (should (eq (herdr-session-for "/elsewhere") 'shared))))
+
+(ert-deftest herdr-assign-project-replaces-and-drops ()
+  (let ((herdr-project-sessions nil))
+    (herdr-assign-project "/tmp/proj" "work")
+    (should (equal (cdar herdr-project-sessions) "work"))
+    (herdr-assign-project "/tmp/proj/" "private")
+    (should (= (length herdr-project-sessions) 1))
+    (should (equal (cdar herdr-project-sessions) "private"))
+    (herdr-assign-project "/tmp/proj" nil)
+    (should-not herdr-project-sessions)))
+
+(ert-deftest herdr-known-sessions-covers-assignments-and-rules ()
+  (let ((herdr-session 'shared)
+        (herdr-project-sessions '(("/a" . "work")))
+        (herdr-session-alist '(("/b" . "private") ("/c" . "work"))))
+    (should (equal (herdr-known-sessions) '(shared "work" "private")))))
+
 (ert-deftest herdr-socket-file-follows-the-session-choice ()
   (let ((process-environment (cons "XDG_CONFIG_HOME=/xdg" process-environment))
         (herdr-socket-path nil)

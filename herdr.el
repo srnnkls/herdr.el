@@ -240,16 +240,24 @@ replacing one another."
   "Id of the herdr terminal this buffer shows.")
 (put 'herdr-terminal-id 'permanent-local t)
 
+(defvar-local herdr-terminal-session nil
+  "Session designator of the herdr server this buffer's terminal lives on.")
+(put 'herdr-terminal-session 'permanent-local t)
+
 (defvar herdr-buffer-functions nil
   "Functions called with each buffer that starts showing a herdr terminal.
 Runs for plain attachments and for the buffers other integrations build
 around a terminal, so an environment can claim the buffer - pinning it
 to a workspace, say - in one place.")
 
-(defun herdr-claim-buffer (buffer terminal-id)
-  "Mark BUFFER as showing TERMINAL-ID and let `herdr-buffer-functions' see it."
+(defun herdr-claim-buffer (buffer terminal-id &optional session)
+  "Mark BUFFER as showing TERMINAL-ID on SESSION's server.
+SESSION defaults to the one in scope.  `herdr-buffer-functions' then
+sees the buffer."
   (when (buffer-live-p buffer)
-    (with-current-buffer buffer (setq herdr-terminal-id terminal-id))
+    (with-current-buffer buffer
+      (setq herdr-terminal-id terminal-id
+            herdr-terminal-session (or session herdr-session)))
     (run-hook-with-args 'herdr-buffer-functions buffer)
     buffer))
 
@@ -308,10 +316,16 @@ completion annotation, or nil.")
       (alist-get 'pane_id entry)
       (herdr--entry-label entry)))
 
+(defun herdr--entry-session-label (entry)
+  "Return the session ENTRY lives on, once more than one is in play."
+  (when (cdr (herdr-known-sessions))
+    (or (herdr-session-name (alist-get 'session entry)) "shared")))
+
 (defun herdr--entry-annotation (entry)
   "Return the completion annotation for pane or agent ENTRY."
   (string-join
-   (delq nil (append (list (alist-get 'agent entry)
+   (delq nil (append (list (herdr--entry-session-label entry)
+                           (alist-get 'agent entry)
                            (alist-get 'agent_status entry)
                            (when-let* ((cwd (alist-get 'cwd entry)))
                              (abbreviate-file-name cwd)))
@@ -367,16 +381,27 @@ Entries are alists; `kind' names the group they appear under and
 herdr-claude-code-ide.el adds the claude-code-ide sessions here.")
 
 (defun herdr-agent-sessions ()
-  "Return the agents herdr is running as session entries."
-  (mapcar (lambda (agent) (cons '(kind . "herdr") agent))
+  "Return the agents of the herdr session in scope as session entries."
+  (mapcar (lambda (agent)
+            (append `((kind . "herdr") (session . ,herdr-session)) agent))
           (herdr-agents)))
+
+(defun herdr--session-entries ()
+  "Return the entries of every session in `herdr-known-sessions'.
+Sessions whose server does not answer are skipped rather than started."
+  (apply #'append
+         (mapcar (lambda (session)
+                   (herdr-with-session session
+                     (when (herdr-available-p)
+                       (apply #'append (mapcar #'funcall herdr-session-functions)))))
+                 (herdr-known-sessions))))
 
 (defun herdr-sessions ()
   "Return every running session, one entry per terminal.
 Entries that already have an Emacs buffer win over bare ones."
   (let ((seen (make-hash-table :test 'equal))
         (order nil))
-    (dolist (entry (apply #'append (mapcar #'funcall herdr-session-functions)))
+    (dolist (entry (herdr--session-entries))
       (let* ((key (herdr--entry-key entry))
              (previous (gethash key seen)))
         (cond
@@ -389,10 +414,12 @@ Entries that already have an Emacs buffer win over bare ones."
 
 (defun herdr-visit (entry)
   "Show ENTRY and return its buffer.
-An entry that nothing shows yet is attached first."
+An entry that nothing shows yet is attached first, on the server it
+came from."
   (if-let* ((buffer (herdr--entry-buffer entry)))
       (progn (pop-to-buffer buffer) buffer)
-    (herdr-attach-entry entry)))
+    (herdr-with-session (alist-get 'session entry)
+      (herdr-attach-entry entry))))
 
 ;;;; Commands
 
@@ -406,23 +433,33 @@ open claude agents as claude-code-ide sessions.")
 (defun herdr-attach-entry (entry)
   "Attach pane or agent ENTRY and return the buffer showing it.
 Gives `herdr-attach-functions' the first chance to claim ENTRY."
-  (or (run-hook-with-args-until-success 'herdr-attach-functions entry)
-      (herdr-attach-terminal (alist-get 'terminal_id entry)
-                             :label (herdr--entry-label entry)
-                             :directory (alist-get 'cwd entry)
-                             :takeover herdr-attach-takeover
-                             :display t)))
+  (herdr-with-session (alist-get 'session entry)
+    (or (run-hook-with-args-until-success 'herdr-attach-functions entry)
+        (herdr-attach-terminal (alist-get 'terminal_id entry)
+                               :label (herdr--entry-label entry)
+                               :directory (alist-get 'cwd entry)
+                               :takeover herdr-attach-takeover
+                               :display t))))
 
 ;;;###autoload
 (defun herdr-attach-agent (agent)
-  "Attach the terminal of herdr AGENT to an Emacs buffer."
-  (interactive (list (herdr-read-entry "Attach herdr agent: " (herdr-agents))))
+  "Attach the terminal of herdr AGENT to an Emacs buffer.
+Offers the agents of the session this directory routes to."
+  (interactive (list (herdr-with-session (herdr-session-for)
+                       (herdr-read-entry "Attach herdr agent: " (herdr-agent-sessions)))))
   (herdr-attach-entry agent))
 
 ;;;###autoload
 (defun herdr-attach-pane (pane)
-  "Attach the terminal of herdr PANE to an Emacs buffer."
-  (interactive (list (herdr-read-entry "Attach herdr pane: " (herdr-panes))))
+  "Attach the terminal of herdr PANE to an Emacs buffer.
+Offers the panes of the session this directory routes to."
+  (interactive (list (herdr-with-session (herdr-session-for)
+                       (let ((session herdr-session))
+                         (herdr-read-entry
+                          "Attach herdr pane: "
+                          (mapcar (lambda (pane)
+                                    (append `((kind . "herdr") (session . ,session)) pane))
+                                  (herdr-panes)))))))
   (herdr-attach-entry pane))
 
 ;;;###autoload
@@ -430,6 +467,53 @@ Gives `herdr-attach-functions' the first chance to claim ENTRY."
   "Jump to a running SESSION, whether or not Emacs already shows it."
   (interactive (list (herdr-read-entry "Jump to session: " (herdr-sessions))))
   (herdr-visit session))
+
+(defun herdr--session-designator (name)
+  "Return the session designator NAME stands for."
+  (pcase name
+    ("shared" 'shared)
+    ("emacs" 'emacs)
+    (_ name)))
+
+(defun herdr-read-session (prompt &optional default)
+  "Read a herdr session designator with PROMPT, offering DEFAULT."
+  (let* ((known (mapcar (lambda (session)
+                          (pcase session
+                            ((or 'nil 'shared) "shared")
+                            ('emacs "emacs")
+                            (name name)))
+                        (herdr-known-sessions)))
+         (default (pcase default
+                    ((or 'nil 'shared) "shared")
+                    ('emacs "emacs")
+                    (name name))))
+    (herdr--session-designator
+     (completing-read (format-prompt prompt default)
+                      (delete-dups (append known (list "shared" "emacs")))
+                      nil nil nil nil default))))
+
+;;;###autoload
+(defun herdr-assign-project-session (session &optional root save)
+  "Route the project at ROOT to herdr SESSION.
+ROOT defaults to the current project, and the assignment is saved for
+future Emacs sessions unless SAVE is nil, which a prefix argument asks
+for.  The sessions of projects nothing was assigned to are derived from
+`herdr-session-alist' and `herdr-session'."
+  (interactive
+   (let ((root (or (funcall herdr-project-root-function) default-directory)))
+     (list (herdr-read-session (format "Session for %s" (abbreviate-file-name root))
+                               (herdr-session-for root))
+           root
+           (not current-prefix-arg))))
+  (let ((root (or root (funcall herdr-project-root-function) default-directory)))
+    (herdr-assign-project root session)
+    (if save
+        (customize-save-variable 'herdr-project-sessions herdr-project-sessions)
+      (customize-set-variable 'herdr-project-sessions herdr-project-sessions))
+    (message "%s runs in the %s herdr session"
+             (abbreviate-file-name root)
+             (or (herdr-session-name session) "shared"))
+    session))
 
 (provide 'herdr)
 ;;; herdr.el ends here

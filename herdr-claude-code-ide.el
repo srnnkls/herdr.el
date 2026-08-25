@@ -156,6 +156,9 @@ ORIGINAL is `claude-code-ide--create-terminal-session', which ends up running
 the attach command instead of the Claude CLI."
   (cl-destructuring-bind (buffer-name working-dir port continue resume session-id) args
     (setq herdr-claude-code-ide--session-buffer buffer-name)
+    (herdr-with-session (if herdr-claude-code-ide--attach-terminal
+                            herdr-session
+                          (herdr-session-for working-dir))
     (if-let* ((terminal-id (herdr-claude-code-ide--terminal-for
                             buffer-name working-dir port continue resume session-id)))
         (cl-letf (((symbol-function 'claude-code-ide--build-claude-command)
@@ -167,7 +170,7 @@ the attach command instead of the Claude CLI."
                  (result (apply original args)))
             (herdr-claim-buffer (car-safe result) terminal-id)
             result))
-      (apply original args))))
+      (apply original args)))))
 
 (defun herdr-claude-code-ide-sessions ()
   "Return the claude-code-ide sessions as `herdr-jump' entries."
