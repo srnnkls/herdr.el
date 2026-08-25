@@ -346,6 +346,16 @@ alist.  Returns the socket path."
     (should (equal (herdr-session-for "/src/other") "derived"))
     (should (eq (herdr-session-for "/elsewhere") 'shared))))
 
+(ert-deftest herdr-project-session-falls-back-to-the-deepest-assignment ()
+  (let ((herdr-project-sessions '(("/src/" . "outer") ("/src/app/" . "inner")))
+        (herdr-project-root-function (lambda (&rest _) nil)))
+    (should (equal (herdr-project-session "/src/app/lib") "inner"))
+    (should (equal (herdr-project-session "/src/other") "outer"))
+    (should-not (herdr-project-session "/elsewhere")))
+  (let ((herdr-project-sessions '(("/src/" . "outer") ("/src/app/" . "inner")))
+        (herdr-project-root-function (lambda (&rest _) "/src/")))
+    (should (equal (herdr-project-session "/src/app/lib") "outer"))))
+
 (ert-deftest herdr-assign-project-replaces-and-drops ()
   (let ((herdr-project-sessions nil))
     (herdr-assign-project "/tmp/proj" "work")

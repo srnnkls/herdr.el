@@ -133,12 +133,23 @@ disk right now, and by identity when both are."
         (and (file-directory-p a) (file-directory-p b) (file-equal-p a b)))))
 
 (defun herdr-project-session (&optional directory)
-  "Return the session DIRECTORY's project was assigned to, or nil."
+  "Return the session DIRECTORY's project was assigned to, or nil.
+An assignment matches its project root, and otherwise the deepest
+assigned root the directory sits under, so a root that projectile and
+project.el disagree about still resolves."
   (when herdr-project-sessions
-    (when-let* ((root (funcall herdr-project-root-function directory)))
-      (cdr (cl-find-if (lambda (assignment)
-                         (herdr--same-directory-p (car assignment) root))
-                       herdr-project-sessions)))))
+    (let* ((directory (expand-file-name (or directory default-directory)))
+           (root (funcall herdr-project-root-function directory)))
+      (or (when root
+            (cdr (cl-find-if (lambda (assignment)
+                               (herdr--same-directory-p (car assignment) root))
+                             herdr-project-sessions)))
+          (cdr (car (last (cl-sort
+                           (cl-remove-if-not
+                            (lambda (assignment)
+                              (herdr--directory-covers-p (car assignment) directory))
+                            (copy-sequence herdr-project-sessions))
+                           #'< :key (lambda (assignment) (length (car assignment)))))))))))
 
 (defun herdr--directory-covers-p (parent directory)
   "Return non-nil when DIRECTORY is PARENT or below it.
