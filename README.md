@@ -113,6 +113,20 @@ server, and `herdr-jump` scans every known session at once, tagging each entry
 with the server it came from and attaching it there. Servers that are not
 running are skipped rather than started while listing.
 
+## Attaching a whole session
+
+`M-x herdr-attach-session` mirrors a running herdr session into Emacs: every
+one of its workspaces opens an editor workspace through
+`herdr-workspace-open-function`, and each agent inside becomes a buffer there,
+named after its tab. A prefix argument takes plain panes along too. Terminals
+Emacs already shows are left alone, so running it again after a while only
+picks up what is new.
+
+Input ownership stays with whoever holds it — the attached buffers start as a
+view of a session someone else is driving, since claiming three terminals at
+once from a herdr client you are looking at is rarely what you meant. Pass
+TAKEOVER, or attach a single agent, when you want to type.
+
 ## Jumping between sessions
 
 `M-x herdr-jump` completes over everything running — herdr's agents plus the

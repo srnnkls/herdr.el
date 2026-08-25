@@ -301,16 +301,28 @@ sees the buffer."
                        (get-buffer-process buffer)))
                 (buffer-list))))
 
+(defun herdr--free-buffer-name (label terminal-id)
+  "Return a buffer name for LABEL that no other terminal answers to.
+Tab labels repeat across herdr workspaces, so a taken name gets a
+counter.  Signals when TERMINAL-ID is the one already there."
+  (let ((name (funcall herdr-buffer-name-function label))
+        (counter 1))
+    (while (when-let* ((buffer (get-buffer name))
+                       ((get-buffer-process buffer)))
+             (when (equal (buffer-local-value 'herdr-terminal-id buffer) terminal-id)
+               (user-error "Buffer %s is already attached" name))
+             (setq name (funcall herdr-buffer-name-function
+                                 (format "%s<%d>" label (cl-incf counter))))))
+    name))
+
 (cl-defun herdr-attach-terminal (terminal-id &key label directory takeover display)
   "Attach herdr terminal TERMINAL-ID to an Emacs terminal buffer.
 LABEL names the buffer, DIRECTORY sets its `default-directory',
 TAKEOVER claims input ownership, and DISPLAY shows the buffer when
 non-nil.  Returns the buffer."
-  (let* ((name (funcall herdr-buffer-name-function (or label terminal-id)))
-         (existing (get-buffer name)))
-    (when (and existing (get-buffer-process existing))
-      (user-error "Buffer %s is already attached" name))
-    (when existing (kill-buffer existing))
+  (let ((name (herdr--free-buffer-name (or label terminal-id) terminal-id)))
+    (when-let* ((existing (get-buffer name)))
+      (kill-buffer existing))
     (let ((buffer (get-buffer-create name))
           (command (herdr-attach-command terminal-id takeover)))
       (with-current-buffer buffer
@@ -494,6 +506,72 @@ Offers the panes of the session this directory routes to."
                                   (herdr-panes)))))))
   (herdr-attach-entry pane))
 
+;;;; Attaching a whole session
+
+(defcustom herdr-workspace-open-function nil
+  "Function opening the editor workspace mirroring a herdr workspace.
+Called with the workspace alist and the directory its panes work in,
+before `herdr-attach-session' attaches that workspace's terminals.  Nil
+attaches everything wherever you are."
+  :type '(choice (const :tag "Attach where you are" nil) function)
+  :group 'herdr)
+
+(defun herdr-session-layout (&optional all)
+  "Return the herdr session's workspaces paired with their entries.
+Agents only, unless ALL asks for every pane.  Workspaces with nothing
+in them are left out."
+  (let* ((tabs (mapcar (lambda (tab)
+                         (cons (alist-get 'tab_id tab) (alist-get 'label tab)))
+                       (herdr-tabs)))
+         (panes (mapcar (lambda (pane)
+                          (append `((kind . "herdr") (session . ,herdr-session))
+                                  (unless (alist-get 'label pane)
+                                    `((label . ,(cdr (assoc (alist-get 'tab_id pane) tabs)))))
+                                  pane))
+                        (if all (herdr-panes) (herdr-agents)))))
+    (delq nil
+          (mapcar (lambda (workspace)
+                    (when-let* ((members (cl-remove-if-not
+                                          (lambda (pane)
+                                            (equal (alist-get 'workspace_id pane)
+                                                   (alist-get 'workspace_id workspace)))
+                                          panes)))
+                      (cons workspace members)))
+                  (herdr-workspaces)))))
+
+;;;###autoload
+(defun herdr-attach-session (&optional session all takeover)
+  "Attach the agents of a herdr SESSION, mirroring how it is laid out.
+Each herdr workspace opens an editor workspace of its own through
+`herdr-workspace-open-function', and every agent in it becomes a buffer
+there.  ALL attaches plain panes too.  Input ownership stays with
+herdr's own client unless TAKEOVER says otherwise, so the attached
+buffers start as a view of a session someone else is driving.
+Terminals Emacs already shows are left alone.  Returns the buffers it
+attached."
+  (interactive (list (herdr-read-session "Attach herdr session: ")
+                     current-prefix-arg
+                     nil))
+  (herdr-with-session session
+    (unless (herdr-available-p)
+      (user-error "No herdr server on %s" (herdr-socket-file)))
+    (let ((herdr-attach-takeover takeover)
+          (buffers nil))
+      (dolist (group (herdr-session-layout all))
+        (let* ((workspace (car group))
+               (entries (cdr group)))
+          (when herdr-workspace-open-function
+            (funcall herdr-workspace-open-function workspace
+                     (alist-get 'cwd (car entries))))
+          (dolist (entry entries)
+            (unless (herdr-terminal-buffer (alist-get 'terminal_id entry))
+              (push (herdr-attach-entry entry) buffers)))))
+      (setq buffers (delq nil (nreverse buffers)))
+      (message "Attached %d terminal%s from %s"
+               (length buffers) (if (= (length buffers) 1) "" "s")
+               (or (herdr-session-name session) "the shared session"))
+      buffers)))
+
 ;;;###autoload
 (defun herdr-jump (session)
   "Jump to a running SESSION, whether or not Emacs already shows it."
@@ -507,6 +585,18 @@ Offers the panes of the session this directory routes to."
     ("emacs" 'emacs)
     (_ name)))
 
+(defun herdr-available-sessions ()
+  "Return the sessions with a socket on disk, the shared one first."
+  (let* ((shared (let ((herdr-socket-path nil) (herdr-session 'shared))
+                   (herdr-socket-file)))
+         (sessions (expand-file-name "sessions" (file-name-directory shared))))
+    (cons 'shared
+          (when (file-directory-p sessions)
+            (cl-remove-if-not
+             (lambda (name)
+               (file-exists-p (expand-file-name (format "%s/herdr.sock" name) sessions)))
+             (directory-files sessions nil "\\`[^.]"))))))
+
 (defun herdr-read-session (prompt &optional default)
   "Read a herdr session designator with PROMPT, offering DEFAULT."
   (let* ((known (mapcar (lambda (session)
@@ -514,7 +604,7 @@ Offers the panes of the session this directory routes to."
                             ((or 'nil 'shared) "shared")
                             ('emacs "emacs")
                             (name name)))
-                        (herdr-known-sessions)))
+                        (append (herdr-known-sessions) (herdr-available-sessions))))
          (default (pcase default
                     ((or 'nil 'shared) "shared")
                     ('emacs "emacs")
