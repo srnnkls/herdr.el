@@ -237,10 +237,14 @@ A nil SESSION drops the assignment.  The store is written to
 A nil SESSION leaves the current choice alone, so callers can pass
 whatever an entry carries."
   (declare (indent 1) (debug (form body)))
-  (let ((value (make-symbol "session")))
+  (let ((value (make-symbol "session"))
+        (current (make-symbol "current-session")))
     `(let* ((,value ,session)
-            (herdr-session (or ,value herdr-session))
-            (herdr-socket-path (if ,value nil herdr-socket-path)))
+            (,current herdr-session)
+            (herdr-session (or ,value ,current))
+            (herdr-socket-path (if (and ,value (not (equal ,value ,current)))
+                                   nil
+                                 herdr-socket-path)))
        ,@body)))
 
 (defun herdr-known-sessions ()
@@ -260,6 +264,13 @@ whatever an entry carries."
                           (if session
                               (expand-file-name session (expand-file-name "sessions" dir))
                             dir)))))
+
+(defun herdr-server-key ()
+  "Return the canonical identity of the herdr server in scope."
+  (let* ((socket (expand-file-name (herdr-socket-file)))
+         (parent (file-name-directory socket))
+         (basename (file-name-nondirectory socket)))
+    (expand-file-name basename (file-truename parent))))
 
 (defun herdr-global-args ()
   "Return the herdr CLI flags selecting the session Emacs talks to.
@@ -391,7 +402,8 @@ TYPES is a list of event type strings such as \"pane.agent_detected\".
 CALLBACK receives the event alist.  Returns the subscription process;
 `delete-process' on it unsubscribes."
   (let ((proc (herdr--connect))
-        (pending ""))
+        (pending "")
+        (subscriptions (vconcat (mapcar (lambda (type) `((type . ,type))) types))))
     (set-process-filter
      proc
      (lambda (_proc chunk)
@@ -401,11 +413,11 @@ CALLBACK receives the event alist.  Returns the subscription process;
            (setq pending (substring pending (match-end 0)))
            (unless (string-empty-p line)
              (when-let* ((message (ignore-errors (herdr--decode line)))
-                         (event (alist-get 'event message)))
-               (funcall callback event)))))))
-    (process-send-string
-     proc (herdr--payload "events.subscribe"
-                          `((subscriptions . ,(mapcar (lambda (type) `((type . ,type))) types)))))
+                         ((alist-get 'event message)))
+               (funcall callback (alist-get 'data message))))))))
+    (process-send-string proc
+                         (herdr--payload "events.subscribe"
+                                         `((subscriptions . ,subscriptions))))
     proc))
 
 (provide 'herdr-core)

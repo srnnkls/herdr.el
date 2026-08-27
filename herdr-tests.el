@@ -112,6 +112,19 @@ alist.  Returns the socket path."
     (should-error (herdr-request "ping") :type 'herdr-error)
     (should-not (herdr-available-p))))
 
+(ert-deftest herdr-subscribe-delivers-event-data-not-the-event-kind ()
+  (unwind-protect
+      (let* ((data '((pane_id . "w1:t1:p1") (terminal_id . "term-1")))
+             (received nil)
+             (herdr-socket-path
+              (herdr-tests--start-server
+               (lambda (_request)
+                 `((event . "pane.updated") (data . ,data))))))
+        (herdr-subscribe '("pane.updated") (lambda (event) (setq received event)))
+        (accept-process-output nil 0.05)
+        (should (equal received data)))
+    (herdr-tests--teardown)))
+
 (ert-deftest herdr-api-tab-create-encodes-env-and-focus ()
   (unwind-protect
       (let* ((seen nil)
@@ -384,23 +397,6 @@ alist.  Returns the socket path."
         (should-not (herdr-claude-code-ide--attach-entry
                      '((agent . "claude") (cwd . "/tmp") (terminal_id . "term_5"))))))))
 
-(ert-deftest herdr-claude-code-ide-adopt-reuses-a-live-session ()
-  (let ((buffer (get-buffer-create "*claude-code[reuse]*"))
-        (herdr-claude-code-ide-mode t))
-    (unwind-protect
-        (progn
-          (start-process "herdr-test-sleep" buffer "sleep" "30")
-          (puthash "term_reuse" buffer herdr-claude-code-ide--buffers)
-          (cl-letf (((symbol-function 'claude-code-ide)
-                     (lambda () (error "Should reuse the running session")))
-                    ((symbol-function 'pop-to-buffer) #'ignore))
-            (should (eq (herdr-claude-code-ide-adopt
-                         '((agent . "claude") (cwd . "/tmp") (terminal_id . "term_reuse")))
-                        buffer))))
-      (when-let* ((process (get-buffer-process buffer))) (delete-process process))
-      (remhash "term_reuse" herdr-claude-code-ide--buffers)
-      (kill-buffer buffer))))
-
 (ert-deftest herdr-socket-file-uses-the-session-data-dir ()
   (let ((process-environment (cons "XDG_CONFIG_HOME=/xdg" process-environment))
         (herdr-socket-path nil)
@@ -542,19 +538,27 @@ alist.  Returns the socket path."
       (should-error (herdr-start-server) :type 'herdr-error))))
 
 (ert-deftest herdr-claude-code-ide-refuses-to-run-outside-herdr ()
-  (let ((herdr-claude-code-ide--attach-terminal nil))
-    (cl-letf (((symbol-function 'herdr-start-server-if-needed)
-               (lambda () (signal 'herdr-error (list "no server")))))
-      (let ((herdr-claude-code-ide-require-herdr t))
-        (should-error (herdr-claude-code-ide--create-terminal-session
-                       (lambda (&rest _) 'unwrapped)
-                       "*claude-code[x]*" "/tmp" 4711 nil nil "s1")
-                      :type 'user-error))
-      (let ((herdr-claude-code-ide-require-herdr nil))
-        (should (eq (herdr-claude-code-ide--create-terminal-session
-                     (lambda (&rest _) 'unwrapped)
-                     "*claude-code[x]*" "/tmp" 4711 nil nil "s1")
-                    'unwrapped))))))
+  (let* ((legacy 'herdr-claude-code-ide--attach-terminal)
+         (was-bound (boundp legacy))
+         (saved-value (and was-bound (symbol-value legacy))))
+    (unwind-protect
+        (dolist (state '(nil unbound))
+          (let ((called nil))
+            (pcase state
+              ('nil (set legacy nil))
+              ('unbound (makunbound legacy)))
+            (cl-letf (((symbol-function 'herdr-start-server-if-needed)
+                       (lambda () (signal 'herdr-error (list "no server")))))
+              (let ((error
+                     (should-error
+                      (herdr-claude-code-ide--create-terminal-session
+                       (lambda (&rest _) (setq called t) 'unwrapped)
+                       "*claude-code[x]*" "/tmp" 4711 nil nil "s1"))))
+                (should (eq (car error) 'user-error))
+                (should-not called)))))
+      (if was-bound
+          (set legacy saved-value)
+        (makunbound legacy)))))
 
 (ert-deftest herdr-claude-code-ide-sessions-become-jump-entries ()
   (let ((buffer (get-buffer-create "*claude-code[entries]*")))
@@ -612,18 +616,6 @@ alist.  Returns the socket path."
     (let ((herdr-claude-code-ide-connect-on-adopt t)
           (herdr-attach-takeover nil))
       (should-not (herdr-claude-code-ide--connect-p idle)))))
-
-(ert-deftest herdr-claude-code-ide-attaches-instead-of-spawning ()
-  (let* ((built nil)
-         (herdr-claude-code-ide--attach-terminal "term_adopted")
-         (herdr-executable "herdr")
-         (original (lambda (&rest _)
-                     (setq built (claude-code-ide--build-claude-command nil nil "s1")))))
-    (cl-letf (((symbol-function 'claude-code-ide--build-claude-command)
-               (lambda (&rest _) "claude --resume")))
-      (herdr-claude-code-ide--create-terminal-session
-       original "*claude-code[x]*" "/tmp" 4711 nil nil "s1"))
-    (should (equal built "herdr terminal attach term_adopted --takeover"))))
 
 (ert-deftest herdr-live-server-answers-ping ()
   (let ((herdr-socket-path nil))

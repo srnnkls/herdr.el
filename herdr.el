@@ -276,6 +276,10 @@ replacing one another."
   "Session designator of the herdr server this buffer's terminal lives on.")
 (put 'herdr-terminal-session 'permanent-local t)
 
+(defvar-local herdr-terminal-server-key nil
+  "Canonical server key of the herdr terminal this buffer shows.")
+(put 'herdr-terminal-server-key 'permanent-local t)
+
 (defvar herdr-buffer-functions nil
   "Functions called with each buffer that starts showing a herdr terminal.
 Runs for plain attachments and for the buffers other integrations build
@@ -289,27 +293,35 @@ sees the buffer."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (setq herdr-terminal-id terminal-id
-            herdr-terminal-session (or session herdr-session)))
+            herdr-terminal-session (or session herdr-session)
+            herdr-terminal-server-key (herdr-server-key)))
     (run-hook-with-args 'herdr-buffer-functions buffer)
     buffer))
 
-(defun herdr-terminal-buffer (terminal-id)
-  "Return the live buffer showing TERMINAL-ID, if there is one."
+(defun herdr-terminal-buffer (terminal-id &optional server-key)
+  "Return the live buffer showing TERMINAL-ID on SERVER-KEY, if there is one."
   (when terminal-id
-    (cl-find-if (lambda (buffer)
-                  (and (equal (buffer-local-value 'herdr-terminal-id buffer) terminal-id)
-                       (get-buffer-process buffer)))
-                (buffer-list))))
+    (let ((server-key (or server-key (herdr-server-key))))
+      (cl-find-if (lambda (buffer)
+                    (and (equal (buffer-local-value 'herdr-terminal-id buffer) terminal-id)
+                         (equal (buffer-local-value 'herdr-terminal-server-key buffer)
+                                server-key)
+                         (get-buffer-process buffer)))
+                  (buffer-list)))))
 
-(defun herdr--free-buffer-name (label terminal-id)
+(defun herdr--free-buffer-name (label terminal-id &optional server-key)
   "Return a buffer name for LABEL that no other terminal answers to.
+SERVER-KEY identifies the server terminal identity belongs to.
 Tab labels repeat across herdr workspaces, so a taken name gets a
 counter.  Signals when TERMINAL-ID is the one already there."
   (let ((name (funcall herdr-buffer-name-function label))
+        (server-key (or server-key (herdr-server-key)))
         (counter 1))
     (while (when-let* ((buffer (get-buffer name))
                        ((get-buffer-process buffer)))
-             (when (equal (buffer-local-value 'herdr-terminal-id buffer) terminal-id)
+             (when (and (equal (buffer-local-value 'herdr-terminal-id buffer) terminal-id)
+                        (equal (buffer-local-value 'herdr-terminal-server-key buffer)
+                               server-key))
                (user-error "Buffer %s is already attached" name))
              (setq name (funcall herdr-buffer-name-function
                                  (format "%s<%d>" label (cl-incf counter))))))
@@ -320,7 +332,8 @@ counter.  Signals when TERMINAL-ID is the one already there."
 LABEL names the buffer, DIRECTORY sets its `default-directory',
 TAKEOVER claims input ownership, and DISPLAY shows the buffer when
 non-nil.  Returns the buffer."
-  (let ((name (herdr--free-buffer-name (or label terminal-id) terminal-id)))
+  (let ((name (herdr--free-buffer-name (or label terminal-id) terminal-id
+                                       (herdr-server-key))))
     (when-let* ((existing (get-buffer name)))
       (kill-buffer existing))
     (let ((buffer (get-buffer-create name))
@@ -352,13 +365,15 @@ completion annotation, or nil.")
   (let ((buffer (alist-get 'buffer entry)))
     (if (buffer-live-p buffer)
         buffer
-      (herdr-terminal-buffer (alist-get 'terminal_id entry)))))
+      (herdr-terminal-buffer (alist-get 'terminal_id entry)
+                             (alist-get 'server_key entry)))))
 
 (defun herdr--entry-key (entry)
   "Return the identity ENTRY is deduplicated by."
-  (or (alist-get 'terminal_id entry)
-      (alist-get 'pane_id entry)
-      (herdr--entry-label entry)))
+  (cons (or (alist-get 'server_key entry) (herdr-server-key))
+        (or (alist-get 'terminal_id entry)
+            (alist-get 'pane_id entry)
+            (herdr--entry-label entry))))
 
 (defun herdr--entry-session-label (entry)
   "Return the session ENTRY lives on, once more than one is in play."
@@ -427,18 +442,33 @@ herdr-claude-code-ide.el adds the claude-code-ide sessions here.")
 (defun herdr-agent-sessions ()
   "Return the agents of the herdr session in scope as session entries."
   (mapcar (lambda (agent)
-            (append `((kind . "herdr") (session . ,herdr-session)) agent))
+            (append `((kind . "herdr")
+                      (session . ,herdr-session)
+                      (server_key . ,(herdr-server-key)))
+                    agent))
           (herdr-agents)))
 
 (defun herdr--session-entries ()
   "Return the entries of every session in `herdr-known-sessions'.
 Sessions whose server does not answer are skipped rather than started."
   (apply #'append
-         (mapcar (lambda (session)
-                   (herdr-with-session session
-                     (when (herdr-available-p)
-                       (apply #'append (mapcar #'funcall herdr-session-functions)))))
-                 (herdr-known-sessions))))
+         (mapcar
+          (lambda (session)
+            (let ((herdr-socket-path (if (equal session herdr-session)
+                                         herdr-socket-path
+                                       nil))
+                  (herdr-session (or session herdr-session)))
+              (when (herdr-available-p)
+                (let ((entries (apply #'append (mapcar #'funcall herdr-session-functions))))
+                  (mapcar (lambda (entry)
+                            (let ((entry (copy-tree entry)))
+                              (if (assq 'server_key entry)
+                                  (when (null (alist-get 'server_key entry))
+                                    (setf (alist-get 'server_key entry) (herdr-server-key)))
+                                (setf (alist-get 'server_key entry) (herdr-server-key)))
+                              entry))
+                          entries)))))
+          (herdr-known-sessions))))
 
 (defun herdr-sessions ()
   "Return every running session, one entry per terminal.
@@ -467,7 +497,8 @@ came from."
 
 ;;;; Commands
 
-(defvar herdr-attach-functions nil
+(autoload 'herdr-agent-attach-entry "herdr-agent")
+(defvar herdr-attach-functions '(herdr-agent-attach-entry)
   "Functions that may claim an entry before it is attached as a terminal.
 Each is called with the pane or agent alist and returns the buffer it
 opened, or nil to let the next one try.  The plain terminal attach runs
@@ -477,13 +508,23 @@ open claude agents as claude-code-ide sessions.")
 (defun herdr-attach-entry (entry)
   "Attach pane or agent ENTRY and return the buffer showing it.
 Gives `herdr-attach-functions' the first chance to claim ENTRY."
-  (herdr-with-session (alist-get 'session entry)
-    (or (run-hook-with-args-until-success 'herdr-attach-functions entry)
-        (herdr-attach-terminal (alist-get 'terminal_id entry)
-                               :label (herdr--entry-label entry)
-                               :directory (alist-get 'cwd entry)
-                               :takeover herdr-attach-takeover
-                               :display t))))
+  (let ((server-key (alist-get 'server_key entry)))
+    (if server-key
+        (let ((herdr-socket-path server-key)
+              (herdr-session (or (alist-get 'session entry) herdr-session)))
+          (or (run-hook-with-args-until-success 'herdr-attach-functions entry)
+              (herdr-attach-terminal (alist-get 'terminal_id entry)
+                                     :label (herdr--entry-label entry)
+                                     :directory (alist-get 'cwd entry)
+                                     :takeover herdr-attach-takeover
+                                     :display t)))
+      (herdr-with-session (alist-get 'session entry)
+        (or (run-hook-with-args-until-success 'herdr-attach-functions entry)
+            (herdr-attach-terminal (alist-get 'terminal_id entry)
+                                   :label (herdr--entry-label entry)
+                                   :directory (alist-get 'cwd entry)
+                                   :takeover herdr-attach-takeover
+                                   :display t))))))
 
 ;;;###autoload
 (defun herdr-attach-agent (agent)
@@ -524,7 +565,9 @@ in them are left out."
                          (cons (alist-get 'tab_id tab) (alist-get 'label tab)))
                        (herdr-tabs)))
          (panes (mapcar (lambda (pane)
-                          (append `((kind . "herdr") (session . ,herdr-session))
+                          (append `((kind . "herdr")
+                                    (session . ,herdr-session)
+                                    (server_key . ,(herdr-server-key)))
                                   (unless (alist-get 'label pane)
                                     `((label . ,(cdr (assoc (alist-get 'tab_id pane) tabs)))))
                                   pane))
@@ -564,7 +607,9 @@ attached."
             (funcall herdr-workspace-open-function workspace
                      (alist-get 'cwd (car entries))))
           (dolist (entry entries)
-            (unless (herdr-terminal-buffer (alist-get 'terminal_id entry))
+            (unless (if-let* ((server-key (alist-get 'server_key entry)))
+                        (herdr-terminal-buffer (alist-get 'terminal_id entry) server-key)
+                      (herdr-terminal-buffer (alist-get 'terminal_id entry)))
               (push (herdr-attach-entry entry) buffers)))))
       (setq buffers (delq nil (nreverse buffers)))
       (message "Attached %d terminal%s from %s"
