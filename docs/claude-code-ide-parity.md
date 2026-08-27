@@ -1,0 +1,57 @@
+# Claude Code IDE workflow parity ledger
+
+| Workflow | Scope task | Verification | State |
+| --- | --- | --- | --- |
+| contract-capture | T001 | ERT: herdr-claude-code-ide-contract-fixtures-cover-every-client-exchange | captured |
+| server-startup | T002 | ERT: herdr-claude-code-ide-startup | planned |
+| session-identity | T002 | ERT: herdr-claude-code-ide-session-identity | planned |
+| adoption | T002 | ERT: herdr-claude-code-ide-adoption | planned |
+| detach-without-termination | T002 | ERT: herdr-claude-code-ide-detach | planned |
+| claude-disappearance | T002 | ERT: herdr-claude-code-ide-claude-disappearance | planned |
+| startup-rollback | T002 | ERT: herdr-claude-code-ide-startup-rollback | planned |
+| discovery | T003 | ERT: herdr-claude-code-ide-discovery | planned |
+| initialize | T003 | ERT: herdr-claude-code-ide-initialize | planned |
+| reconnect | T003 | ERT: herdr-claude-code-ide-reconnect | planned |
+| supersede | T003 | ERT: herdr-claude-code-ide-supersede | planned |
+| stale-client | T003 | ERT: herdr-claude-code-ide-stale-client | planned |
+| cleanup | T003 | ERT: herdr-claude-code-ide-cleanup | planned |
+| selection | T004 | ERT: herdr-claude-code-ide-selection | planned |
+| context-at-mention | T004 | ERT: herdr-claude-code-ide-at-mention | planned |
+| diagnostics-provider | T004 | ERT: herdr-claude-code-ide-diagnostics | planned |
+| getDiagnostics-tool | T005 | ERT: herdr-claude-code-ide-get-diagnostics | planned |
+| openFile | T005 | ERT: herdr-claude-code-ide-open-file | planned |
+| close_tab | T005 | ERT: herdr-claude-code-ide-close-tab | planned |
+| openDiff | T005 | ERT: herdr-claude-code-ide-open-diff | planned |
+| closeAllDiffTabs | T005 | ERT: herdr-claude-code-ide-close-all-diffs | planned |
+| executeCode | T005 | ERT: herdr-claude-code-ide-execute-code | planned |
+| http-mcp | T006 | ERT: herdr-claude-code-ide-http-mcp | planned |
+| xref-references | T006 | ERT: herdr-claude-code-ide-xref-references | planned |
+| xref-apropos | T006 | ERT: herdr-claude-code-ide-xref-apropos | planned |
+| project-information | T006 | ERT: herdr-claude-code-ide-project-information | planned |
+| imenu | T006 | ERT: herdr-claude-code-ide-imenu | planned |
+| tree-sitter | T006 | ERT: herdr-claude-code-ide-tree-sitter | planned |
+| start | T007 | ERT: herdr-claude-code-ide-start | planned |
+| continue | T007 | ERT: herdr-claude-code-ide-continue | planned |
+| resume | T007 | ERT: herdr-claude-code-ide-resume | planned |
+| instance-naming | T007 | ERT: herdr-claude-code-ide-instance-naming | planned |
+| list | T007 | ERT: herdr-claude-code-ide-list | planned |
+| targeting | T007 | ERT: herdr-claude-code-ide-targeting | planned |
+| switch | T007 | ERT: herdr-claude-code-ide-switch | planned |
+| rename | T007 | ERT: herdr-claude-code-ide-rename | planned |
+| session-status | T007 | ERT: herdr-claude-code-ide-status | planned |
+| stop | T007 | ERT: herdr-claude-code-ide-stop | planned |
+| stop-all | T007 | ERT: herdr-claude-code-ide-stop-all | planned |
+| prompt | T007 | ERT: herdr-claude-code-ide-prompt | planned |
+| terminal-at-mention | T007 | ERT: herdr-claude-code-ide-at-mention | planned |
+| escape | T007 | ERT: herdr-claude-code-ide-escape | planned |
+| newline | T007 | ERT: herdr-claude-code-ide-newline | planned |
+| project-display | T007 | ERT: herdr-claude-code-ide-window-display | planned |
+| global-display | T007 | ERT: herdr-claude-code-ide-window-display | planned |
+| recent-window-display | T007 | ERT: herdr-claude-code-ide-window-display | planned |
+| window-display | T007 | ERT: herdr-claude-code-ide-window-display | planned |
+| transient | T008 | ERT: herdr-claude-code-ide-transient | planned |
+| status | T008 | ERT: herdr-claude-code-ide-status | planned |
+| debug | T008 | ERT: herdr-claude-code-ide-debug | planned |
+| configuration | T008 | ERT: herdr-claude-code-ide-configuration | planned |
+| migration | T009 | ERT: herdr-claude-code-ide-migration | planned |
+| platform-verification | T010 | manual: macOS/Linux Emacs 29/30 matrix | pending |
