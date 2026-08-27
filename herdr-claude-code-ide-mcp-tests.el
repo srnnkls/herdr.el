@@ -599,6 +599,22 @@
                        :discovery-directory (expand-file-name "discovery" root))
                  options)))
 
+(defmacro herdr-claude-code-ide-mcp-tests--with-websocket (&rest body)
+  `(let ((original-require (symbol-function 'require))
+         (port 4242))
+     (cl-letf (((symbol-function 'require)
+                (lambda (feature &optional filename noerror)
+                  (if (eq feature 'websocket)
+                      'websocket
+                    (funcall original-require feature filename noerror))))
+               ((symbol-function 'websocket-server)
+                (lambda (&rest _) (gensym "websocket-server")))
+               ((symbol-function 'websocket-server-close)
+                (lambda (&rest _) nil))
+               ((symbol-function 'herdr-claude-code-ide-mcp--port)
+                (lambda (&rest _) (cl-incf port))))
+       ,@body)))
+
 (defun herdr-claude-code-ide-mcp-tests--t003-initialize (adapter client)
   (herdr-claude-code-ide-mcp-receive
    adapter client
@@ -607,7 +623,8 @@
      "client-originated.json" "initialize"))))
 
 (ert-deftest herdr-claude-code-ide-mcp-prepare-publishes-claude-discovery-before-launch ()
-  (herdr-claude-code-ide-mcp-tests--t003-require-transport)
+  (herdr-claude-code-ide-mcp-tests--with-websocket
+    (herdr-claude-code-ide-mcp-tests--t003-require-transport)
   (require 'herdr-agent)
   (let* ((root (make-temp-file "herdr-claude-mcp-prepare" t))
          (server-key (expand-file-name "herdr.sock" root))
@@ -745,6 +762,43 @@
         (should-not
          (herdr-claude-code-ide-mcp-tests--t003-prepare
           (herdr-claude-code-ide-mcp-tests--t003-agent kind kind root) root)))
+      (delete-directory root t)))))
+
+(ert-deftest herdr-claude-code-ide-mcp-requires-websocket-before-publishing-discovery ()
+  (herdr-claude-code-ide-mcp-tests--t003-require-transport)
+  (let* ((root (make-temp-file "herdr-claude-mcp-no-websocket" t))
+         (discovery-directory (expand-file-name "discovery" root))
+         (before-processes (process-list))
+         (before-adapters (hash-table-count herdr-claude-code-ide-mcp--adapters))
+         adapter
+         error-data
+         leaked)
+    (unwind-protect
+        (let ((features (delq 'websocket (copy-sequence features)))
+              (original-require (symbol-function 'require)))
+          (cl-letf (((symbol-function 'require)
+                     (lambda (feature &optional filename noerror)
+                       (if (eq feature 'websocket)
+                           nil
+                         (funcall original-require feature filename noerror)))))
+            (condition-case error
+                (setq adapter
+                      (herdr-claude-code-ide-mcp-tests--t003-prepare
+                       (herdr-claude-code-ide-mcp-tests--t003-agent
+                        "claude" "term-no-websocket" root)
+                       root))
+              (error (setq error-data error)))
+            (setq leaked (seq-filter #'process-live-p
+                                     (cl-set-difference (process-list) before-processes)))
+            (should error-data)
+            (should-not leaked)
+            (should (= (hash-table-count herdr-claude-code-ide-mcp--adapters)
+                       before-adapters))
+            (should-not (and (file-directory-p discovery-directory)
+                             (directory-files-recursively discovery-directory ".")))))
+      (when adapter
+        (herdr-claude-code-ide-mcp-cleanup adapter))
+      (mapc #'delete-process leaked)
       (delete-directory root t))))
 
 (ert-deftest herdr-claude-code-ide-mcp-preparation-closes-a-listener-after-publication-fails ()
@@ -820,7 +874,8 @@
       (delete-directory root t))))
 
 (ert-deftest herdr-claude-code-ide-mcp-dispatches-fixture-json-rpc-and-errors ()
-  (herdr-claude-code-ide-mcp-tests--t003-require-transport)
+  (herdr-claude-code-ide-mcp-tests--with-websocket
+    (herdr-claude-code-ide-mcp-tests--t003-require-transport)
   (let* ((root (make-temp-file "herdr-claude-mcp-dispatch" t))
          (schemas (herdr-claude-code-ide-mcp-tests--t003-tool-schemas))
          (seen nil)
@@ -899,10 +954,11 @@
               (herdr-claude-code-ide-mcp-tests--t003-error "unknown-method")))))
       (when adapter
         (herdr-claude-code-ide-mcp-cleanup adapter))
-      (delete-directory root t))))
+      (delete-directory root t)))))
 
 (ert-deftest herdr-claude-code-ide-mcp-retains-startup-initialization-and-rolls-it-back ()
-  (herdr-claude-code-ide-mcp-tests--t003-require-transport)
+  (herdr-claude-code-ide-mcp-tests--with-websocket
+    (herdr-claude-code-ide-mcp-tests--t003-require-transport)
   (let* ((root (make-temp-file "herdr-claude-mcp-startup" t))
          (first nil)
          (second nil))
@@ -939,10 +995,11 @@
         (herdr-claude-code-ide-mcp-cleanup first))
       (when second
         (herdr-claude-code-ide-mcp-cleanup second))
-      (delete-directory root t))))
+      (delete-directory root t)))))
 
 (ert-deftest herdr-claude-code-ide-mcp-adoption-keeps-project-clients-distinct ()
-  (herdr-claude-code-ide-mcp-tests--t003-require-transport)
+  (herdr-claude-code-ide-mcp-tests--with-websocket
+    (herdr-claude-code-ide-mcp-tests--t003-require-transport)
   (require 'herdr-agent)
   (let* ((root (make-temp-file "herdr-claude-mcp-adopt" t))
          (server-key (expand-file-name "herdr.sock" root))
@@ -1010,10 +1067,11 @@
         (herdr-agent-detach first-session))
       (when second-session
         (herdr-agent-detach second-session))
-      (delete-directory root t))))
+      (delete-directory root t)))))
 
 (ert-deftest herdr-claude-code-ide-mcp-only-arms-reconnect-after-current-disconnect ()
-  (herdr-claude-code-ide-mcp-tests--t003-require-transport)
+  (herdr-claude-code-ide-mcp-tests--with-websocket
+    (herdr-claude-code-ide-mcp-tests--t003-require-transport)
   (let* ((root (make-temp-file "herdr-claude-mcp-reconnect" t))
          (adapter nil))
     (unwind-protect
@@ -1041,10 +1099,11 @@
                              (diffs . ("old-generation-diff"))))))
       (when adapter
         (herdr-claude-code-ide-mcp-cleanup adapter))
-      (delete-directory root t)))))
+      (delete-directory root t))))))
 
 (ert-deftest herdr-claude-code-ide-mcp-supersedes-only-successful-live-candidates ()
-  (herdr-claude-code-ide-mcp-tests--t003-require-transport)
+  (herdr-claude-code-ide-mcp-tests--with-websocket
+    (herdr-claude-code-ide-mcp-tests--t003-require-transport)
   (let* ((root (make-temp-file "herdr-claude-mcp-supersede" t))
          (schemas (herdr-claude-code-ide-mcp-tests--t003-tool-schemas))
          (tool-calls nil)
@@ -1098,10 +1157,11 @@
               (should (= (herdr-claude-code-ide-mcp-adapter-client-generation adapter) 2))))
       (when adapter
         (herdr-claude-code-ide-mcp-cleanup adapter))
-      (delete-directory root t)))))
+      (delete-directory root t))))))
 
 (ert-deftest herdr-claude-code-ide-mcp-resolves-deadline-races-and-last-cleanup ()
-  (herdr-claude-code-ide-mcp-tests--t003-require-transport)
+  (herdr-claude-code-ide-mcp-tests--with-websocket
+    (herdr-claude-code-ide-mcp-tests--t003-require-transport)
   (let* ((root (make-temp-file "herdr-claude-mcp-cleanup" t))
          (first nil)
          (second nil)
@@ -1176,7 +1236,7 @@
           (herdr-claude-code-ide-mcp-cleanup first))
         (when second
           (herdr-claude-code-ide-mcp-cleanup second))
-        (delete-directory root t)))))
+        (delete-directory root t))))))
 
 (provide 'herdr-claude-code-ide-mcp-tests)
 ;;; herdr-claude-code-ide-mcp-tests.el ends here

@@ -36,30 +36,29 @@
     (if (stringp service) (string-to-number service) service)))
 
 (defun herdr-claude-code-ide-mcp--start-server (adapter)
+  (unless (require 'websocket nil t)
+    (error "Claude Code IDE transport requires websocket.el"))
   (let ((server
-         (if (require 'websocket nil t)
-             (websocket-server
-              0 :host "127.0.0.1" :protocol '("mcp")
-              :on-open (lambda (raw)
-                         (puthash raw
-                                  (herdr-claude-code-ide-mcp-client-connect adapter raw)
-                                  (herdr-claude-code-ide-mcp-adapter-raw-clients adapter)))
-              :on-message (lambda (raw frame)
-                            (when-let* ((client (gethash raw
-                                                         (herdr-claude-code-ide-mcp-adapter-raw-clients adapter))))
-                              (let ((herdr-claude-code-ide-mcp--defer-close t)
-                                    (herdr-claude-code-ide-mcp--close-after-send nil))
-                                (when-let* ((response (herdr-claude-code-ide-mcp-receive
-                                                       adapter client (websocket-frame-text frame))))
-                                  (websocket-send-text raw (json-serialize response)))
-                                (when herdr-claude-code-ide-mcp--close-after-send
-                                  (herdr-claude-code-ide-mcp-client-close adapter client)))))
-              :on-close (lambda (raw)
-                          (when-let* ((client (gethash raw
-                                                       (herdr-claude-code-ide-mcp-adapter-raw-clients adapter))))
-                            (herdr-claude-code-ide-mcp-client-close adapter client))))
-           (make-network-process :name "herdr-claude-code-ide-mcp"
-                                 :server t :host "127.0.0.1" :service t :noquery t))))
+         (websocket-server
+          0 :host "127.0.0.1" :protocol '("mcp")
+          :on-open (lambda (raw)
+                     (puthash raw
+                              (herdr-claude-code-ide-mcp-client-connect adapter raw)
+                              (herdr-claude-code-ide-mcp-adapter-raw-clients adapter)))
+          :on-message (lambda (raw frame)
+                        (when-let* ((client (gethash raw
+                                                     (herdr-claude-code-ide-mcp-adapter-raw-clients adapter))))
+                          (let ((herdr-claude-code-ide-mcp--defer-close t)
+                                (herdr-claude-code-ide-mcp--close-after-send nil))
+                            (when-let* ((response (herdr-claude-code-ide-mcp-receive
+                                                   adapter client (websocket-frame-text frame))))
+                              (websocket-send-text raw (json-serialize response)))
+                            (when herdr-claude-code-ide-mcp--close-after-send
+                              (herdr-claude-code-ide-mcp-client-close adapter client)))))
+          :on-close (lambda (raw)
+                      (when-let* ((client (gethash raw
+                                                   (herdr-claude-code-ide-mcp-adapter-raw-clients adapter))))
+                        (herdr-claude-code-ide-mcp-client-close adapter client))))))
     (setf (herdr-claude-code-ide-mcp-adapter-server adapter) server)
     (herdr-claude-code-ide-mcp--port server)))
 
