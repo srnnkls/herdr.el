@@ -211,6 +211,7 @@
             (herdr-agent--register session)
             (condition-case err
                 (progn
+                  (herdr-agent--run-adapter session :adopted)
                   (when attach (herdr-agent--attach session))
                   (when attach
                     (setf (herdr-agent-session-state session) 'attached

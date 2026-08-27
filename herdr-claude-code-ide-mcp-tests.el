@@ -1,9 +1,11 @@
 ;;; herdr-claude-code-ide-mcp-tests.el --- Claude Code IDE contract tests -*- lexical-binding: t; -*-
 
 (require 'ert)
+(require 'cl-lib)
 (require 'json)
 (require 'seq)
 (require 'subr-x)
+(require 'herdr-claude-code-ide-mcp nil t)
 
 (defconst herdr-claude-code-ide-mcp-tests--root
   (file-name-directory (or load-file-name buffer-file-name)))
@@ -540,6 +542,641 @@
           (should (stringp (nth 2 row)))
           (should (herdr-claude-code-ide-mcp-tests--verification-p (nth 2 row)))
           (should (member (nth 3 row) '("captured" "planned" "pending" "blocked"))))))))
+
+(defun herdr-claude-code-ide-mcp-tests--t003-require-transport ()
+  (should (featurep 'herdr-claude-code-ide-mcp)))
+
+(defun herdr-claude-code-ide-mcp-tests--t003-agent (kind terminal-id root)
+  `((agent . ,kind)
+    (terminal_id . ,terminal-id)
+    (name . "review")
+    (pane_id . ,(concat terminal-id ":pane"))
+    (cwd . ,root)))
+
+(defun herdr-claude-code-ide-mcp-tests--t003-payload (fixture identifier)
+  (herdr-claude-code-ide-mcp-tests--value
+   'payload
+   (herdr-claude-code-ide-mcp-tests--exchange
+    identifier (herdr-claude-code-ide-mcp-tests--fixture fixture))))
+
+(defun herdr-claude-code-ide-mcp-tests--t003-initialize-result ()
+  (herdr-claude-code-ide-mcp-tests--value
+   'result
+   (herdr-claude-code-ide-mcp-tests--exchange
+    "initialize-result"
+    (herdr-claude-code-ide-mcp-tests--fixture "herdr-decided.json"))))
+
+(defun herdr-claude-code-ide-mcp-tests--t003-error (identifier)
+  (let* ((fixture (herdr-claude-code-ide-mcp-tests--fixture "herdr-decided.json"))
+         (errors (herdr-claude-code-ide-mcp-tests--value
+                  'errors
+                  (herdr-claude-code-ide-mcp-tests--exchange
+                   "json-rpc-errors" fixture))))
+    (herdr-claude-code-ide-mcp-tests--value
+     'response
+     (seq-find (lambda (entry)
+                 (equal (herdr-claude-code-ide-mcp-tests--value 'id entry)
+                        identifier))
+               errors))))
+
+(defun herdr-claude-code-ide-mcp-tests--t003-tool-schemas ()
+  (let ((fixture (herdr-claude-code-ide-mcp-tests--fixture "herdr-decided.json")))
+    (mapcar (lambda (name)
+              (herdr-claude-code-ide-mcp-tests--value
+               'schema
+               (herdr-claude-code-ide-mcp-tests--exchange
+                (concat "tool-schema/" name) fixture)))
+            '("openFile" "getDiagnostics" "close_tab" "openDiff"
+              "closeAllDiffTabs" "executeCode"))))
+
+(defun herdr-claude-code-ide-mcp-tests--t003-prepare (agent root &rest options)
+  (apply #'herdr-claude-code-ide-mcp-prepare
+         agent
+         (append (list :server-key (expand-file-name "herdr.sock" root)
+                       :project-root root
+                       :instance-id
+                       (herdr-claude-code-ide-mcp-tests--value 'terminal_id agent)
+                       :discovery-directory (expand-file-name "discovery" root))
+                 options)))
+
+(defun herdr-claude-code-ide-mcp-tests--t003-initialize (adapter client)
+  (herdr-claude-code-ide-mcp-receive
+   adapter client
+   (json-serialize
+    (herdr-claude-code-ide-mcp-tests--t003-payload
+     "client-originated.json" "initialize"))))
+
+(ert-deftest herdr-claude-code-ide-mcp-prepare-publishes-claude-discovery-before-launch ()
+  (herdr-claude-code-ide-mcp-tests--t003-require-transport)
+  (require 'herdr-agent)
+  (let* ((root (make-temp-file "herdr-claude-mcp-prepare" t))
+         (server-key (expand-file-name "herdr.sock" root))
+         (claude (herdr-claude-code-ide-mcp-tests--t003-agent "claude" "term-claude" root))
+         (operations nil)
+         (adapter nil)
+         (session nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'herdr-start-server-if-needed)
+                   (lambda (&rest _) t))
+                  ((symbol-function 'herdr-workspace-id)
+                   (lambda (&rest _) nil))
+                  ((symbol-function 'herdr-open-tab)
+                   (lambda (&rest _)
+                     (push 'pane-create operations)
+                     '((workspace . ((workspace_id . "work")))
+                       (tab . ((tab_id . "work:tab") (workspace_id . "work")))
+                       (root_pane . ((pane_id . "work:pane")
+                                     (tab_id . "work:tab")
+                                     (workspace_id . "work"))))))
+                  ((symbol-function 'herdr-api-agent-start)
+                   (lambda (&rest _)
+                     (push 'agent-start operations)
+                     (should adapter)
+                     (let ((lockfile (herdr-claude-code-ide-mcp-adapter-lockfile adapter)))
+                       (should (file-exists-p lockfile))
+                       (let ((lockfile-discovery
+                              (with-temp-buffer
+                                (insert-file-contents lockfile)
+                                (json-parse-buffer :object-type 'alist :array-type 'list
+                                                   :null-object nil :false-object :json-false))))
+                         (should (equal lockfile-discovery
+                                        (herdr-claude-code-ide-mcp-adapter-discovery adapter)))
+                         (should (equal (herdr-claude-code-ide-mcp-tests--keys
+                                         lockfile-discovery)
+                                        '("ideName" "pid" "transport" "workspaceFolders")))
+                         (should (= (herdr-claude-code-ide-mcp-tests--value
+                                     'pid lockfile-discovery)
+                                    (emacs-pid)))
+                         (should (equal (herdr-claude-code-ide-mcp-tests--value
+                                         'workspaceFolders lockfile-discovery)
+                                        (list root)))
+                         (let ((ide-name (herdr-claude-code-ide-mcp-tests--value
+                                          'ideName lockfile-discovery)))
+                           (should (string-match-p "review" ide-name))
+                           (should (string-match-p "term-claude" ide-name)))
+                         (should (equal (herdr-claude-code-ide-mcp-tests--value
+                                         'transport lockfile-discovery)
+                                        "ws"))))
+                     `((agent . ,(append claude '((interactive_ready . t)))))))
+                  ((symbol-function 'herdr-api-tab-close)
+                   (lambda (&rest _) nil))
+                  ((symbol-function 'herdr-api-workspace-list)
+                   (lambda () '((workspaces . ()))))
+                  ((symbol-function 'herdr-api-workspace-close)
+                   (lambda (&rest _) nil)))
+          (unwind-protect
+              (let ((herdr-agent-kind-adapters
+                     `(("claude" :prepare
+                        ,(lambda (&rest _)
+                           (push 'prepare operations)
+                           (setq adapter
+                                 (herdr-claude-code-ide-mcp-tests--t003-prepare
+                                  claude root))
+                           (herdr-claude-code-ide-mcp-adapter-environment adapter))))))
+                (setq session
+                      (herdr-agent-start-session "claude" "review"
+                                                 :server-key server-key
+                                                 :project-root root
+                                                 :attach nil))
+                (should (equal (nreverse operations)
+                               '(prepare pane-create agent-start)))
+                (let ((endpoint (herdr-claude-code-ide-mcp-adapter-endpoint adapter))
+                      (environment (herdr-claude-code-ide-mcp-adapter-environment adapter)))
+                  (should (string-match
+                           "\\`ws://127\\.0\\.0\\.1:\\([0-9]+\\)\\'" endpoint))
+                  (let ((port (match-string 1 endpoint)))
+                    (should (equal (herdr-claude-code-ide-mcp-tests--keys environment)
+                                   '("CLAUDE_CODE_SSE_PORT" "FORCE_CODE_TERMINAL" "TERM_PROGRAM")))
+                    (should (equal (herdr-claude-code-ide-mcp-tests--value
+                                    'CLAUDE_CODE_SSE_PORT environment) port))
+                    (should (equal (herdr-claude-code-ide-mcp-tests--value
+                                    'FORCE_CODE_TERMINAL environment) "true"))
+                    (should (equal (herdr-claude-code-ide-mcp-tests--value
+                                    'TERM_PROGRAM environment) "emacs")))))
+                (let (first-provisional second-provisional server-a server-b)
+                  (unwind-protect
+                      (progn
+                        (setq first-provisional
+                              (herdr-claude-code-ide-mcp-tests--t003-prepare
+                               (herdr-claude-code-ide-mcp-tests--t003-agent
+                                "claude" "pending" root)
+                               root)
+                              second-provisional
+                              (herdr-claude-code-ide-mcp-tests--t003-prepare
+                               (herdr-claude-code-ide-mcp-tests--t003-agent
+                                "claude" "pending" root)
+                               root))
+                        (should-not (eq first-provisional second-provisional))
+                        (should-not
+                         (equal (herdr-claude-code-ide-mcp-adapter-endpoint
+                                 first-provisional)
+                                (herdr-claude-code-ide-mcp-adapter-endpoint
+                                 second-provisional)))
+                        (let ((server-a-root (expand-file-name "server-a" root))
+                              (server-b-root (expand-file-name "server-b" root)))
+                          (make-directory server-a-root)
+                          (make-directory server-b-root)
+                          (setq server-a
+                                (herdr-claude-code-ide-mcp-tests--t003-prepare
+                                 (herdr-claude-code-ide-mcp-tests--t003-agent
+                                  "claude" "same-label" server-a-root)
+                                 server-a-root)
+                                server-b
+                                (herdr-claude-code-ide-mcp-tests--t003-prepare
+                                 (herdr-claude-code-ide-mcp-tests--t003-agent
+                                  "claude" "same-label" server-b-root)
+                                 server-b-root))
+                          (should-not
+                           (equal (herdr-claude-code-ide-mcp-tests--value
+                                   'ideName
+                                   (herdr-claude-code-ide-mcp-adapter-discovery server-a))
+                                  (herdr-claude-code-ide-mcp-tests--value
+                                   'ideName
+                                   (herdr-claude-code-ide-mcp-adapter-discovery server-b)))))
+                    (dolist (candidate
+                             (list first-provisional second-provisional server-a server-b))
+                      (when candidate
+                        (herdr-claude-code-ide-mcp-cleanup candidate))))))
+            (when session
+              (herdr-agent-detach session))))
+      (when adapter
+        (herdr-claude-code-ide-mcp-cleanup adapter))
+      (dolist (kind '("pi" "codex"))
+        (should-not
+         (herdr-claude-code-ide-mcp-tests--t003-prepare
+          (herdr-claude-code-ide-mcp-tests--t003-agent kind kind root) root)))
+      (delete-directory root t))))
+
+(ert-deftest herdr-claude-code-ide-mcp-preparation-closes-a-listener-after-publication-fails ()
+  (herdr-claude-code-ide-mcp-tests--t003-require-transport)
+  (let* ((root (make-temp-file "herdr-claude-mcp-publication" t))
+         (before (process-list))
+         leaked)
+    (unwind-protect
+        (cl-letf (((symbol-function 'write-region)
+                   (lambda (&rest _) (error "discovery publication failed"))))
+          (should-error
+           (herdr-claude-code-ide-mcp-tests--t003-prepare
+            (herdr-claude-code-ide-mcp-tests--t003-agent
+             "claude" "term-publication" root)
+            root))
+          (setq leaked (seq-filter #'process-live-p
+                                   (cl-set-difference (process-list) before)))
+          (should-not leaked))
+      (mapc #'delete-process leaked)
+      (delete-directory root t))))
+
+(ert-deftest herdr-claude-code-ide-mcp-websocket-invalid-initialize-responds-before-close ()
+  (herdr-claude-code-ide-mcp-tests--t003-require-transport)
+  (let* ((root (make-temp-file "herdr-claude-mcp-websocket" t))
+         (original-features features)
+         (server 'server)
+         (client 'client)
+         (open nil)
+         (message nil)
+         (events nil)
+         (adapter nil))
+    (unwind-protect
+        (progn
+          (setq features (cons 'websocket features))
+          (load (expand-file-name "herdr-claude-code-ide-mcp.el"
+                                  herdr-claude-code-ide-mcp-tests--root)
+                nil nil t)
+          (cl-letf (((symbol-function 'herdr-claude-code-ide-mcp--port)
+                     (lambda (_server) 4242))
+                    ((symbol-function 'websocket-server)
+                     (lambda (&rest options)
+                       (when (not (keywordp (car options)))
+                         (setq options (cdr options)))
+                       (setq open (plist-get options :on-open)
+                             message (plist-get options :on-message))
+                       server))
+                    ((symbol-function 'websocket-frame-text)
+                     (lambda (frame) frame))
+                    ((symbol-function 'websocket-send-text)
+                     (lambda (socket text)
+                       (push (list 'send socket text) events)))
+                    ((symbol-function 'websocket-close)
+                     (lambda (socket &rest _)
+                       (push (list 'close socket) events)))
+                    ((symbol-function 'websocket-server-close)
+                     (lambda (socket &rest _)
+                       (push (list 'server-close socket) events))))
+            (unwind-protect
+                (progn
+                  (setq adapter
+                        (herdr-claude-code-ide-mcp-tests--t003-prepare
+                         (herdr-claude-code-ide-mcp-tests--t003-agent
+                          "claude" "term-websocket" root) root))
+                  (funcall open client)
+                  (funcall message client
+                           "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"initialize\",\"params\":null}")
+                  (setq events (nreverse events))
+                  (should (equal (mapcar #'car events) '(send close)))
+                  (should (string-match-p "-32602" (nth 2 (car events)))))
+              (when adapter
+                (herdr-claude-code-ide-mcp-cleanup adapter)))))
+      (setq features original-features)
+      (delete-directory root t))))
+
+(ert-deftest herdr-claude-code-ide-mcp-dispatches-fixture-json-rpc-and-errors ()
+  (herdr-claude-code-ide-mcp-tests--t003-require-transport)
+  (let* ((root (make-temp-file "herdr-claude-mcp-dispatch" t))
+         (schemas (herdr-claude-code-ide-mcp-tests--t003-tool-schemas))
+         (seen nil)
+         (adapter nil))
+    (unwind-protect
+        (progn
+          (setq adapter
+                (herdr-claude-code-ide-mcp-tests--t003-prepare
+                 (herdr-claude-code-ide-mcp-tests--t003-agent
+                  "claude" "term-dispatch" root)
+                 root
+                 :tool-list (lambda () schemas)
+                 :tool-call (lambda (_adapter name arguments)
+                              (setq seen (list name arguments))
+                              '((content . ((type . "text") (text . "handled")))))))
+          (herdr-claude-code-ide-mcp-terminal-attached adapter)
+          (let ((client (herdr-claude-code-ide-mcp-client-connect adapter)))
+            (let ((response
+                   (herdr-claude-code-ide-mcp-tests--t003-initialize adapter client)))
+              (should (equal (herdr-claude-code-ide-mcp-tests--keys response)
+                             '("id" "jsonrpc" "result")))
+              (should (= (herdr-claude-code-ide-mcp-tests--value 'id response) 0))
+              (should (equal (herdr-claude-code-ide-mcp-tests--value 'jsonrpc response)
+                             "2.0"))
+              (should (equal (herdr-claude-code-ide-mcp-tests--value 'result response)
+                             (herdr-claude-code-ide-mcp-tests--t003-initialize-result))))
+            (should-not
+             (herdr-claude-code-ide-mcp-receive
+              adapter client
+              (json-serialize
+               (herdr-claude-code-ide-mcp-tests--t003-payload
+                "client-originated.json" "ide_connected"))))
+            (let ((response
+                   (herdr-claude-code-ide-mcp-receive
+                    adapter client
+                    (json-serialize
+                     (herdr-claude-code-ide-mcp-tests--t003-payload
+                      "client-originated.json" "tools/list")))))
+              (should (equal (herdr-claude-code-ide-mcp-tests--value
+                              'tools
+                              (herdr-claude-code-ide-mcp-tests--value 'result response))
+                             schemas)))
+            (dolist (expectation '(("prompts/list" prompts)
+                                   ("resources/list" resources)))
+              (let ((response
+                     (herdr-claude-code-ide-mcp-receive
+                      adapter client
+                      (json-serialize
+                       (herdr-claude-code-ide-mcp-tests--t003-payload
+                        "client-originated.json" (car expectation))))))
+                (should (herdr-claude-code-ide-mcp-tests--has-key-p 'result response))
+                (let ((result (herdr-claude-code-ide-mcp-tests--value 'result response)))
+                  (should (herdr-claude-code-ide-mcp-tests--has-key-p
+                           (cadr expectation) result))
+                  (should (equal (herdr-claude-code-ide-mcp-tests--value
+                                  (cadr expectation) result)
+                                 '())))))
+            (let ((response
+                   (herdr-claude-code-ide-mcp-receive
+                    adapter client
+                    (json-serialize
+                     (herdr-claude-code-ide-mcp-tests--t003-payload
+                      "client-originated.json" "tools/call/openFile")))))
+              (should (= (herdr-claude-code-ide-mcp-tests--value 'id response) 10))
+              (should (equal seen
+                             (list "openFile"
+                                   '((filePath . "/tmp/t001-no-file"))))))
+            (should (equal (herdr-claude-code-ide-mcp-receive adapter client "{")
+                           (herdr-claude-code-ide-mcp-tests--t003-error "parse-error")))
+            (should
+             (equal
+              (herdr-claude-code-ide-mcp-receive
+               adapter client
+               (json-serialize
+                '((jsonrpc . "2.0") (id . 8) (method . "herdr/unknown"))))
+              (herdr-claude-code-ide-mcp-tests--t003-error "unknown-method")))))
+      (when adapter
+        (herdr-claude-code-ide-mcp-cleanup adapter))
+      (delete-directory root t))))
+
+(ert-deftest herdr-claude-code-ide-mcp-retains-startup-initialization-and-rolls-it-back ()
+  (herdr-claude-code-ide-mcp-tests--t003-require-transport)
+  (let* ((root (make-temp-file "herdr-claude-mcp-startup" t))
+         (first nil)
+         (second nil))
+    (unwind-protect
+        (progn
+          (setq first
+                (herdr-claude-code-ide-mcp-tests--t003-prepare
+                 (herdr-claude-code-ide-mcp-tests--t003-agent
+                  "claude" "term-starting" root) root))
+          (let ((client (herdr-claude-code-ide-mcp-client-connect first)))
+            (herdr-claude-code-ide-mcp-tests--t003-initialize first client)
+            (should (eq (herdr-claude-code-ide-mcp-adapter-state first) 'starting))
+            (should (eq (herdr-claude-code-ide-mcp-adapter-current-client first) client))
+            (herdr-claude-code-ide-mcp-client-close first client)
+            (should (eq (herdr-claude-code-ide-mcp-adapter-state first) 'starting))
+            (should-not (herdr-claude-code-ide-mcp-adapter-current-client first))
+            (should-not (herdr-claude-code-ide-mcp-adapter-reconnect-deadline first))
+            (herdr-claude-code-ide-mcp-terminal-attached first)
+            (should (eq (herdr-claude-code-ide-mcp-adapter-state first)
+                        'waiting-for-client)))
+          (setq second
+                (herdr-claude-code-ide-mcp-tests--t003-prepare
+                 (herdr-claude-code-ide-mcp-tests--t003-agent
+                  "claude" "term-rollback" root) root))
+          (let ((lockfile (herdr-claude-code-ide-mcp-adapter-lockfile second))
+                (client (herdr-claude-code-ide-mcp-client-connect second)))
+            (herdr-claude-code-ide-mcp-tests--t003-initialize second client)
+            (herdr-claude-code-ide-mcp-agent-released second)
+            (should (eq (herdr-claude-code-ide-mcp-adapter-state second) 'stopped))
+            (should-not (herdr-claude-code-ide-mcp-adapter-endpoint-live-p second))
+            (should-not (file-exists-p lockfile))
+            (should-not (herdr-claude-code-ide-mcp-adapter-clients second))))
+      (when first
+        (herdr-claude-code-ide-mcp-cleanup first))
+      (when second
+        (herdr-claude-code-ide-mcp-cleanup second))
+      (delete-directory root t))))
+
+(ert-deftest herdr-claude-code-ide-mcp-adoption-keeps-project-clients-distinct ()
+  (herdr-claude-code-ide-mcp-tests--t003-require-transport)
+  (require 'herdr-agent)
+  (let* ((root (make-temp-file "herdr-claude-mcp-adopt" t))
+         (server-key (expand-file-name "herdr.sock" root))
+         (commands nil)
+         (first-session nil)
+         (second-session nil)
+         (first nil)
+         (second nil))
+    (unwind-protect
+        (let ((mcp-adopt (symbol-function 'herdr-claude-code-ide-mcp-adopt))
+              (adapters nil))
+          (cl-letf (((symbol-function 'herdr-api-pane-send-text)
+                     (lambda (pane-id text)
+                       (push (list pane-id text) commands)))
+                    ((symbol-function 'herdr-claude-code-ide-mcp-adopt)
+                     (lambda (session &rest options)
+                       (let ((adapter (apply mcp-adopt session options)))
+                         (push adapter adapters)
+                         adapter))))
+            (setq first-session
+                  (herdr-agent-adopt
+                   (herdr-claude-code-ide-mcp-tests--t003-agent
+                    "claude" "term-first" root)
+                   :server-key server-key :attach nil))
+            (setq second-session
+                  (herdr-agent-adopt
+                   (herdr-claude-code-ide-mcp-tests--t003-agent
+                    "claude" "term-second" root)
+                   :server-key server-key :attach nil))
+            (should (= (length adapters) 2))
+            (setq first (nth 1 adapters)
+                  second (car adapters))
+            (should (eq (herdr-claude-code-ide-mcp-adapter-state first)
+                        'waiting-for-client))
+            (should (eq (herdr-claude-code-ide-mcp-adapter-state second)
+                        'waiting-for-client))
+            (should-not commands)
+            (let ((reused
+                   (herdr-claude-code-ide-mcp-adopt
+                    first-session :takeover t :project-root root
+                    :discovery-directory (expand-file-name "first" root))))
+              (should (eq first reused))
+              (should (herdr-claude-code-ide-mcp-adapter-endpoint-live-p reused))
+              (should (equal commands
+                             '(("term-first:pane" "/ide\n"))))
+              (should (eq first
+                          (herdr-claude-code-ide-mcp-adopt
+                           first-session :takeover nil :project-root root
+                           :discovery-directory (expand-file-name "first" root)))))
+            (should (equal commands '(("term-first:pane" "/ide\n"))))
+            (should-not (equal (herdr-claude-code-ide-mcp-adapter-endpoint first)
+                               (herdr-claude-code-ide-mcp-adapter-endpoint second)))
+            (should-not (equal (herdr-claude-code-ide-mcp-adapter-instance-name first)
+                               (herdr-claude-code-ide-mcp-adapter-instance-name second)))
+            (let ((client (herdr-claude-code-ide-mcp-client-connect first)))
+              (herdr-claude-code-ide-mcp-tests--t003-initialize first client)
+              (should (eq (herdr-claude-code-ide-mcp-adapter-state first) 'connected))
+              (should (eq (herdr-claude-code-ide-mcp-adapter-state second)
+                          'waiting-for-client)))))
+      (when first
+        (herdr-claude-code-ide-mcp-cleanup first))
+      (when second
+        (herdr-claude-code-ide-mcp-cleanup second))
+      (when first-session
+        (herdr-agent-detach first-session))
+      (when second-session
+        (herdr-agent-detach second-session))
+      (delete-directory root t))))
+
+(ert-deftest herdr-claude-code-ide-mcp-only-arms-reconnect-after-current-disconnect ()
+  (herdr-claude-code-ide-mcp-tests--t003-require-transport)
+  (let* ((root (make-temp-file "herdr-claude-mcp-reconnect" t))
+         (adapter nil))
+    (unwind-protect
+        (progn
+          (setq adapter
+                (herdr-claude-code-ide-mcp-tests--t003-prepare
+                 (herdr-claude-code-ide-mcp-tests--t003-agent
+                  "claude" "term-reconnect" root) root))
+          (herdr-claude-code-ide-mcp-terminal-attached adapter)
+          (should (eq (herdr-claude-code-ide-mcp-adapter-state adapter)
+                      'waiting-for-client))
+          (should-not (herdr-claude-code-ide-mcp-adapter-reconnect-deadline adapter))
+          (let ((client (herdr-claude-code-ide-mcp-client-connect adapter)))
+            (herdr-claude-code-ide-mcp-tests--t003-initialize adapter client)
+            (herdr-claude-code-ide-mcp-track-pending
+             adapter client "old-generation-request" "old-generation-diff")
+            (herdr-claude-code-ide-mcp-client-close adapter client)
+            (should (eq (herdr-claude-code-ide-mcp-adapter-state adapter)
+                        'waiting-for-client))
+            (should (= (herdr-claude-code-ide-mcp-adapter-reconnect-deadline-seconds
+                        adapter)
+                       30))
+            (should (equal (herdr-claude-code-ide-mcp-adapter-cancelled-work adapter)
+                           '((requests . ("old-generation-request"))
+                             (diffs . ("old-generation-diff"))))))
+      (when adapter
+        (herdr-claude-code-ide-mcp-cleanup adapter))
+      (delete-directory root t)))))
+
+(ert-deftest herdr-claude-code-ide-mcp-supersedes-only-successful-live-candidates ()
+  (herdr-claude-code-ide-mcp-tests--t003-require-transport)
+  (let* ((root (make-temp-file "herdr-claude-mcp-supersede" t))
+         (schemas (herdr-claude-code-ide-mcp-tests--t003-tool-schemas))
+         (tool-calls nil)
+         (adapter nil))
+    (unwind-protect
+        (progn
+          (setq adapter
+                (herdr-claude-code-ide-mcp-tests--t003-prepare
+                 (herdr-claude-code-ide-mcp-tests--t003-agent
+                  "claude" "term-supersede" root) root
+                 :tool-list (lambda () (list (car schemas)))
+                 :tool-call (lambda (_adapter name arguments)
+                              (push (list name arguments) tool-calls)
+                              '((content . ((type . "text") (text . "handled")))))))
+          (herdr-claude-code-ide-mcp-terminal-attached adapter)
+          (let ((first (herdr-claude-code-ide-mcp-client-connect adapter)))
+            (herdr-claude-code-ide-mcp-tests--t003-initialize adapter first)
+            (herdr-claude-code-ide-mcp-track-pending
+             adapter first "old-generation-request" "old-generation-diff")
+            (let ((failed (herdr-claude-code-ide-mcp-client-connect adapter)))
+              (should (equal
+                       (herdr-claude-code-ide-mcp-receive
+                        adapter failed
+                        (json-serialize
+                         '((jsonrpc . "2.0") (id . 7) (method . "initialize")
+                           (params . nil))))
+                       (herdr-claude-code-ide-mcp-tests--t003-error "invalid-params")))
+              (should (eq (herdr-claude-code-ide-mcp-adapter-current-client adapter)
+                          first))
+              (should-not (herdr-claude-code-ide-mcp-client-open-p failed)))
+            (let ((replacement (herdr-claude-code-ide-mcp-client-connect adapter)))
+              (herdr-claude-code-ide-mcp-tests--t003-initialize adapter replacement)
+              (should (eq (herdr-claude-code-ide-mcp-adapter-state adapter) 'connected))
+              (should (eq (herdr-claude-code-ide-mcp-adapter-current-client adapter)
+                          replacement))
+              (should (= (herdr-claude-code-ide-mcp-adapter-client-generation adapter) 2))
+              (should-not (herdr-claude-code-ide-mcp-client-open-p first))
+              (should (equal (herdr-claude-code-ide-mcp-adapter-cancelled-work adapter)
+                             '((requests . ("old-generation-request"))
+                               (diffs . ("old-generation-diff")))))
+              (should-not
+               (herdr-claude-code-ide-mcp-receive
+                adapter first
+                (json-serialize
+                 (herdr-claude-code-ide-mcp-tests--t003-payload
+                  "client-originated.json" "tools/call/openFile"))))
+              (should-not tool-calls)
+              (herdr-claude-code-ide-mcp-client-close adapter first)
+              (should (eq (herdr-claude-code-ide-mcp-adapter-current-client adapter)
+                          replacement))
+              (should (= (herdr-claude-code-ide-mcp-adapter-client-generation adapter) 2))))
+      (when adapter
+        (herdr-claude-code-ide-mcp-cleanup adapter))
+      (delete-directory root t)))))
+
+(ert-deftest herdr-claude-code-ide-mcp-resolves-deadline-races-and-last-cleanup ()
+  (herdr-claude-code-ide-mcp-tests--t003-require-transport)
+  (let* ((root (make-temp-file "herdr-claude-mcp-cleanup" t))
+         (first nil)
+         (second nil)
+         (first-deadline nil)
+         (second-deadline nil))
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (_seconds _repeat callback &rest arguments)
+                 (let ((deadline (lambda () (apply callback arguments))))
+                   (if first-deadline
+                       (setq second-deadline deadline)
+                     (setq first-deadline deadline))
+                   deadline)))
+              ((symbol-function 'cancel-timer)
+               (lambda (&rest _) nil)))
+      (unwind-protect
+          (progn
+            (setq first
+                  (herdr-claude-code-ide-mcp-tests--t003-prepare
+                   (herdr-claude-code-ide-mcp-tests--t003-agent
+                    "claude" "term-race-first" root) root))
+            (setq second
+                  (herdr-claude-code-ide-mcp-tests--t003-prepare
+                   (herdr-claude-code-ide-mcp-tests--t003-agent
+                    "claude" "term-race-second" root) root))
+            (dolist (adapter (list first second))
+              (herdr-claude-code-ide-mcp-terminal-attached adapter)
+              (let ((client (herdr-claude-code-ide-mcp-client-connect adapter)))
+                (herdr-claude-code-ide-mcp-tests--t003-initialize adapter client)
+                (herdr-claude-code-ide-mcp-client-close adapter client)))
+            (let ((replacement (herdr-claude-code-ide-mcp-client-connect first)))
+              (herdr-claude-code-ide-mcp-tests--t003-initialize first replacement)
+              (should first-deadline)
+              (funcall first-deadline)
+              (should (eq (herdr-claude-code-ide-mcp-adapter-state first) 'connected))
+              (should (eq (herdr-claude-code-ide-mcp-adapter-current-client first)
+                          replacement))
+              (should (herdr-claude-code-ide-mcp-client-open-p replacement))
+              (should-not (herdr-claude-code-ide-mcp-adapter-reconnect-deadline first)))
+            (should second-deadline)
+            (let ((second-lockfile (herdr-claude-code-ide-mcp-adapter-lockfile second)))
+              (funcall second-deadline)
+              (should-not
+               (gethash (herdr-claude-code-ide-mcp-adapter-session-key second)
+                        herdr-claude-code-ide-mcp--adapters))
+              (should (eq (herdr-claude-code-ide-mcp-adapter-state second) 'stopped))
+              (should-not (herdr-claude-code-ide-mcp-adapter-endpoint-live-p second))
+              (should-not (file-exists-p second-lockfile))
+              (should-not (herdr-claude-code-ide-mcp-adapter-reconnect-deadline second))
+              (should-not (herdr-claude-code-ide-mcp-adapter-clients second)))
+            (let ((late (herdr-claude-code-ide-mcp-client-connect second)))
+              (should-not
+               (herdr-claude-code-ide-mcp-receive
+                second late
+                (json-serialize
+                 (herdr-claude-code-ide-mcp-tests--t003-payload
+                  "client-originated.json" "initialize"))))
+              (should-not (herdr-claude-code-ide-mcp-client-open-p late)))
+            (let ((first-lockfile (herdr-claude-code-ide-mcp-adapter-lockfile first))
+                  (second-lockfile (herdr-claude-code-ide-mcp-adapter-lockfile second)))
+              (herdr-claude-code-ide-mcp-cleanup first)
+              (should-not (herdr-claude-code-ide-mcp-global-hooks-installed-p))
+              (herdr-claude-code-ide-mcp-cleanup second)
+              (dolist (adapter (list first second))
+                (should (eq (herdr-claude-code-ide-mcp-adapter-state adapter) 'stopped))
+                (should-not (herdr-claude-code-ide-mcp-adapter-endpoint-live-p adapter))
+                (should-not (herdr-claude-code-ide-mcp-adapter-reconnect-deadline adapter))
+                (should-not (herdr-claude-code-ide-mcp-adapter-clients adapter)))
+              (should-not (file-exists-p first-lockfile))
+              (should-not (file-exists-p second-lockfile))
+              (should-not (herdr-claude-code-ide-mcp-global-hooks-installed-p))))
+        (when first
+          (herdr-claude-code-ide-mcp-cleanup first))
+        (when second
+          (herdr-claude-code-ide-mcp-cleanup second))
+        (delete-directory root t)))))
 
 (provide 'herdr-claude-code-ide-mcp-tests)
 ;;; herdr-claude-code-ide-mcp-tests.el ends here
