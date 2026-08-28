@@ -1,0 +1,26 @@
+[
+  {
+    "kind": "claude",
+    "name": "Claude Code",
+    "version": "2.1.235",
+    "start": [],
+    "continue": ["--continue"],
+    "resume": ["--resume", "ID"]
+  },
+  {
+    "kind": "pi",
+    "name": "Pi",
+    "version": "0.82.1",
+    "start": [],
+    "continue": ["--continue"],
+    "resume": ["--session", "PATH-OR-ID"]
+  },
+  {
+    "kind": "codex",
+    "name": "Codex",
+    "version": "0.148.0",
+    "start": [],
+    "continue": ["resume", "--last"],
+    "resume": ["resume", "ID"]
+  }
+]

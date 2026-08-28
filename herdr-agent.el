@@ -445,5 +445,160 @@
         (unless errors (herdr-agent--unregister session)))))
   session)
 
+(defun herdr-agent--native-args (kind action &optional reference)
+  "Return arguments for native KIND ACTION and optional REFERENCE."
+  (pcase (list kind action)
+    (`("claude" start) nil)
+    (`("pi" start) nil)
+    (`("codex" start) nil)
+    (`("claude" continue) '("--continue"))
+    (`("pi" continue) '("--continue"))
+    (`("codex" continue) '("resume" "--last"))
+    (`("claude" resume) (list "--resume" reference))
+    (`("pi" resume) (list "--session" reference))
+    (`("codex" resume) (list "resume" reference))
+    (_ (signal 'herdr-error (list (format "unsupported agent kind %s" kind))))))
+
+(cl-defun herdr-agent-start
+    (kind name &key server-key project-root workspace (attach t) timeout-ms)
+  "Start native KIND named NAME."
+  (herdr-agent-start-session
+   kind name :server-key server-key :project-root project-root :workspace workspace
+   :args (herdr-agent--native-args kind 'start) :attach attach :timeout-ms timeout-ms))
+
+(cl-defun herdr-agent-continue
+    (kind name &key server-key project-root workspace (attach t) timeout-ms)
+  "Continue the most recent native KIND session named NAME."
+  (herdr-agent-start-session
+   kind name :server-key server-key :project-root project-root :workspace workspace
+   :args (herdr-agent--native-args kind 'continue) :attach attach :timeout-ms timeout-ms))
+
+(cl-defun herdr-agent-resume
+    (kind name reference &key server-key project-root workspace (attach t) timeout-ms)
+  "Resume native KIND session REFERENCE named NAME."
+  (unless (and (stringp reference) (> (length reference) 0))
+    (user-error "A session reference is required"))
+  (herdr-agent-start-session
+   kind name :server-key server-key :project-root project-root :workspace workspace
+   :args (herdr-agent--native-args kind 'resume reference)
+   :attach attach :timeout-ms timeout-ms))
+
+(defun herdr-agent--in-project-p (agent project)
+  "Return non-nil when AGENT belongs to PROJECT."
+  (or (null project)
+      (when-let* ((cwd (alist-get 'cwd agent)))
+        (string-prefix-p (file-name-as-directory (expand-file-name project))
+                         (file-name-as-directory (expand-file-name cwd))))))
+
+(defun herdr-agent-resolve-target (target agents project mru)
+  "Return TARGET from AGENTS, or the project-local MRU target."
+  (if target
+      (or (cl-find target agents :key (lambda (agent) (alist-get 'terminal_id agent))
+                   :test #'equal)
+          (user-error "Unknown agent: %s" target))
+    (or (cl-loop for terminal in mru
+                 for agent = (cl-find terminal agents
+                                      :key (lambda (item) (alist-get 'terminal_id item))
+                                      :test #'equal)
+                 when (and agent (herdr-agent--in-project-p agent project))
+                 return agent)
+        (user-error "No recent agent for this project"))))
+
+(defun herdr-agent--current-target ()
+  "Return the agent target attached to the current buffer."
+  (gethash (current-buffer) herdr-agent--buffers))
+
+(defun herdr-agent--visible-target ()
+  "Return the first visible target for the current project."
+  (cl-loop for key in (gethash (herdr-agent--project default-directory)
+                               herdr-agent--projects)
+           for session = (gethash key herdr-agent--sessions)
+           for buffer = (and session (herdr-agent-session-buffer session))
+           when (and (herdr-agent--live-session-p session)
+                     (buffer-live-p buffer)
+                     (equal key (gethash buffer herdr-agent--buffers))
+                     (get-buffer-window buffer t))
+           return key))
+
+(defun herdr-agent--project-target ()
+  "Return the most recent live target for the current project."
+  (cl-find-if (lambda (key)
+                (when-let* ((session (gethash key herdr-agent--sessions)))
+                  (herdr-agent--live-session-p session)))
+              (gethash (herdr-agent--project default-directory) herdr-agent--projects)))
+
+(defun herdr-agent--public-target (target)
+  "Return TARGET's server and terminal identity."
+  (or (cond
+       ((consp target) target)
+       (target (cons (herdr-server-key) target))
+       ((herdr-agent--current-target))
+       ((herdr-agent--visible-target))
+       ((herdr-agent--project-target)))
+      (user-error "No recent agent for this project")))
+
+(defun herdr-agent-list ()
+  "Return the agents reported by herdr."
+  (herdr-agent--with-server (herdr-server-key)
+    (alist-get 'agents (herdr-api-agent-list))))
+
+(defun herdr-agent-switch (target)
+  "Focus TARGET in herdr and show its terminal buffer."
+  (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
+    (herdr-agent--with-server server-key
+      (herdr-api-agent-focus terminal)
+      (if-let* ((buffer (herdr-terminal-buffer terminal server-key)))
+          (herdr-display-buffer buffer)
+        (when-let* ((agent (alist-get 'agent (herdr-api-agent-get terminal))))
+          (herdr-attach-entry (cons (cons 'server_key server-key) agent)))))))
+
+(defun herdr-agent-rename (target name)
+  "Rename TARGET to NAME."
+  (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
+    (herdr-agent--with-server server-key
+      (herdr-api-agent-rename terminal :name name))))
+
+(defun herdr-agent-status (target)
+  "Return the status of TARGET."
+  (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
+    (herdr-agent--with-server server-key
+      (alist-get 'agent (herdr-api-agent-get terminal)))))
+
+(defun herdr-agent-stop (target)
+  "Stop TARGET by closing its pane."
+  (unless target
+    (user-error "An agent target is required"))
+  (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
+    (herdr-agent--with-server server-key
+      (when-let* ((agent (alist-get 'agent (herdr-api-agent-get terminal)))
+                  (pane-id (alist-get 'pane_id agent)))
+        (herdr-api-pane-close pane-id)))))
+
+(defun herdr-agent-stop-all ()
+  "Stop all agents reported by herdr."
+  (let ((server-key (herdr-server-key)))
+    (herdr-agent--with-server server-key
+      (dolist (agent (herdr-agent-list))
+        (when-let* ((pane-id (alist-get 'pane_id agent)))
+          (herdr-api-pane-close pane-id))))))
+
+(defun herdr-agent-prompt (target text)
+  "Send TEXT to TARGET through herdr's agent API."
+  (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
+    (herdr-agent--with-server server-key
+      (herdr-api-agent-prompt terminal text))))
+
+(defun herdr-agent-escape (target)
+  "Send escape to TARGET through herdr's agent API."
+  (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
+    (herdr-agent--with-server server-key
+      (herdr-api-agent-send-keys '("esc") terminal))))
+
+(defun herdr-agent-newline (target)
+  "Send return to TARGET through herdr's agent API."
+  (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
+    (herdr-agent--with-server server-key
+      (herdr-api-agent-send-keys '("enter") terminal))))
+
 (provide 'herdr-agent)
 ;;; herdr-agent.el ends here
