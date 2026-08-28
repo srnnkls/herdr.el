@@ -1,239 +1,77 @@
 # herdr.el
 
-Emacs client for [herdr](https://herdr.dev), the terminal workspace manager for
-coding agents. Talks to herdr's newline-delimited JSON socket API, attaches
-server-owned terminals into Emacs terminal buffers, and bridges herdr sessions
-with `claude-code-ide.el` in both directions.
-
-## Layers
-
-| File | What it is |
-| --- | --- |
-| `herdr-core.el` | socket client — `herdr-request`, `herdr-subscribe`, errors, customs |
-| `herdr-api.el` | one wrapper per API method, generated from the installed herdr's schema |
-| `herdr.el` | attaching terminals, completion, interactive commands |
-| `herdr-claude-code-ide.el` | claude-code-ide bridge |
+`herdr.el` is an Emacs 29.1+ client for [herdr](https://herdr.dev), the persistent terminal workspace manager. Herdr owns the agent process, terminal, tab, and workspace; Emacs attaches a terminal view and, for Claude, provides the native IDE protocol endpoint.
 
 ## Install
 
+Install `websocket` 1.12+, `web-server` 0.1.2+, and `transient` 0.9.0+ from GNU ELPA or another configured archive, then load the package directory:
+
 ```elisp
 (use-package herdr
-  :load-path "~/projects/herdr.el"
-  :commands (herdr-attach-agent herdr-attach-pane))
+  :load-path "~/src/herdr.el"
+  :commands (herdr-attach-agent herdr-attach-pane herdr-jump))
+
+(use-package herdr-agent-transient
+  :after herdr
+  :commands herdr-agent-transient)
 
 (use-package herdr-claude-code-ide
-  :after claude-code-ide
-  :config (herdr-claude-code-ide-mode 1))
+  :after herdr
+  :demand t
+  :commands (herdr-claude-code-ide-adopt
+             herdr-claude-code-ide-auto-adopt-mode
+             herdr-claude-code-ide-connect-ide))
 ```
 
-Terminal buffers use ghostel, vterm or eat — whichever is installed, or set
-`herdr-terminal-backend`.
+Terminal attachment requires one of `ghostel`, `vterm`, or `eat`; set `herdr-terminal-backend` when automatic selection is not suitable.
 
-## Attaching a terminal
+## Agent workflows
 
-`M-x herdr-attach-agent` lists the agents herdr is running and opens the chosen
-one in an Emacs terminal buffer. `M-x herdr-attach-pane` does the same for any
-pane. Input goes straight to the herdr terminal; killing the buffer detaches
-and leaves the process running.
+`herdr-agent.el` is the lifecycle surface for Claude Code, Pi, and Codex. `M-x herdr-agent-transient` provides the same operations interactively.
 
-With the claude-code-ide bridge loaded, picking a claude agent opens a real
-claude-code-ide session around it instead of a bare terminal. Anything else in
-`herdr-attach-functions` gets the same chance to claim an entry first; the plain
-terminal attach runs when they all decline.
-
-Attached terminals open in a dedicated side window (`herdr-window-side`,
-`herdr-window-width`, `herdr-window-height`), each in its own slot so several
-of them sit next to each other. Slots start at `herdr-window-slot-base`, high
-enough to stay clear of other side-window users such as claude-code-ide. Set
-`herdr-display-buffer-action` for a different placement, or
-`herdr-use-side-window` to nil to hand placement over to `display-buffer-alist`
-or a popup framework.
-
-Only one writable client owns a terminal at a time, so attaching takes input
-ownership by default (`herdr-attach-takeover`). The herdr UI keeps rendering
-the same terminal, read-only, until it takes ownership back.
-
-## One herdr server, or one of your own
-
-`herdr-session` picks which server Emacs talks to:
-
-| Value | Meaning |
+| Operation | Meaning |
 | --- | --- |
-| `shared` (default) | the session a bare `herdr` attaches to, so Emacs sessions sit next to hand-run agents in the herdr UI |
-| `emacs` | a session of its own, named by `herdr-emacs-session-name` — reach it from a terminal with `herdr --session emacs` |
-| a string | that session by name |
+| start | Creates a herdr tab and starts a new Claude, Pi, or Codex agent. |
+| continue | Starts the harness's most recent session in a new herdr tab. |
+| resume | Starts the named harness session reference in a new herdr tab. |
+| adopt | Attaches an already-running herdr agent to Emacs without starting a second CLI. Claude adoption also prepares its native IDE endpoint. |
+| detach | Killing an attached terminal buffer releases only the Emacs attachment. The herdr pane and agent continue. |
+| stop | Closes one agent's herdr pane, ending that agent. |
+| stop all | Closes every reported agent pane on the selected herdr server. |
 
-A session is a whole server namespace: its own socket, state directory and
-persistence. Emacs passes the choice to every herdr command it runs, so an
-attached terminal reaches the same server the API calls do. `herdr-socket-path`
-overrides the lot with a raw socket path when you know exactly which server you
-mean.
+Use `herdr-agent-start`, `herdr-agent-continue`, and `herdr-agent-resume` from Lisp. `herdr-agent-stop` requires an explicit target; `herdr-agent-stop-all` operates on the current server. `herdr-attach-agent`, `herdr-attach-pane`, and `herdr-jump` attach existing work. `herdr-attach-takeover` controls whether Emacs claims terminal input.
 
-Sessions of your own start empty, and tabs need a workspace, so `herdr-new-tab`
-opens one in a session that has none.
+## Claude IDE
 
-### Routing projects to sessions
+Loading `herdr-claude-code-ide` installs the Claude attachment adapter. A Claude entry with a working directory and terminal ID is adopted through `herdr-claude-code-ide-adopt`; set `herdr-claude-code-ide-adopt-on-attach` to nil to retain a plain generic attachment. Enable `herdr-claude-code-ide-auto-adopt-mode` to adopt detected Claude agents whose directories pass `herdr-claude-code-ide-auto-adopt-predicate`.
 
-Work and private projects can live on different herdr servers. Assignment is
-explicit and per project:
+Each adopted Claude session gets a loopback WebSocket MCP endpoint and discovery lockfile under `~/.claude/ide`. `herdr-claude-code-ide-connect-on-adopt` controls whether `/ide` is sent while the terminal is owned by Emacs: `idle` is the default, `t` always requests connection, and nil never does. `M-x herdr-claude-code-ide-connect-ide` requests it later.
 
-```elisp
-M-x herdr-assign-project-session      ; assigns the current project, saved
-```
+The endpoint exposes editor context, selected-file mentions, diagnostics, file opening, and editable diffs. Diff tabs remain Emacs-owned; closing or accepting them does not stop the agent. The optional loopback HTTP MCP service is available through `herdr-claude-code-ide-mcp-server` and `herdr-claude-code-ide-emacs-tools`; it only accepts `127.0.0.1` contexts.
 
-Assignments made that way are written to `herdr-state-file`, an alist in your
-setup's state directory — point it at a durable one, since
-`locate-user-emacs-file` lands in the cache directory under Doom:
+`executeCode` evaluates Emacs Lisp only when explicitly enabled by the package's tools configuration. It should remain disabled for untrusted sessions. Raw protocol logging is opt-in through `herdr-claude-code-ide-raw-protocol-logging`; its buffer can expose prompts, selected text, paths, diagnostics, and tool payloads. Disable it after debugging and do not share its contents casually.
 
-```elisp
-(setq herdr-state-file (file-name-concat doom-state-dir "herdr/project-sessions.eld"))
-```
+## Ownership boundaries
 
-`C-u` assigns for this Emacs only, writing nothing. Assignments you'd rather
-keep in configuration go in `herdr-project-sessions`, an alist of
-`(PROJECT-ROOT . SESSION)`, and those win over the stored ones.
+Herdr is the authority for process lifetime and terminal input ownership. Emacs owns attached buffers, MCP transport, editor context, and diff views. Detaching or closing an Emacs buffer never stops a herdr agent; use stop to end it. Claude IDE modules adapt the generic lifecycle and do not launch or manage an Emacs-owned fallback CLI.
 
-The project root comes from `herdr-project-root-function`, which asks projectile
-when projectile is loaded and project.el otherwise — override it to decide
-project identity your own way.
+## Platforms
 
-Projects nothing was assigned to fall back to `herdr-session-alist`, directory
-rules whose key is a directory or a predicate:
+| Platform | Emacs | Status |
+| --- | --- | --- |
+| macOS | 29, 30 | Supported |
+| GNU/Linux | 29, 30 | Supported |
+| Windows | — | Not supported |
 
-```elisp
-(setq herdr-session-alist '(("~/work" . "work") ("~/src" . "private")))
-```
+## Troubleshooting
 
-and then to `herdr-session`. `herdr-session-for` answers what a directory
-resolves to; `herdr-with-session` runs code against one server.
+- `no terminal backend`: install `ghostel`, `vterm`, or `eat`, or configure `herdr-terminal-backend`.
+- `No herdr server`: start herdr, or allow `herdr-auto-start-server` for the selected session.
+- Claude does not connect: confirm the agent is idle or set `herdr-claude-code-ide-connect-on-adopt` to `t`, then run `herdr-claude-code-ide-connect-ide`.
+- Claude has no editor context: verify the discovery directory is writable and that the loopback endpoint is not blocked.
+- A terminal is read-only: attach with `herdr-attach-takeover` enabled, understanding that this transfers input ownership.
+- A diff or protocol buffer remains after work: close its Emacs buffer; this only releases editor-side state.
 
-Routing reaches everything that talks to herdr: a Claude session starts on the
-server its project routes to, `herdr-attach-agent` offers the agents of that
-server, and `herdr-jump` scans every known session at once, tagging each entry
-with the server it came from and attaching it there. Servers that are not
-running are skipped rather than started while listing.
+## License and attribution
 
-## Attaching a whole session
-
-`M-x herdr-attach-session` mirrors a running herdr session into Emacs: every
-one of its workspaces opens an editor workspace through
-`herdr-workspace-open-function`, and each agent inside becomes a buffer there,
-named after its tab. A prefix argument takes plain panes along too. Terminals
-Emacs already shows are left alone, so running it again after a while only
-picks up what is new.
-
-Input ownership stays with whoever holds it — the attached buffers start as a
-view of a session someone else is driving, since claiming three terminals at
-once from a herdr client you are looking at is rarely what you meant. Pass
-TAKEOVER, or attach a single agent, when you want to type.
-
-## Jumping between sessions
-
-`M-x herdr-jump` completes over everything running — herdr's agents plus the
-claude-code-ide sessions this Emacs owns — and shows the one you pick, attaching
-its terminal first if no buffer has it yet. Entries are grouped by kind and
-annotated with agent, status and directory. One terminal appears once: an agent
-that already has a buffer wins over the bare herdr entry.
-
-`herdr-session-functions` collects the entries, so other session sources can add
-themselves.
-
-## Integration points
-
-| Hook / variable | Use |
-| --- | --- |
-| `herdr-attach-functions` | claim an entry before the plain terminal attach |
-| `herdr-buffer-functions` | see every buffer that starts showing a terminal |
-| `herdr-terminal-id` | buffer-local id of the terminal a buffer shows |
-| `herdr-terminal-buffer` | find the live buffer for a terminal id |
-| `herdr-session-functions` | contribute entries to `herdr-jump` |
-| `herdr-entry-annotation-functions` | add fields to completion annotations |
-
-Together they are enough to bind sessions to an editor-side notion of place —
-pinning each terminal to the workspace its project owns, say, and following that
-pin when jumping.
-
-## Lining up with an editor's own layout
-
-Three levels correspond, so the herdr UI mirrors how the editor is arranged:
-an Emacs instance talks to one herdr session, `herdr-workspace-label-function`
-maps a directory to the herdr workspace its sessions belong in — return the
-editor workspace's name and the two line up — and each agent session becomes a
-tab inside it, named by `herdr-claude-code-ide-label-function`, which defaults
-to the checkout the session runs in, so a worktree's tab carries the worktree's
-name.
-
-`herdr-open-tab` does the work: it finds the workspace by label, creates it when
-it is missing — labelling the tab that comes with it rather than leaving an
-empty one behind — and otherwise opens a tab inside it.
-
-## claude-code-ide bridge
-
-With `herdr-claude-code-ide-mode` on, `M-x claude-code-ide` creates a herdr tab
-in the project directory, starts the Claude CLI there, and attaches the
-claude-code-ide buffer to it. No session escapes that route:
-`herdr-claude-code-ide-require-herdr` refuses to start one when herdr cannot be
-reached rather than falling back to an Emacs-owned CLI, and
-`herdr-auto-start-server` starts a headless herdr server first when none is
-running (detached, so it outlives Emacs). Set the first to nil to allow the
-plain claude-code-ide behaviour as a fallback. The CLI inherits `CLAUDE_CODE_SSE_PORT`, so MCP —
-ediff, at-mentions, diagnostics — works exactly as it does with a locally
-spawned CLI. The conversation survives Emacs restarts and shows up in the herdr
-UI alongside every other agent.
-
-The other direction — a claude that herdr already runs becomes a session:
-
-- attaching it (`herdr-attach-agent`, `herdr-attach-pane`) adopts it, unless
-  `herdr-claude-code-ide-adopt-on-attach` is nil.
-- `M-x herdr-claude-code-ide-adopt` does the same on demand.
-- `herdr-claude-code-ide-auto-adopt-mode` adopts every claude herdr detects
-  whose directory is a project Emacs knows
-  (`herdr-claude-code-ide-auto-adopt-predicate`).
-
-The session is named after the herdr agent — its rename, else its terminal
-title (`herdr-claude-code-ide-instance-name-function`) — so several agents in
-one project become `*claude-code[project:name]*` buffers without prompting.
-Adopting the same terminal twice reuses the session it already has.
-
-An adopted CLI started before its MCP server existed, so it is not connected to
-Emacs yet. `herdr-claude-code-ide-connect-on-adopt` sends `/ide` for you while
-the agent is idle (the default), always, or never; `M-x
-herdr-claude-code-ide-connect-ide` does it on demand. Claude answers with its
-IDE picker — pick the Emacs entry there.
-
-Caveat worth knowing: `claude-code-ide-stop` and killing the buffer end the
-*attachment*, not the CLI. Close the herdr tab to end the conversation.
-
-## API wrappers
-
-Every method of the socket API has a function — `herdr-api-pane-split`,
-`herdr-api-agent-prompt`, `herdr-api-workspace-create`, and 86 more. Required
-parameters are positional, the rest are keywords; nil keywords are omitted from
-the request, and `:false` sends a literal false.
-
-```elisp
-(herdr-api-tab-create :cwd "~/src/app" :label "tests" :env '((CI . "1")))
-(herdr-api-pane-send-text "w1:p2" "cargo test\n")
-(herdr-subscribe '("pane.agent_status_changed") #'my-handler)
-```
-
-Calls that wait on the server (`herdr-api-agent-wait`,
-`herdr-api-pane-wait-for-output`) need a longer `herdr-request-timeout` bound
-around them.
-
-Regenerate the wrappers after a herdr upgrade:
-
-```bash
-herdr api schema --json > /tmp/herdr-api.schema.json
-emacs -Q --batch -l tools/herdr-api-gen.el \
-      --eval '(herdr-api-gen "/tmp/herdr-api.schema.json" "herdr-api.el")'
-```
-
-## Tests
-
-```bash
-emacs -Q --batch -L . -l herdr-tests.el -f ert-run-tests-batch-and-exit
-```
-
-The socket tests run against a fake server; the one test that needs a real
-herdr skips itself when none is running.
+herdr.el is GPL-3.0-or-later; see [LICENSE](LICENSE). Earlier versions included material adapted from [manzaltu/claude-code-ide.el](https://github.com/manzaltu/claude-code-ide.el), also GPL-3.0-or-later. That external bridge has been removed from the runtime implementation.

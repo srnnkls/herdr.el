@@ -4,7 +4,7 @@
 
 ;; Author: Sören Nikolaus <soeren@code17.io>
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1"))
+;; Package-Requires: ((emacs "29.1") (websocket "1.12") (web-server "0.1.2") (transient "0.9.0"))
 ;; Keywords: terminals, tools, processes
 ;; URL: https://github.com/srnnkls/herdr.el
 
@@ -23,8 +23,7 @@
 ;;   M-x herdr-attach-agent   attach a running agent's terminal
 ;;   M-x herdr-attach-pane    attach any pane's terminal
 ;;
-;; Every API method has a wrapper in herdr-api.el; herdr-claude-code-ide.el
-;; bridges herdr and claude-code-ide sessions.
+;; Every API method has a wrapper in herdr-api.el.
 
 ;;; Code:
 
@@ -87,9 +86,8 @@ Nil shows them like any other buffer, which leaves the placement to
 
 (defcustom herdr-window-slot-base 100
   "First side-window slot attached terminals may claim.
-Other packages place their own side windows on low slots -
-claude-code-ide reserves blocks of 16 per project - and two buffers
-sharing a slot evict each other."
+Other packages should use distinct side-window slots to avoid
+replacing attached terminals."
   :type 'integer
   :group 'herdr)
 
@@ -436,8 +434,7 @@ REQUIRE-AGENT keeps only entries running that agent kind."
 (defvar herdr-session-functions '(herdr-agent-sessions)
   "Functions returning lists of session entries for `herdr-jump'.
 Entries are alists; `kind' names the group they appear under and
-`buffer' points at the Emacs buffer showing them, when one exists.
-herdr-claude-code-ide.el adds the claude-code-ide sessions here.")
+`buffer' points at the Emacs buffer showing them, when one exists.")
 
 (defun herdr-agent-sessions ()
   "Return the agents of the herdr session in scope as session entries."
@@ -502,8 +499,7 @@ came from."
   "Functions that may claim an entry before it is attached as a terminal.
 Each is called with the pane or agent alist and returns the buffer it
 opened, or nil to let the next one try.  The plain terminal attach runs
-only when all of them decline.  herdr-claude-code-ide.el uses this to
-open claude agents as claude-code-ide sessions.")
+only when all of them decline.")
 
 (defun herdr-attach-entry (entry)
   "Attach pane or agent ENTRY and return the buffer showing it.

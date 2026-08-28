@@ -302,13 +302,6 @@ alist.  Returns the socket path."
         (should-not (window-parameter (herdr-display-buffer buffer) 'window-side))
       (kill-buffer buffer))))
 
-(ert-deftest herdr-claude-code-ide-label-is-the-checkout-name ()
-  (should (equal (herdr-claude-code-ide-default-label "*claude-code[dotfiles]*" "/x/dotfiles")
-                 "dotfiles"))
-  (should (equal (herdr-claude-code-ide-default-label
-                  "*claude-code[shiftlet]*" "/x/shiftlet/.worktrees/feat-mvp/")
-                 "feat-mvp")))
-
 (ert-deftest herdr-claim-buffer-marks-and-announces-the-buffer ()
   (let ((buffer (get-buffer-create "*herdr: claimed*"))
         (announced nil))
@@ -384,18 +377,60 @@ alist.  Returns the socket path."
                   'buffer))
       (should (equal attached "term_2")))))
 
-(ert-deftest herdr-claude-code-ide-claims-only-claude-agents ()
-  (let ((herdr-claude-code-ide-adopt-on-attach t))
-    (cl-letf (((symbol-function 'claude-code-ide) #'ignore)
-              ((symbol-function 'herdr-claude-code-ide-adopt) (lambda (_agent) 'adopted)))
-      (should (eq (herdr-claude-code-ide--attach-entry
-                   '((agent . "claude") (cwd . "/tmp") (terminal_id . "term_3")))
-                  'adopted))
-      (should-not (herdr-claude-code-ide--attach-entry
-                   '((agent . "codex") (cwd . "/tmp") (terminal_id . "term_4"))))
-      (let ((herdr-claude-code-ide-adopt-on-attach nil))
-        (should-not (herdr-claude-code-ide--attach-entry
-                     '((agent . "claude") (cwd . "/tmp") (terminal_id . "term_5"))))))))
+(ert-deftest herdr-claude-code-ide-adoption-respects-the-attach-policy ()
+  (let* ((pi-adapter (cons "pi" (lambda (&rest _) nil)))
+         (claude-adapter (assoc "claude" herdr-agent-kind-adapters))
+         (codex-adapter (cons "codex" (lambda (&rest _) nil)))
+         (adapter-registry (list pi-adapter claude-adapter codex-adapter))
+         (generic-terminal "term-claude-opt-out")
+         (automatic-terminal "term-claude-automatic")
+         (generic-entry `((agent . "claude")
+                          (cwd . ,default-directory)
+                          (terminal_id . ,generic-terminal)
+                          (agent_status . "idle")))
+         (automatic-entry `((agent . "claude")
+                            (cwd . ,default-directory)
+                            (terminal_id . ,automatic-terminal)
+                            (agent_status . "idle")))
+         (generic-buffer (generate-new-buffer " *herdr: claude opt-out*"))
+         (automatic-buffer (generate-new-buffer " *herdr: claude automatic*"))
+         (generic-process (start-process "herdr-claude-opt-out" generic-buffer "sleep" "30"))
+         (automatic-process (start-process "herdr-claude-automatic" automatic-buffer "sleep" "30"))
+         generic-session automatic-session adapter-calls)
+    (unwind-protect
+        (let ((herdr-agent-kind-adapters adapter-registry))
+          (cl-letf (((symbol-function 'herdr-attach-terminal)
+                     (lambda (terminal-id &rest _)
+                       (if (equal terminal-id generic-terminal)
+                           generic-buffer
+                         automatic-buffer)))
+                    ((symbol-function 'herdr-api-pane-send-text)
+                     (lambda (&rest _) nil))
+                    ((symbol-function 'herdr-claude-code-ide-mcp-adopt)
+                     (lambda (&rest arguments)
+                       (push arguments adapter-calls))))
+            (let ((herdr-claude-code-ide-adopt-on-attach nil))
+              (should (eq (herdr-attach-entry generic-entry) generic-buffer)))
+            (let ((herdr-claude-code-ide-adopt-on-attach t))
+              (should (eq (herdr-attach-entry automatic-entry) automatic-buffer)))
+            (setq generic-session (herdr-agent-find (herdr-server-key) generic-terminal)
+                  automatic-session (herdr-agent-find (herdr-server-key) automatic-terminal))
+            (should generic-session)
+            (should automatic-session)
+            (should (equal (mapcar #'car (nreverse adapter-calls))
+                           (list automatic-session))))
+          (should (eq (car herdr-agent-kind-adapters) pi-adapter))
+          (should (eq (nth 1 herdr-agent-kind-adapters) claude-adapter))
+          (should (eq (nth 2 herdr-agent-kind-adapters) codex-adapter)))
+      (dolist (session (list generic-session automatic-session))
+        (when session
+          (herdr-agent-detach session)))
+      (dolist (process (list generic-process automatic-process))
+        (when (process-live-p process)
+          (delete-process process)))
+      (dolist (buffer (list generic-buffer automatic-buffer))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
 
 (ert-deftest herdr-socket-file-uses-the-session-data-dir ()
   (let ((process-environment (cons "XDG_CONFIG_HOME=/xdg" process-environment))
@@ -536,71 +571,6 @@ alist.  Returns the socket path."
     (cl-letf (((symbol-function 'call-process-shell-command)
                (lambda (&rest _) (error "Should not run a missing executable"))))
       (should-error (herdr-start-server) :type 'herdr-error))))
-
-(ert-deftest herdr-claude-code-ide-refuses-to-run-outside-herdr ()
-  (let* ((legacy 'herdr-claude-code-ide--attach-terminal)
-         (was-bound (boundp legacy))
-         (saved-value (and was-bound (symbol-value legacy))))
-    (unwind-protect
-        (dolist (state '(nil unbound))
-          (let ((called nil))
-            (pcase state
-              ('nil (set legacy nil))
-              ('unbound (makunbound legacy)))
-            (cl-letf (((symbol-function 'herdr-start-server-if-needed)
-                       (lambda () (signal 'herdr-error (list "no server")))))
-              (let ((error
-                     (should-error
-                      (herdr-claude-code-ide--create-terminal-session
-                       (lambda (&rest _) (setq called t) 'unwrapped)
-                       "*claude-code[x]*" "/tmp" 4711 nil nil "s1"))))
-                (should (eq (car error) 'user-error))
-                (should-not called)))))
-      (if was-bound
-          (set legacy saved-value)
-        (makunbound legacy)))))
-
-(ert-deftest herdr-claude-code-ide-sessions-become-jump-entries ()
-  (let ((buffer (get-buffer-create "*claude-code[entries]*")))
-    (unwind-protect
-        (progn
-          (herdr-claim-buffer buffer "term_entry")
-          (cl-letf (((symbol-function 'claude-code-ide-mcp--active-sessions)
-                     (lambda () (list 'session)))
-                    ((symbol-function 'claude-code-ide--session-display-name)
-                     (lambda (_session) "entries"))
-                    ((symbol-function 'claude-code-ide-mcp-session-buffer)
-                     (lambda (_session) buffer))
-                    ((symbol-function 'claude-code-ide-mcp-session-project-dir)
-                     (lambda (_session) "/x/entries")))
-            (let ((entry (car (herdr-claude-code-ide-sessions))))
-              (should (equal (alist-get 'kind entry) "claude-code-ide"))
-              (should (equal (herdr--entry-label entry) "entries"))
-              (should (equal (alist-get 'terminal_id entry) "term_entry"))
-              (should (eq (alist-get 'buffer entry) buffer)))))
-      (kill-buffer buffer))))
-
-(ert-deftest herdr-claude-code-ide-instance-name-from-agent ()
-  (should (equal (herdr-claude-code-ide-default-instance-name
-                  '((terminal_title_stripped . "Pinned frame detection")))
-                 "Pinned frame detection"))
-  (should (equal (herdr-claude-code-ide-default-instance-name
-                  '((name . "review") (terminal_title_stripped . "ignored")))
-                 "review"))
-  (should (equal (herdr-claude-code-ide-default-instance-name
-                  '((terminal_title_stripped . "  [weird]  *title*  ")))
-                 "weird title"))
-  (should-not (herdr-claude-code-ide-default-instance-name
-               '((terminal_title_stripped . "42"))))
-  (should-not (herdr-claude-code-ide-default-instance-name '())))
-
-(ert-deftest herdr-claude-code-ide-answers-the-instance-prompt-once ()
-  (let ((answer (herdr-claude-code-ide--instance-prompt-answer "review")))
-    (should (equal (funcall answer "Instance name: ") "review"))
-    (should (equal (funcall answer "Instance name: ") ""))
-    (should (equal (funcall answer "Instance name: ") "")))
-  (let ((answer (herdr-claude-code-ide--instance-prompt-answer nil)))
-    (should (equal (funcall answer "Instance name: ") ""))))
 
 (ert-deftest herdr-claude-code-ide-connect-p-follows-agent-status ()
   (let ((idle '((agent_status . "idle")))

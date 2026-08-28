@@ -7,9 +7,11 @@
 (require 'herdr-api)
 (require 'herdr-agent nil t)
 
+(defconst herdr-agent-tests--root
+  (file-name-directory (or load-file-name buffer-file-name)))
+
 (defconst herdr-agent-tests--harness-fixture
-  (expand-file-name "testdata/herdr-agent-harnesses.json"
-                    (file-name-directory (or load-file-name buffer-file-name))))
+  (expand-file-name "testdata/herdr-agent-harnesses.json" herdr-agent-tests--root))
 
 (defun herdr-agent-tests--harnesses ()
   (with-temp-buffer
@@ -879,6 +881,50 @@
                        user-error user-error herdr-error)))
       (should-not starts)
       (should-not server-starts))))
+
+(ert-deftest herdr-agent-public-modules-activate-claude-without-claude-code-ide ()
+  (let* ((root herdr-agent-tests--root)
+         (buffer (generate-new-buffer " *herdr-agent-clean-load*"))
+         status output)
+    (unwind-protect
+        (setq status
+              (call-process
+               (concat invocation-directory invocation-name) nil buffer nil
+               "-Q" "--batch" "-L" root "--eval"
+               "(progn (require 'cl-lib) (require 'herdr-agent) (require 'herdr-agent-transient) (require 'herdr-claude-code-ide) (let ((herdr-claude-code-ide-adopt-on-attach t) (entry '((agent . \"claude\") (cwd . \"/tmp\") (terminal_id . \"term\"))) calls) (cl-letf (((symbol-function 'herdr-claude-code-ide-adopt) (lambda (&rest arguments) (push arguments calls) 'adopted))) (unless (and (eq (herdr-claude-code-ide--attach-entry entry) 'adopted) (equal calls (list (list entry)))) (error \"Claude adapter did not adopt exactly once\")))))"))
+      (setq output (with-current-buffer buffer (buffer-string)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))
+    (unless (zerop status)
+      (ert-fail (format "Clean Claude adapter activation failed: %s" output)))))
+
+(ert-deftest herdr-agent-runtime-tree-has-no-claude-code-ide-bridge ()
+  (let* ((root herdr-agent-tests--root)
+         (files (process-lines "git" "-C" root "ls-files" "*.el"))
+         (pattern "\\(?:^\\|[^[:alnum:]-]\\)claude-code-ide\\(?:\\_>\\|-[[:alnum:]-]+\\)")
+         offenders)
+    (dolist (file files)
+      (unless (string-match-p "-tests\\.el\\'" file)
+        (with-temp-buffer
+          (insert-file-contents (expand-file-name file root))
+          (when (re-search-forward pattern nil t)
+            (push file offenders)))))
+    (should-not offenders)))
+
+(ert-deftest herdr-claude-code-ide-explicit-adoption-activates-a-preexisting-generic-session ()
+  (let ((buffer (generate-new-buffer " *herdr-agent-clean-adopt*"))
+        status output)
+    (unwind-protect
+        (setq status
+              (call-process
+               (concat invocation-directory invocation-name) nil buffer nil
+               "-Q" "--batch" "-L" herdr-agent-tests--root "--eval"
+               "(progn (require 'cl-lib) (require 'herdr) (require 'herdr-agent) (let* ((agent '((agent . \"claude\") (cwd . \"/tmp\") (server_key . \"/tmp/herdr-reused.sock\") (terminal_id . \"term-reused\") (agent_status . \"idle\"))) (session (let ((herdr-agent-kind-adapters nil)) (herdr-agent-adopt agent :server-key \"/tmp/herdr-reused.sock\" :attach nil))) calls) (require 'herdr-claude-code-ide) (cl-letf (((symbol-function 'herdr-api-pane-send-text) (lambda (&rest _) nil)) ((symbol-function 'herdr-claude-code-ide-mcp-adopt) (lambda (&rest arguments) (push arguments calls)))) (herdr-claude-code-ide-adopt agent)) (unless (= (length calls) 1) (error \"IDE adapter was not activated for the reused generic session\")) (unless (eq (caar calls) session) (error \"IDE adapter did not activate the reused generic session\")) (herdr-agent-detach session)))"))
+      (setq output (with-current-buffer buffer (buffer-string)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))
+    (unless (zerop status)
+      (ert-fail (format "Clean Claude adoption failed: %s" output)))))
 
 (provide 'herdr-agent-tests)
 ;;; herdr-agent-tests.el ends here
