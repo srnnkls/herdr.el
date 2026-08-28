@@ -19,7 +19,7 @@
 (declare-function websocket-frame-text "websocket" (frame))
 
 (cl-defstruct herdr-claude-code-ide-mcp-client
-  raw open-p initialized-p generation)
+  raw open-p initialized-p generation adapter)
 
 (cl-defstruct herdr-claude-code-ide-mcp-adapter
   session-key session instance-id instance-name state endpoint endpoint-live-p
@@ -36,6 +36,8 @@
 (defvar herdr-claude-code-ide-mcp--request-client nil)
 (defvar herdr-claude-code-ide-mcp--selection-timers (make-hash-table :test #'eq))
 (defvar herdr-claude-code-ide-mcp--selection-contexts (make-hash-table :test #'eq))
+(defvar herdr-claude-code-ide-mcp--incoming-observers nil)
+(defvar herdr-claude-code-ide-mcp--outgoing-observers nil)
 
 (defalias 'herdr-claude-code-ide-mcp-collect-diagnostics
   #'herdr-claude-code-ide-diagnostics-collect-diagnostics)
@@ -71,10 +73,25 @@
     (and (herdr-claude-code-ide-mcp-client-open-p client)
          (herdr-claude-code-ide-mcp-client-initialized-p client))))
 
+(defun herdr-claude-code-ide-mcp--observe (observers adapter client text)
+  (dolist (observer (symbol-value observers))
+    (condition-case nil
+        (funcall observer adapter client text)
+      (error nil))))
+
+(defun herdr-claude-code-ide-mcp--send (adapter client payload)
+  (when (and (herdr-claude-code-ide-mcp-client-open-p client)
+             (herdr-claude-code-ide-mcp-client-raw client))
+    (let ((text (json-serialize payload)))
+      (herdr-claude-code-ide-mcp--observe
+       'herdr-claude-code-ide-mcp--outgoing-observers adapter client text)
+      (websocket-send-text (herdr-claude-code-ide-mcp-client-raw client) text)
+      t)))
+
 (defun herdr-claude-code-ide-mcp--notify (client method payload)
-  (websocket-send-text
-   (herdr-claude-code-ide-mcp-client-raw client)
-   (json-serialize `((jsonrpc . "2.0") (method . ,method) (params . ,payload)))))
+  (herdr-claude-code-ide-mcp--send
+   (herdr-claude-code-ide-mcp-client-adapter client) client
+   `((jsonrpc . "2.0") (method . ,method) (params . ,payload))))
 
 (defun herdr-claude-code-ide-mcp-broadcast-project-context (adapters root method payload)
   "Send METHOD and PAYLOAD to initialized adapters in ROOT.
@@ -192,7 +209,7 @@ ADAPTERS selects a registry; current buffer supplies file and range."
                                 (herdr-claude-code-ide-mcp--close-after-send nil))
                             (when-let* ((response (herdr-claude-code-ide-mcp-receive
                                                    adapter client (websocket-frame-text frame))))
-                              (websocket-send-text raw (json-serialize response)))
+                              (herdr-claude-code-ide-mcp--send adapter client response))
                             (when herdr-claude-code-ide-mcp--close-after-send
                               (herdr-claude-code-ide-mcp-client-close adapter client)))))
           :on-close (lambda (raw)
@@ -247,11 +264,8 @@ ADAPTERS selects a registry; current buffer supplies file and range."
 
 (defun herdr-claude-code-ide-mcp-send-deferred (client response)
   "Send RESPONSE to CLIENT when its WebSocket remains live."
-  (when (and (herdr-claude-code-ide-mcp-client-open-p client)
-             (herdr-claude-code-ide-mcp-client-raw client))
-    (websocket-send-text (herdr-claude-code-ide-mcp-client-raw client)
-                         (json-serialize response))
-    t))
+  (herdr-claude-code-ide-mcp--send
+   (herdr-claude-code-ide-mcp-client-adapter client) client response))
 
 (defun herdr-claude-code-ide-mcp--close-raw (client)
   (when-let* ((raw (herdr-claude-code-ide-mcp-client-raw client)))
@@ -345,7 +359,8 @@ ADAPTERS selects a registry; current buffer supplies file and range."
                (signal (car err) (cdr err)))))))))
 
 (defun herdr-claude-code-ide-mcp-client-connect (adapter &optional raw)
-  (let ((client (make-herdr-claude-code-ide-mcp-client :raw raw :open-p t)))
+  (let ((client (make-herdr-claude-code-ide-mcp-client
+                 :raw raw :open-p t :adapter adapter)))
     (push client (herdr-claude-code-ide-mcp-adapter-clients adapter))
     client))
 
@@ -383,6 +398,9 @@ ADAPTERS selects a registry; current buffer supplies file and range."
           (herdr-claude-code-ide-mcp--response id (herdr-claude-code-ide-mcp--initialize-result)))))))
 
 (defun herdr-claude-code-ide-mcp-receive (adapter client text)
+  (setf (herdr-claude-code-ide-mcp-client-adapter client) adapter)
+  (herdr-claude-code-ide-mcp--observe
+   'herdr-claude-code-ide-mcp--incoming-observers adapter client text)
   (when (herdr-claude-code-ide-mcp-client-open-p client)
     (condition-case nil
         (let* ((message (json-parse-string text :object-type 'alist :array-type 'list

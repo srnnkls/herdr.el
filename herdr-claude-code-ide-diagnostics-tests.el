@@ -231,7 +231,7 @@
                  'herdr-claude-code-ide-mcp-selection-context-changed
                  nil project buffer)
                 (let ((old-generation-pending (car timers))
-                      (replacement (herdr-claude-code-ide-mcp-client-connect adapter)))
+                      (replacement (herdr-claude-code-ide-mcp-client-connect adapter 'replacement-client)))
                   (setq replacement-raw
                         (herdr-claude-code-ide-mcp-client-raw replacement))
                   (herdr-claude-code-ide-mcp-receive

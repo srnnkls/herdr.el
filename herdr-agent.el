@@ -314,6 +314,9 @@
     (kind name &key server-key project-root workspace args (attach t) timeout-ms)
   "Start KIND named NAME on SERVER-KEY for PROJECT-ROOT in WORKSPACE with ARGS."
   (let* ((server-key (or server-key (herdr-server-key)))
+         (project-root (or project-root
+                           (funcall herdr-project-root-function)
+                           default-directory))
          (current-server-key (herdr-server-key)))
     (when (equal server-key current-server-key)
       (herdr-start-server-if-needed))
