@@ -54,6 +54,7 @@ alist.  Returns the socket path."
 
 (ert-deftest herdr-attach-command-shape ()
   (let ((herdr-executable "herdr")
+        (herdr-terminal-backend 'vterm)
         (herdr-socket-path nil)
         (herdr-session 'shared))
     (should (equal (herdr-attach-command "term_1")
@@ -67,6 +68,168 @@ alist.  Returns the socket path."
           (herdr-socket-path "/tmp/probe/herdr.sock"))
       (should (equal (herdr-attach-command "term_1")
                      '("herdr" "terminal" "attach" "term_1"))))))
+
+(ert-deftest herdr-attach-control-follows-focus-without-rebuilding-buffer ()
+  "The selected focused terminal owns the canonical geometry; when focus
+leaves, it observes so Herdr's foreground client takes the geometry back.
+Duplicate focus notifications must not churn either state."
+  (let ((buffer (generate-new-buffer " *herdr-focus*"))
+        (focused t)
+        (modes nil))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (setq herdr--attach-follow-focus t
+                  herdr--attach-control-state 'observe))
+          (cl-letf (((symbol-function 'get-buffer-window)
+                     (lambda (&rest _) (selected-window)))
+                    ((symbol-function 'frame-selected-window)
+                     (lambda (_) (selected-window)))
+                    ((symbol-function 'frame-focus-state)
+                     (lambda (_) focused))
+                    ((symbol-function 'herdr--set-attach-mode)
+                     (lambda (target mode)
+                       (push mode modes)
+                       (with-current-buffer target
+                         (setq herdr--attach-control-state mode)))))
+            (herdr--sync-attach-control buffer)
+            (herdr--sync-attach-control buffer)
+            (setq focused nil)
+            (herdr--sync-attach-control buffer)
+            (herdr--sync-attach-control buffer))
+          (should (buffer-live-p buffer))
+          (should (equal (nreverse modes) '(control observe))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest herdr-session-stream-reassembles-a-frame-split-across-reads ()
+  "herdr writes one JSON object per line and a read lands anywhere, so a
+chunk that ends mid-object has to be held rather than parsed."
+  (require 'herdr-session-stream)
+  (let* ((payload "\e[2J\e[Hhello")
+         (line (concat (json-serialize
+                        `((type . "terminal.frame")
+                          (bytes . ,(base64-encode-string payload t))))
+                       "\n"))
+         (split (/ (length line) 2)))
+    (pcase-let ((`(,output . ,remainder)
+                 (herdr-session-stream--frames (substring line 0 split))))
+      (should (equal output ""))
+      (should (equal remainder (substring line 0 split)))
+      (pcase-let ((`(,output . ,remainder)
+                   (herdr-session-stream--frames
+                    (concat remainder (substring line split)))))
+        (should (equal output payload))
+        (should (equal remainder ""))))))
+
+(ert-deftest herdr-session-stream-draws-only-terminal-frames ()
+  "The stream carries lifecycle messages beside the output, and drawing
+one of those into a terminal writes its JSON onto the screen."
+  (require 'herdr-session-stream)
+  (let ((lines (concat (json-serialize '((type . "terminal.closed")
+                                         (reason . "detached")))
+                       "\n"
+                       (json-serialize
+                        `((type . "terminal.frame")
+                          (bytes . ,(base64-encode-string "ok" t))))
+                       "\n")))
+    (should (equal (car (herdr-session-stream--frames lines)) "ok"))))
+
+(ert-deftest herdr-session-stream-command-observes-unless-taking-over ()
+  "`control' is refused outright while another client holds it, so a
+read-only view has to ask for `observe'."
+  (require 'herdr-session-stream)
+  (should (equal (herdr-session-stream-command "term_1" nil 120 50)
+                 '("terminal" "session" "observe" "term_1"
+                   "--cols" "120" "--rows" "50")))
+  (should (equal (herdr-session-stream-command "term_1" t 80 24)
+                 '("terminal" "session" "control" "term_1"
+                   "--cols" "80" "--rows" "24" "--takeover"))))
+
+(ert-deftest herdr-attach-command-starts-ghostel-as-an-observer ()
+  "The initial child observes; focus swaps it to a controller only after
+the terminal buffer has a real window and geometry."
+  (let ((herdr-executable "herdr")
+        (herdr-socket-path nil)
+        (herdr-session 'shared)
+        (herdr-terminal-backend 'ghostel))
+    (cl-letf (((symbol-function 'herdr--attach-viewport)
+               (lambda (&optional _) '(120 . 50))))
+      (dolist (takeover '(nil t))
+        (should (equal (herdr-attach-command "term_1" takeover)
+                       '("herdr" "terminal" "session" "observe" "term_1"
+                         "--cols" "120" "--rows" "50")))))))
+
+(ert-deftest herdr-terminal-exec-stream-leaves-emacs-reading-the-pty ()
+  "The frames are unwrapped in a process filter, so Emacs has to be what
+reads the process.  ghostel\='s native pty is read by its module instead,
+so focus handoff uses its Emacs-owned pty.  The plain exec leaves the
+default alone."
+  (defvar ghostel-use-native-pty)
+  (let ((ghostel-use-native-pty t)
+        (seen 'unset))
+    (cl-letf (((symbol-function 'herdr--terminal-exec-1)
+               (lambda (buffer &rest _)
+                 (setq seen ghostel-use-native-pty)
+                 buffer)))
+      (herdr--terminal-exec-stream (current-buffer) "herdr" nil)
+      (should-not seen)
+      (herdr--terminal-exec (current-buffer) "herdr" nil)
+      (should seen)
+      (should ghostel-use-native-pty))))
+
+(ert-deftest herdr-session-stream-wrap-hands-the-emulator-raw-ansi ()
+  "The emulator keeps the filter it installed and never learns the stream
+was framed; a lifecycle message must not reach it at all."
+  (require 'herdr-session-stream)
+  (let* ((seen nil)
+         (buffer (generate-new-buffer " *wrap*"))
+         (process (make-process :name "wrap" :buffer buffer
+                                :command '("cat") :noquery t)))
+    (unwind-protect
+        (progn
+          (set-process-filter process (lambda (_p out) (push out seen)))
+          (herdr-session-stream-wrap process)
+          (funcall (process-filter process) process
+                   (concat (json-serialize '((type . "terminal.closed")))
+                           "\n"
+                           (json-serialize
+                            `((type . "terminal.frame")
+                              (bytes . ,(base64-encode-string "\e[2Jhi" t))))
+                           "\n"))
+          (should (equal seen '("\e[2Jhi"))))
+      (delete-process process)
+      (kill-buffer buffer))))
+
+(ert-deftest herdr-session-stream-history-asks-only-for-what-is-retained ()
+  "A full-screen program redraws in place and never scrolls, so nothing
+is retained above the screen and there is no history to replay; asking
+for it anyway would replay the current screen twice."
+  (require 'herdr-session-stream)
+  (let ((asked nil))
+    (cl-letf (((symbol-function 'herdr-panes)
+               (lambda () '(((pane_id . "w1:p1") (terminal_id . "t1")
+                             (scroll . ((max_offset_from_bottom . 936))))
+                            ((pane_id . "w2:p1") (terminal_id . "t2")
+                             (scroll . ((max_offset_from_bottom . 0)))))))
+              ((symbol-function 'herdr-api-pane-read)
+               (lambda (pane source &rest keys)
+                 (setq asked (list pane source (plist-get keys :lines)
+                                   (plist-get keys :format)))
+                 '((read . ((text . "line one")))))))
+      (should (equal (herdr-session-stream-history "t1" 20000) "line one\n"))
+      (should (equal asked '("w1:p1" "recent" 936 "ansi")))
+      (setq asked nil)
+      (should (equal (herdr-session-stream-history "t1" nil) "line one\n"))
+      (should (equal asked '("w1:p1" "recent" 936 "ansi")))
+      (setq asked nil)
+      (should-not (herdr-session-stream-history "t2" nil))
+      (should-not asked)
+      (should-not (herdr-session-stream-history "t2" 20000))
+      (should-not asked)
+      (should-not (herdr-session-stream-history "t1" 0))
+      (should-not asked)
+      (should-not (herdr-session-stream-history "unknown" 20000)))))
 
 (ert-deftest herdr-request-returns-result ()
   (unwind-protect
@@ -235,6 +398,25 @@ alist.  Returns the socket path."
       (should (equal (herdr-attach-session "work") '(buffer)))
       (should (equal opened '(("app" . "/src/app"))))
       (should (equal attached '(("t1" . nil)))))))
+
+(ert-deftest herdr-entries-are-attached-under-their-checkout-name ()
+  (should (equal (herdr--entry-session-name
+                  '((cwd . "/src/app/.worktrees/feat-x/")
+                    (terminal_title_stripped . "Pinned frame detection")))
+                 "feat-x"))
+  (should (equal (herdr--entry-session-name
+                  '((label . "fallback") (terminal_title_stripped . "title")))
+                 "fallback")))
+
+(ert-deftest herdr-repeated-checkout-names-get-a-counter ()
+  (let ((first (get-buffer-create "*herdr: feat-x*"))
+        (second nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'get-buffer-process) (lambda (buffer) buffer)))
+          (setq second (herdr--free-buffer-name "feat-x" "term_2"))
+          (should (equal second "*herdr: feat-x<2>*"))
+          (should-error (herdr--free-buffer-name "feat-x" nil)))
+      (kill-buffer first))))
 
 (ert-deftest herdr-workspace-label-defaults-to-the-directory-name ()
   (let ((herdr-workspace-label-function #'herdr-default-workspace-label))
@@ -576,19 +758,9 @@ alist.  Returns the socket path."
               (should (eq (alist-get 'buffer entry) buffer)))))
       (kill-buffer buffer))))
 
-(ert-deftest herdr-claude-code-ide-instance-name-from-agent ()
-  (should (equal (herdr-claude-code-ide-default-instance-name
-                  '((terminal_title_stripped . "Pinned frame detection")))
-                 "Pinned frame detection"))
-  (should (equal (herdr-claude-code-ide-default-instance-name
-                  '((name . "review") (terminal_title_stripped . "ignored")))
-                 "review"))
-  (should (equal (herdr-claude-code-ide-default-instance-name
-                  '((terminal_title_stripped . "  [weird]  *title*  ")))
-                 "weird title"))
-  (should-not (herdr-claude-code-ide-default-instance-name
-               '((terminal_title_stripped . "42"))))
-  (should-not (herdr-claude-code-ide-default-instance-name '())))
+(ert-deftest herdr-claude-code-ide-leaves-instance-naming-to-numbering ()
+  (should-not (funcall herdr-claude-code-ide-instance-name-function
+                       '((terminal_title_stripped . "Pinned frame detection")))))
 
 (ert-deftest herdr-claude-code-ide-answers-the-instance-prompt-once ()
   (let ((answer (herdr-claude-code-ide--instance-prompt-answer "review")))
@@ -617,6 +789,7 @@ alist.  Returns the socket path."
   (let* ((built nil)
          (herdr-claude-code-ide--attach-terminal "term_adopted")
          (herdr-executable "herdr")
+         (herdr-terminal-backend 'vterm)
          (original (lambda (&rest _)
                      (setq built (claude-code-ide--build-claude-command nil nil "s1")))))
     (cl-letf (((symbol-function 'claude-code-ide--build-claude-command)

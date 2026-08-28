@@ -49,9 +49,12 @@ enough to stay clear of other side-window users such as claude-code-ide. Set
 `herdr-use-side-window` to nil to hand placement over to `display-buffer-alist`
 or a popup framework.
 
-Only one writable client owns a terminal at a time, so attaching takes input
-ownership by default (`herdr-attach-takeover`). The herdr UI keeps rendering
-the same terminal, read-only, until it takes ownership back.
+Ghostel attachments stay in one searchable Emacs buffer while their Herdr
+child follows focus. The selected terminal controls input and sets the shared
+PTY geometry; focus loss replaces only that child with an observer, releasing
+the resize lock so Herdr's foreground iTerm, SSH or mobile client immediately
+reflows the same terminal to its own size. `herdr-attach-takeover` disables
+that control path when nil. Other terminal backends use Herdr's direct attach.
 
 ## One herdr server, or one of your own
 
@@ -118,7 +121,8 @@ running are skipped rather than started while listing.
 `M-x herdr-attach-session` mirrors a running herdr session into Emacs: every
 one of its workspaces opens an editor workspace through
 `herdr-workspace-open-function`, and each agent inside becomes a buffer there,
-named after its tab. A prefix argument takes plain panes along too. Terminals
+named after the checkout it works in — a second session in the same checkout
+gets a counter. A prefix argument takes plain panes along too. Terminals
 Emacs already shows are left alone, so running it again after a while only
 picks up what is new.
 
@@ -190,10 +194,11 @@ The other direction — a claude that herdr already runs becomes a session:
   whose directory is a project Emacs knows
   (`herdr-claude-code-ide-auto-adopt-predicate`).
 
-The session is named after the herdr agent — its rename, else its terminal
-title (`herdr-claude-code-ide-instance-name-function`) — so several agents in
-one project become `*claude-code[project:name]*` buffers without prompting.
-Adopting the same terminal twice reuses the session it already has.
+The session is named after the checkout it runs in, and claude-code-ide numbers
+the ones that share it: `*claude-code[feat-x]*`, then `*claude-code[feat-x:2]*`.
+`herdr-claude-code-ide-instance-name-function` names them from the agent
+instead, should the numbers not tell you enough. Adopting the same terminal
+twice reuses the session it already has.
 
 An adopted CLI started before its MCP server existed, so it is not connected to
 Emacs yet. `herdr-claude-code-ide-connect-on-adopt` sends `/ide` for you while

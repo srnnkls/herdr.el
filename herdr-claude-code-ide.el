@@ -77,11 +77,12 @@ agents to `herdr-claude-code-ide-adopt' instead of opening a plain
 terminal buffer."
   :type 'boolean)
 
-(defcustom herdr-claude-code-ide-instance-name-function
-  #'herdr-claude-code-ide-default-instance-name
+(defcustom herdr-claude-code-ide-instance-name-function #'ignore
   "Function naming the claude-code-ide instance an adopted agent becomes.
 It is called with the agent alist and returns a name, or nil to let
-claude-code-ide number the instance."
+claude-code-ide number the instance.  Numbering is the default: a
+session's buffer already carries the checkout it runs in, so the number
+is all that separates two sessions in the same one."
   :type 'function)
 
 (defcustom herdr-claude-code-ide-connect-on-adopt 'idle
@@ -206,19 +207,6 @@ the attach command instead of the Claude CLI."
     (advice-remove 'claude-code-ide--create-terminal-session
                    #'herdr-claude-code-ide--create-terminal-session)
     (remove-hook 'herdr-attach-functions #'herdr-claude-code-ide--attach-entry)))
-
-(defun herdr-claude-code-ide-default-instance-name (agent)
-  "Return the claude-code-ide instance name for herdr AGENT.
-Nil lets claude-code-ide number the instance itself."
-  (when-let* ((raw (or (alist-get 'name agent)
-                       (alist-get 'terminal_title_stripped agent)
-                       (alist-get 'pane_id agent))))
-    (let ((name (string-trim
-                 (replace-regexp-in-string
-                  "[[:space:]]+" " "
-                  (replace-regexp-in-string "[][*[:cntrl:]]" "" raw)))))
-      (unless (or (string-empty-p name) (string-match-p "\\`[0-9]+\\'" name))
-        (truncate-string-to-width name 40)))))
 
 (defun herdr-claude-code-ide--instance-prompt-answer (name)
   "Return a `read-string' stand-in that answers NAME once, then empty.
