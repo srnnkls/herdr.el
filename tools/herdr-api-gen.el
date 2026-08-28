@@ -73,7 +73,12 @@ receive the events that follow.\n")
                        (when optional
                          (cons '&key (mapcar #'herdr-api-gen--symbol optional)))))
          (pairs (mapcar (lambda (property)
-                          `(cons ',(intern property) ,(herdr-api-gen--symbol property)))
+                          `(cons ',(intern property)
+                                 ,(if (and (equal method "agent.start")
+                                           (equal property "args"))
+                                      `(and ,(herdr-api-gen--symbol property)
+                                            (vconcat ,(herdr-api-gen--symbol property)))
+                                    (herdr-api-gen--symbol property))))
                         (append required optional)))
          (body (if pairs
                    `(herdr-request ,method (herdr--params (list ,@pairs)))

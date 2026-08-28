@@ -103,14 +103,6 @@
                       (mapcar #'string-trim (split-string line "|" t)))
                     (split-string (buffer-string) "\n" t))))
 
-(defun herdr-claude-code-ide-mcp-tests--verification-p (value)
-  (let ((prefix (cond ((string-prefix-p "ERT:" value) "ERT:")
-                      ((string-prefix-p "manual:" value) "manual:"))))
-    (when prefix
-      (let ((target (string-trim (substring value (length prefix)))))
-        (and (not (string-blank-p target))
-             (string-match-p "[[:alnum:]]" target))))))
-
 (ert-deftest herdr-claude-code-ide-contract-fixtures-pin-compatible-version-metadata ()
   (let ((fixtures (mapcar #'herdr-claude-code-ide-mcp-tests--fixture
                           '("compatibility-probed.json"
@@ -474,14 +466,31 @@
                        "borrowed-pane"))))))
 
 (ert-deftest herdr-claude-code-ide-parity-ledger-maps-every-workflow ()
+  (dolist (suite '(herdr-agent-tests
+                   herdr-claude-code-ide-diagnostics-tests
+                   herdr-claude-code-ide-mcp-server-tests
+                   herdr-claude-code-ide-tools-tests
+                   herdr-claude-code-ide-ui-tests))
+    (require suite))
   (let ((path (expand-file-name "docs/claude-code-ide-parity.md"
                                 herdr-claude-code-ide-mcp-tests--root)))
     (should (file-exists-p path))
     (with-temp-buffer
       (insert-file-contents path)
-      (should (equal (herdr-claude-code-ide-mcp-tests--ledger-row "Workflow")
-                     '("Workflow" "Scope task" "Verification" "State")))
-      (dolist (workflow-task
+      (let* ((parsed-rows
+              (mapcar (lambda (line)
+                        (mapcar #'string-trim (split-string line "|" t)))
+                      (split-string (buffer-string) "\n" t)))
+             (rows
+              (seq-filter
+               (lambda (cells)
+                 (and (= (length cells) 4)
+                      (not (equal (car cells) "Workflow"))
+                      (not (equal (car cells) "---"))))
+               parsed-rows)))
+        (should (equal (seq-find (lambda (row) (equal (car row) "Workflow")) parsed-rows)
+                       '("Workflow" "Scope task" "Verification" "State")))
+        (let ((workflow-tasks
                '(("contract-capture" . "T001")
                  ("server-startup" . "T002")
                  ("session-identity" . "T002")
@@ -534,14 +543,103 @@
                  ("debug" . "T008")
                  ("configuration" . "T008")
                  ("migration" . "T009")
-                 ("platform-verification" . "T010")))
-        (let ((row (herdr-claude-code-ide-mcp-tests--ledger-row (car workflow-task))))
-          (should row)
+                 ("platform-verification" . "T010"))))
+          (should (equal (mapcar #'car rows) (mapcar #'car workflow-tasks)))
+          (should (= (length rows) (length (delete-dups (mapcar #'car rows)))))
+          (dolist (workflow-task workflow-tasks)
+            (let ((row (seq-find (lambda (cells)
+                                   (equal (car cells) (car workflow-task)))
+                                 rows)))
+              (should row)
           (should (= (length row) 4))
           (should (equal (nth 1 row) (cdr workflow-task)))
-          (should (stringp (nth 2 row)))
-          (should (herdr-claude-code-ide-mcp-tests--verification-p (nth 2 row)))
-          (should (member (nth 3 row) '("captured" "planned" "pending" "blocked"))))))))
+          (let* ((verification (nth 2 row))
+                 (expected-verification
+                  (cond
+                   ((equal (car workflow-task) "platform-verification")
+                    "matrix: .github/workflows/test.yml")
+                   ((member (car workflow-task)
+                            '("contract-capture"))
+                    "ERT: herdr-claude-code-ide-contract-fixtures-cover-every-client-exchange")
+                   ((member (car workflow-task) '("server-startup" "startup-rollback"))
+                    "ERT: herdr-claude-code-ide-mcp-retains-startup-initialization-and-rolls-it-back")
+                   ((equal (car workflow-task) "session-identity")
+                    "ERT: herdr-agent-adoption-separates-same-label-terminal-on-explicit-servers")
+                   ((equal (car workflow-task) "adoption")
+                    "ERT: herdr-claude-code-ide-mcp-adoption-keeps-project-clients-distinct")
+                   ((equal (car workflow-task) "detach-without-termination")
+                    "ERT: herdr-agent-detach-and-attachment-death-keep-herdr-open-and-retry-cleanup")
+                   ((equal (car workflow-task) "claude-disappearance")
+                    "ERT: herdr-agent-event-subscriptions-route-data-per-server-and-repair-moves")
+                   ((member (car workflow-task)
+                            '("discovery"))
+                    "ERT: herdr-claude-code-ide-mcp-prepare-publishes-claude-discovery-before-launch")
+                   ((member (car workflow-task)
+                            '("initialize"))
+                    "ERT: herdr-claude-code-ide-mcp-dispatches-fixture-json-rpc-and-errors")
+                   ((member (car workflow-task) '("reconnect"))
+                    "ERT: herdr-claude-code-ide-mcp-only-arms-reconnect-after-current-disconnect")
+                   ((member (car workflow-task) '("supersede" "stale-client"))
+                    "ERT: herdr-claude-code-ide-mcp-supersedes-only-successful-live-candidates")
+                   ((member (car workflow-task) '("cleanup"))
+                    "ERT: herdr-claude-code-ide-mcp-resolves-deadline-races-and-last-cleanup")
+                   ((member (car workflow-task) '("selection"))
+                    "ERT: herdr-claude-code-ide-selection-context-walks-debounce-generation-and-cleanup")
+                   ((member (car workflow-task) '("context-at-mention"))
+                    "ERT: herdr-claude-code-ide-at-mention-uses-ordered-lines-and-the-target-registry-session")
+                   ((member (car workflow-task) '("diagnostics-provider"))
+                    "ERT: herdr-claude-code-ide-diagnostics-normalizes-native-records-with-safe-severity")
+                   ((member (car workflow-task) '("getDiagnostics-tool"))
+                    "ERT: herdr-claude-code-ide-tools-get-diagnostics-uses-the-t004-visited-buffer-boundary")
+                   ((equal (car workflow-task) "openFile")
+                    "ERT: herdr-claude-code-ide-tools-close-tab-releases-only-requesting-global-buffer-view")
+                   ((equal (car workflow-task) "executeCode")
+                    "ERT: herdr-claude-code-ide-tools-registers-only-fixture-tools-and-requires-elisp-opt-in")
+                   ((member (car workflow-task) '("close_tab"))
+                    "ERT: herdr-claude-code-ide-tools-close-tab-releases-only-requesting-global-buffer-view")
+                   ((member (car workflow-task) '("openDiff"))
+                    "ERT: herdr-claude-code-ide-tools-defers-ediff-and-returns-edited-accept-or-distinct-reject")
+                   ((member (car workflow-task) '("closeAllDiffTabs"))
+                    "ERT: herdr-claude-code-ide-tools-close-all-diffs-is-session-local")
+                   ((equal (car workflow-task) "http-mcp")
+                    "ERT: herdr-claude-code-ide-mcp-server-replays-http-fixtures-and-protocol-errors")
+                   ((member (car workflow-task)
+                            '("xref-references" "xref-apropos" "project-information"
+                              "imenu" "tree-sitter"))
+                    "ERT: herdr-claude-code-ide-emacs-tools-normalize-provider-results-in-the-owning-context")
+                   ((member (car workflow-task) '("start" "continue" "resume"))
+                    "ERT: herdr-agent-native-start-continue-and-resume-use-harness-arguments")
+                   ((equal (car workflow-task) "instance-naming")
+                    "ERT: herdr-claude-code-ide-mcp-adoption-keeps-project-clients-distinct")
+                   ((member (car workflow-task) '("list" "rename" "session-status" "stop" "stop-all"))
+                    "ERT: herdr-agent-native-management-uses-herdr-api-wrappers")
+                   ((member (car workflow-task) '("targeting"))
+                    "ERT: herdr-agent-native-target-resolution-is-explicit-project-local-and-mru")
+                   ((member (car workflow-task) '("switch" "project-display" "global-display"
+                                                    "recent-window-display" "window-display"))
+                    "ERT: herdr-agent-native-switch-focuses-the-visible-owned-terminal")
+                   ((equal (car workflow-task) "terminal-at-mention")
+                    "ERT: herdr-claude-code-ide-at-mention-uses-ordered-lines-and-the-target-registry-session")
+                   ((member (car workflow-task) '("prompt" "escape" "newline"))
+                    "ERT: herdr-agent-native-prompt-escape-and-newline-use-agent-api")
+                   ((member (car workflow-task) '("transient" "status" "debug" "configuration"))
+                    "ERT: herdr-claude-code-ide-ui-menus-route-agent-workflows-without-a-cli")
+                   ((member (car workflow-task) '("migration"))
+                    "ERT: herdr-claude-code-ide-explicit-adoption-activates-a-preexisting-generic-session"))))
+            (should (stringp verification))
+            (should (equal (nth 3 row) "passing"))
+            (should expected-verification)
+            (should (equal verification expected-verification))
+            (if (equal (car workflow-task) "platform-verification")
+                (let ((workflow (expand-file-name ".github/workflows/test.yml"
+                                                  herdr-claude-code-ide-mcp-tests--root)))
+                  (should (file-regular-p workflow)))
+              (should (string-match "\\`ERT: \\([[:alnum:]-]+\\)\\'" verification))
+              (let ((selector (match-string 1 verification)))
+                (should (ert-test-boundp (intern selector)))
+                (should-not
+                 (equal selector
+                        "herdr-claude-code-ide-parity-ledger-maps-every-workflow"))))))))))))
 
 (defun herdr-claude-code-ide-mcp-tests--t003-require-transport ()
   (should (featurep 'herdr-claude-code-ide-mcp)))
@@ -829,8 +927,33 @@
          (open nil)
          (message nil)
          (events nil)
-         (adapter nil))
-    (unwind-protect
+         (adapter nil)
+         (json-null (make-symbol "json-null")))
+    (cl-labels
+        ((assert-json-rpc-error
+          (text expected)
+          (let* ((actual (json-parse-string text :object-type 'hash-table
+                                            :array-type 'array :null-object json-null
+                                            :false-object :json-false))
+                 (actual-error (gethash "error" actual))
+                 (expected-id (herdr-claude-code-ide-mcp-tests--value 'id expected))
+                 (expected-error (herdr-claude-code-ide-mcp-tests--value 'error expected)))
+            (should (equal (sort (hash-table-keys actual) #'string<)
+                           '("error" "id" "jsonrpc")))
+            (should (equal (gethash "jsonrpc" actual)
+                           (herdr-claude-code-ide-mcp-tests--value 'jsonrpc expected)))
+            (if (null expected-id)
+                (should (eq (gethash "id" actual) json-null))
+              (should (equal (gethash "id" actual) expected-id)))
+            (should (hash-table-p actual-error))
+            (should (equal (sort (hash-table-keys actual-error) #'string<)
+                           '("code" "message")))
+            (should (equal (gethash "code" actual-error)
+                           (herdr-claude-code-ide-mcp-tests--value 'code expected-error)))
+            (should (equal (gethash "message" actual-error)
+                           (herdr-claude-code-ide-mcp-tests--value
+                            'message expected-error))))))
+      (unwind-protect
         (progn
           (setq features (cons 'websocket features))
           (load (expand-file-name "herdr-claude-code-ide-mcp.el"
@@ -864,14 +987,64 @@
                           "claude" "term-websocket" root) root))
                   (funcall open client)
                   (funcall message client
-                           "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"initialize\",\"params\":null}")
-                  (setq events (nreverse events))
-                  (should (equal (mapcar #'car events) '(send close)))
-                  (should (string-match-p "-32602" (nth 2 (car events)))))
+                           (json-serialize
+                            (herdr-claude-code-ide-mcp-tests--t003-payload
+                             "client-originated.json" "initialize")))
+                  (funcall message client
+                           (json-serialize
+                            (herdr-claude-code-ide-mcp-tests--t003-payload
+                             "client-originated.json" "tools/list")))
+                  (funcall message client "{")
+                  (let ((protocol-events (nreverse events)))
+                    (should (equal (mapcar #'car protocol-events) '(send send send)))
+                    (let* ((tools-response
+                            (json-parse-string (nth 2 (nth 1 protocol-events))
+                                               :object-type 'hash-table :array-type 'array
+                                               :null-object json-null))
+                           (tools (gethash "tools" (gethash "result" tools-response)))
+                           (close-diffs
+                            (seq-find (lambda (tool)
+                                        (equal (gethash "name" tool) "closeAllDiffTabs"))
+                                      tools))
+                           (input-schema (gethash "inputSchema" close-diffs))
+                           (properties (gethash "properties" input-schema))
+                           (required (gethash "required" input-schema)))
+                      (should (vectorp tools))
+                      (should close-diffs)
+                      (should (hash-table-p properties))
+                      (should (= (hash-table-count properties) 0))
+                      (should (vectorp required))
+                      (should (equal required [])))
+                    (let* ((parse-error (nth 2 (nth 2 protocol-events)))
+                           (parsed-error
+                            (json-parse-string parse-error :object-type 'hash-table
+                                               :array-type 'array :null-object json-null)))
+                      (should (eq (gethash "id" parsed-error) json-null))
+                      (assert-json-rpc-error
+                       parse-error
+                       (herdr-claude-code-ide-mcp-tests--t003-error "parse-error"))))
+                  (setq events nil)
+                  (let ((invalid-client 'invalid-client))
+                    (funcall open invalid-client)
+                    (funcall message invalid-client
+                             (json-serialize
+                              '((jsonrpc . "2.0") (id . 7) (method . "initialize")
+                                (params . nil))))
+                    (setq events (nreverse events))
+                    (should (equal (mapcar #'car events) '(send close)))
+                    (should (eq (nth 1 (car events)) invalid-client))
+                    (should (eq (nth 1 (cadr events)) invalid-client))
+                    (let ((invalid-response
+                           (json-parse-string (nth 2 (car events)) :object-type 'hash-table
+                                              :array-type 'array :null-object json-null)))
+                      (should (= (gethash "code" (gethash "error" invalid-response)) -32602)))
+                    (assert-json-rpc-error
+                     (nth 2 (car events))
+                     (herdr-claude-code-ide-mcp-tests--t003-error "invalid-params"))))
               (when adapter
                 (herdr-claude-code-ide-mcp-cleanup adapter)))))
       (setq features original-features)
-      (delete-directory root t))))
+      (delete-directory root t)))))
 
 (ert-deftest herdr-claude-code-ide-mcp-dispatches-fixture-json-rpc-and-errors ()
   (herdr-claude-code-ide-mcp-tests--with-websocket
@@ -917,7 +1090,7 @@
               (should (equal (herdr-claude-code-ide-mcp-tests--value
                               'tools
                               (herdr-claude-code-ide-mcp-tests--value 'result response))
-                             schemas)))
+                             (vconcat schemas))))
             (dolist (expectation '(("prompts/list" prompts)
                                    ("resources/list" resources)))
               (let ((response
@@ -932,7 +1105,7 @@
                            (cadr expectation) result))
                   (should (equal (herdr-claude-code-ide-mcp-tests--value
                                   (cadr expectation) result)
-                                 '())))))
+                                 [])))))
             (let ((response
                    (herdr-claude-code-ide-mcp-receive
                     adapter client

@@ -34,9 +34,15 @@
   (declare (indent 1) (debug (form body)))
   `(let ((herdr-socket-path ,server-key)) ,@body))
 
+(defun herdr-agent--canonical-server-key (server-key)
+  "Return SERVER-KEY in canonical socket form."
+  (herdr-agent--with-server server-key
+    (herdr-server-key)))
+
 (defun herdr-agent-find (server-key terminal-id)
   "Return the live session for SERVER-KEY and TERMINAL-ID."
-  (gethash (cons server-key terminal-id) herdr-agent--sessions))
+  (gethash (cons (herdr-agent--canonical-server-key server-key) terminal-id)
+           herdr-agent--sessions))
 
 (defun herdr-agent--kind (agent)
   "Return AGENT's supported kind."
@@ -47,22 +53,26 @@
 
 (defun herdr-agent--project (root)
   "Return ROOT in canonical form."
-  (and root (directory-file-name (expand-file-name root))))
+  (and root (directory-file-name (file-truename root))))
 
 (defun herdr-agent--register (session)
   "Register SESSION and its derived indexes."
-  (let ((key (herdr-agent-session-key session))
-        (project (herdr-agent-session-project session))
-        (buffer (herdr-agent-session-buffer session))
-        (pane (herdr-agent-session-pane session)))
+  (let* ((server-key (herdr-agent--canonical-server-key (herdr-agent-session-server session)))
+         (terminal (herdr-agent-session-terminal session))
+         (key (cons server-key terminal))
+         (project (herdr-agent--project (herdr-agent-session-project session)))
+         (buffer (herdr-agent-session-buffer session))
+         (pane (herdr-agent-session-pane session)))
+    (setf (herdr-agent-session-server session) server-key
+          (herdr-agent-session-key session) key
+          (herdr-agent-session-project session) project)
     (puthash key session herdr-agent--sessions)
     (when project
       (puthash project (cons key (delete key (gethash project herdr-agent--projects)))
                herdr-agent--projects))
     (when buffer (puthash buffer key herdr-agent--buffers))
     (when pane
-      (puthash (cons (herdr-agent-session-server session) pane)
-               (herdr-agent-session-terminal session) herdr-agent--panes))
+      (puthash (cons server-key pane) terminal herdr-agent--panes))
     session))
 
 (defun herdr-agent--unregister (session)
@@ -167,7 +177,8 @@
 
 (defun herdr-agent--apply-agent (session agent server-key)
   "Set SESSION identity from AGENT on SERVER-KEY."
-  (let ((terminal (alist-get 'terminal_id agent)))
+  (let ((terminal (alist-get 'terminal_id agent))
+        (server-key (herdr-agent--canonical-server-key server-key)))
     (unless terminal
       (signal 'herdr-error (list "agent has no terminal_id")))
     (setf (herdr-agent-session-key session) (cons server-key terminal)
@@ -193,7 +204,8 @@
 
 (cl-defun herdr-agent-adopt (agent &key server-key (attach t))
   "Adopt AGENT on SERVER-KEY, optionally deferring terminal attachment."
-  (let* ((server-key (or server-key (alist-get 'server_key agent) (herdr-server-key)))
+  (let* ((server-key (herdr-agent--canonical-server-key
+                      (or server-key (alist-get 'server_key agent) (herdr-server-key))))
          (terminal (alist-get 'terminal_id agent)))
     (unless terminal
       (signal 'herdr-error (list "agent has no terminal_id")))
@@ -222,7 +234,57 @@
                (herdr-agent-detach session)
                (signal (car err) (cdr err)))))))))
 
-(defun herdr-agent--ready-agent (agent timeout-ms)
+(defun herdr-agent--request-target (_server-key terminal-id &optional _agent)
+  "Return a Herdr agent target for TERMINAL-ID."
+  terminal-id)
+
+(defun herdr-agent--refresh-session (session agent server-key)
+  "Refresh SESSION from AGENT on SERVER-KEY."
+  (let* ((key (herdr-agent-session-key session))
+         (project (herdr-agent-session-project session))
+         (pane (herdr-agent-session-pane session))
+         (keys (delete key (gethash project herdr-agent--projects))))
+    (remhash key herdr-agent--sessions)
+    (if keys
+        (puthash project keys herdr-agent--projects)
+      (remhash project herdr-agent--projects))
+    (when pane
+      (remhash (cons (herdr-agent-session-server session) pane)
+               herdr-agent--panes))
+    (herdr-agent--apply-agent session agent server-key)
+    (herdr-agent--register session)))
+
+(defun herdr-agent--fresh-agent (server-key terminal-id)
+  "Return TERMINAL-ID's fresh agent record on SERVER-KEY."
+  (herdr-agent--with-server server-key
+    (cl-find terminal-id (alist-get 'agents (herdr-api-agent-list))
+             :key (lambda (agent) (alist-get 'terminal_id agent)) :test #'equal)))
+
+(defun herdr-agent--call-with-request-target (server-key terminal-id function)
+  "Call FUNCTION with a compatible Herdr target."
+  (condition-case err
+      (funcall function (herdr-agent--request-target server-key terminal-id))
+    (herdr-api-error
+     (if (equal (nth 1 err) "agent_not_found")
+         (if-let* ((agent (herdr-agent--fresh-agent server-key terminal-id)))
+             (let ((session (herdr-agent-find server-key terminal-id))
+                   (last-error err)
+                   result)
+               (when session
+                 (herdr-agent--refresh-session session agent server-key))
+               (catch 'done
+                 (dolist (target (delq nil (list (alist-get 'pane_id agent)
+                                                  (alist-get 'name agent))))
+                   (condition-case retry-error
+                       (throw 'done (setq result (funcall function target)))
+                     (herdr-api-error
+                      (setq last-error retry-error))))
+                 (signal (car last-error) (cdr last-error)))
+               result)
+           (signal (car err) (cdr err)))
+       (signal (car err) (cdr err))))))
+
+(defun herdr-agent--ready-agent (agent server-key timeout-ms)
   "Return AGENT after its terminal becomes interactive-ready."
   (let ((terminal (alist-get 'terminal_id agent))
         (deadline (+ (float-time) (/ timeout-ms 1000.0))))
@@ -231,7 +293,10 @@
     (while (not (alist-get 'interactive_ready agent))
       (when (>= (float-time) deadline)
         (signal 'herdr-error (list "agent did not become interactive-ready")))
-      (setq agent (alist-get 'agent (herdr-api-agent-get terminal)))
+      (setq agent
+            (alist-get 'agent
+                       (herdr-api-agent-get
+                        (herdr-agent--request-target server-key terminal agent))))
       (unless agent
         (signal 'herdr-error (list "agent.get did not return an agent")))
       (unless (alist-get 'interactive_ready agent)
@@ -241,7 +306,8 @@
 (cl-defun herdr-agent-start-in-pane
     (kind name pane &key server-key args (attach t) session timeout-ms)
   "Start KIND named NAME in PANE on SERVER-KEY with ARGS."
-  (let* ((server-key (or server-key (herdr-server-key)))
+  (let* ((server-key (herdr-agent--canonical-server-key
+                      (or server-key (herdr-server-key))))
          (start-timeout-ms (or timeout-ms 30000))
          (pane-id (alist-get 'pane_id pane))
          (session (or session
@@ -260,7 +326,7 @@
           (herdr-agent--apply-agent
            session
            (herdr-agent--with-server server-key
-             (herdr-agent--ready-agent agent start-timeout-ms))
+             (herdr-agent--ready-agent agent server-key start-timeout-ms))
            server-key)
           (herdr-agent--register session)
           (when attach (herdr-agent--attach session))
@@ -313,11 +379,12 @@
 (cl-defun herdr-agent-start-session
     (kind name &key server-key project-root workspace args (attach t) timeout-ms)
   "Start KIND named NAME on SERVER-KEY for PROJECT-ROOT in WORKSPACE with ARGS."
-  (let* ((server-key (or server-key (herdr-server-key)))
+  (let* ((server-key (herdr-agent--canonical-server-key
+                      (or server-key (herdr-server-key))))
          (project-root (or project-root
                            (funcall herdr-project-root-function)
                            default-directory))
-         (current-server-key (herdr-server-key)))
+         (current-server-key (herdr-agent--canonical-server-key (herdr-server-key))))
     (when (equal server-key current-server-key)
       (herdr-start-server-if-needed))
     (herdr-agent--with-server server-key
@@ -362,18 +429,20 @@
 
 (defun herdr-agent--index-pane (server-key pane)
   "Update SERVER-KEY's pane mapping from PANE."
-  (when-let* ((pane-id (alist-get 'pane_id pane))
-              (terminal (alist-get 'terminal_id pane)))
-    (puthash (cons server-key pane-id) terminal herdr-agent--panes)
-    (when-let* ((session (herdr-agent-find server-key terminal)))
-      (setf (herdr-agent-session-pane session) pane-id
-            (herdr-agent-session-workspace session) (alist-get 'workspace_id pane)
-            (herdr-agent-session-tab session) (alist-get 'tab_id pane)))
-    terminal))
+  (let ((server-key (herdr-agent--canonical-server-key server-key)))
+    (when-let* ((pane-id (alist-get 'pane_id pane))
+                (terminal (alist-get 'terminal_id pane)))
+      (puthash (cons server-key pane-id) terminal herdr-agent--panes)
+      (when-let* ((session (herdr-agent-find server-key terminal)))
+        (setf (herdr-agent-session-pane session) pane-id
+              (herdr-agent-session-workspace session) (alist-get 'workspace_id pane)
+              (herdr-agent-session-tab session) (alist-get 'tab_id pane)))
+      terminal)))
 
 (defun herdr-agent--release-pane (server-key pane-id)
   "Detach the session currently mapped to PANE-ID on SERVER-KEY."
-  (let* ((key (cons server-key pane-id))
+  (let* ((server-key (herdr-agent--canonical-server-key server-key))
+         (key (cons server-key pane-id))
          (terminal (gethash key herdr-agent--panes))
          (session (and terminal (herdr-agent-find server-key terminal))))
     (if session
@@ -385,6 +454,7 @@
 
 (defun herdr-agent--handle-event (server-key type data)
   "Apply TYPE's event DATA to SERVER-KEY's indexes."
+  (setq server-key (herdr-agent--canonical-server-key server-key))
   (pcase type
     ((or "pane.updated" "pane.moved")
      (when (equal type "pane.moved")
@@ -399,7 +469,7 @@
 
 (defun herdr-agent-subscribe (server-key)
   "Subscribe SERVER-KEY to generic agent lifecycle events."
-  (let* ((server-key (herdr-agent--with-server server-key (herdr-server-key)))
+  (let* ((server-key (herdr-agent--canonical-server-key server-key))
          (cached (gethash server-key herdr-agent--subscriptions)))
     (if (and cached
              (cl-every (lambda (process)
@@ -490,8 +560,8 @@
   "Return non-nil when AGENT belongs to PROJECT."
   (or (null project)
       (when-let* ((cwd (alist-get 'cwd agent)))
-        (string-prefix-p (file-name-as-directory (expand-file-name project))
-                         (file-name-as-directory (expand-file-name cwd))))))
+        (string-prefix-p (file-name-as-directory (herdr-agent--project project))
+                         (file-name-as-directory (herdr-agent--project cwd))))))
 
 (defun herdr-agent-resolve-target (target agents project mru)
   "Return TARGET from AGENTS, or the project-local MRU target."
@@ -533,7 +603,8 @@
 (defun herdr-agent--public-target (target)
   "Return TARGET's server and terminal identity."
   (or (cond
-       ((consp target) target)
+       ((consp target)
+        (cons (herdr-agent--canonical-server-key (car target)) (cdr target)))
        (target (cons (herdr-server-key) target))
        ((herdr-agent--current-target))
        ((herdr-agent--visible-target))
@@ -549,23 +620,32 @@
   "Focus TARGET in herdr and show its terminal buffer."
   (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
     (herdr-agent--with-server server-key
-      (herdr-api-agent-focus terminal)
-      (if-let* ((buffer (herdr-terminal-buffer terminal server-key)))
-          (herdr-display-buffer buffer)
-        (when-let* ((agent (alist-get 'agent (herdr-api-agent-get terminal))))
-          (herdr-attach-entry (cons (cons 'server_key server-key) agent)))))))
+      (herdr-agent--call-with-request-target
+       server-key terminal
+       (lambda (request-target)
+         (herdr-api-agent-focus request-target)
+         (if-let* ((buffer (herdr-terminal-buffer terminal server-key)))
+             (herdr-display-buffer buffer)
+           (when-let* ((agent (alist-get 'agent (herdr-api-agent-get request-target))))
+             (herdr-attach-entry (cons (cons 'server_key server-key) agent)))))))))
 
 (defun herdr-agent-rename (target name)
   "Rename TARGET to NAME."
   (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
     (herdr-agent--with-server server-key
-      (herdr-api-agent-rename terminal :name name))))
+      (herdr-agent--call-with-request-target
+       server-key terminal
+       (lambda (request-target)
+         (herdr-api-agent-rename request-target :name name))))))
 
 (defun herdr-agent-status (target)
   "Return the status of TARGET."
   (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
     (herdr-agent--with-server server-key
-      (alist-get 'agent (herdr-api-agent-get terminal)))))
+      (herdr-agent--call-with-request-target
+       server-key terminal
+       (lambda (request-target)
+         (alist-get 'agent (herdr-api-agent-get request-target)))))))
 
 (defun herdr-agent-stop (target)
   "Stop TARGET by closing its pane."
@@ -573,9 +653,12 @@
     (user-error "An agent target is required"))
   (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
     (herdr-agent--with-server server-key
-      (when-let* ((agent (alist-get 'agent (herdr-api-agent-get terminal)))
-                  (pane-id (alist-get 'pane_id agent)))
-        (herdr-api-pane-close pane-id)))))
+      (herdr-agent--call-with-request-target
+       server-key terminal
+       (lambda (request-target)
+         (when-let* ((agent (alist-get 'agent (herdr-api-agent-get request-target)))
+                     (pane-id (alist-get 'pane_id agent)))
+           (herdr-api-pane-close pane-id)))))))
 
 (defun herdr-agent-stop-all ()
   "Stop all agents reported by herdr."
@@ -589,19 +672,28 @@
   "Send TEXT to TARGET through herdr's agent API."
   (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
     (herdr-agent--with-server server-key
-      (herdr-api-agent-prompt terminal text))))
+      (herdr-agent--call-with-request-target
+       server-key terminal
+       (lambda (request-target)
+         (herdr-api-agent-prompt request-target text))))))
 
 (defun herdr-agent-escape (target)
   "Send escape to TARGET through herdr's agent API."
   (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
     (herdr-agent--with-server server-key
-      (herdr-api-agent-send-keys '("esc") terminal))))
+      (herdr-agent--call-with-request-target
+       server-key terminal
+       (lambda (request-target)
+         (herdr-api-agent-send-keys '("esc") request-target))))))
 
 (defun herdr-agent-newline (target)
   "Send return to TARGET through herdr's agent API."
   (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
     (herdr-agent--with-server server-key
-      (herdr-api-agent-send-keys '("enter") terminal))))
+      (herdr-agent--call-with-request-target
+       server-key terminal
+       (lambda (request-target)
+         (herdr-api-agent-send-keys '("enter") request-target))))))
 
 (provide 'herdr-agent)
 ;;; herdr-agent.el ends here

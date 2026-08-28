@@ -1,0 +1,25 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Emacs ${{ matrix.emacs }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+        emacs: ['29.4', '30.1']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: purcell/setup-emacs@v7
+        with:
+          version: ${{ matrix.emacs }}
+      - name: Compile and test
+        run: ./scripts/compile-and-test.sh

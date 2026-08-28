@@ -21,7 +21,7 @@
     (insert-file-contents
      (expand-file-name "testdata/claude-code-ide/herdr-decided.json"
                        herdr-claude-code-ide-tools-tests--root))
-    (json-parse-buffer :object-type 'alist :array-type 'list
+    (json-parse-buffer :object-type 'alist :array-type 'array
                        :null-object nil :false-object :json-false)))
 
 (defun herdr-claude-code-ide-tools-tests--schema (name)
@@ -157,13 +157,30 @@
                   (herdr-claude-code-ide-tools-tests--with-adapters (list adapter)
                     (herdr-claude-code-ide-tools-tests--install adapter)
                     (let ((listed (herdr-claude-code-ide-tools-tests--tool-list adapter)))
-                      (should
-                       (equal listed
+                      (let* ((expected
                               (append
                                (mapcar #'herdr-claude-code-ide-tools-tests--schema
                                        '("openFile" "getDiagnostics" "close_tab" "openDiff"
                                          "closeAllDiffTabs"))
-                               (list sentinel))))
+                               (list sentinel)))
+                             (actual-properties
+                              (herdr-claude-code-ide-tools-tests--value
+                               'properties
+                               (herdr-claude-code-ide-tools-tests--value
+                                'inputSchema (nth 4 listed))))
+                             (expected-properties
+                              (herdr-claude-code-ide-tools-tests--value
+                               'properties
+                               (herdr-claude-code-ide-tools-tests--value
+                                'inputSchema (nth 4 expected)))))
+                        (should-not expected-properties)
+                        (should (hash-table-p actual-properties))
+                        (should (= (hash-table-count actual-properties) 0))
+                        (setf (alist-get 'properties
+                                         (herdr-claude-code-ide-tools-tests--value
+                                          'inputSchema (nth 4 expected)))
+                              actual-properties)
+                        (should (equal listed expected)))
                       (should execute-schema)
                       (should-not (memq execute-schema listed))
                       (should (memq sentinel listed)))
@@ -178,11 +195,23 @@
           (let ((enabled (herdr-claude-code-ide-tools-tests--adapter root "enabled")))
             (herdr-claude-code-ide-tools-tests--with-adapters (list enabled)
               (herdr-claude-code-ide-tools-tests--install enabled)
-              (should
-               (equal (herdr-claude-code-ide-tools-tests--tool-list enabled)
+              (let* ((listed (herdr-claude-code-ide-tools-tests--tool-list enabled))
+                     (expected
                       (mapcar #'herdr-claude-code-ide-tools-tests--schema
                               '("openFile" "getDiagnostics" "close_tab" "openDiff"
-                                "closeAllDiffTabs" "executeCode"))))
+                                "closeAllDiffTabs" "executeCode")))
+                     (actual-properties
+                      (herdr-claude-code-ide-tools-tests--value
+                       'properties
+                       (herdr-claude-code-ide-tools-tests--value
+                        'inputSchema (nth 4 listed)))))
+                (should (hash-table-p actual-properties))
+                (should (= (hash-table-count actual-properties) 0))
+                (setf (alist-get 'properties
+                                 (herdr-claude-code-ide-tools-tests--value
+                                  'inputSchema (nth 4 expected)))
+                      actual-properties)
+                (should (equal listed expected)))
               (let ((response
                      (herdr-claude-code-ide-tools-tests--request
                       enabled (herdr-claude-code-ide-tools-tests--client enabled) 22
@@ -206,7 +235,7 @@
       (delete-directory root t))))
 
 (ert-deftest herdr-claude-code-ide-tools-get-diagnostics-uses-the-t004-visited-buffer-boundary ()
-  (let* ((root (make-temp-file "herdr-t005-diagnostics" t))
+  (let* ((root (file-truename (make-temp-file "herdr-t005-diagnostics" t)))
          (visited-file (expand-file-name "visited.el" root))
          (unvisited-file (expand-file-name "unvisited.el" root))
          (visited nil)

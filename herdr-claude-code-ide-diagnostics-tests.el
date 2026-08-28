@@ -29,7 +29,7 @@
     (setf (herdr-agent-session-key session)
           (herdr-claude-code-ide-diagnostics-tests--session-key server-key terminal-id)
           (herdr-agent-session-kind session) (or kind "claude")
-          (herdr-agent-session-project session) project)
+          (herdr-agent-session-project session) (and project (file-truename project)))
     session))
 
 (defun herdr-claude-code-ide-diagnostics-tests--adapter
@@ -82,9 +82,14 @@
 
 (ert-deftest herdr-claude-code-ide-context-broadcast-uses-session-projects-from-the-adapter-registry ()
   (let* ((server (make-temp-file "herdr-t004-server" t))
-         (project (make-temp-file "herdr-t004-project" t))
-         (other-project (make-temp-file "herdr-t004-other-project" t))
+         (project (file-truename (make-temp-file "herdr-t004-project" t)))
+         (project-alias (concat project "-alias"))
+         (other-project (file-truename (make-temp-file "herdr-t004-other-project" t)))
          (server-key (expand-file-name "herdr.sock" server))
+         (cwd-less (herdr-claude-code-ide-diagnostics-tests--adapter
+                    (herdr-claude-code-ide-diagnostics-tests--session
+                     server-key "cwd-less" nil)
+                    'cwd-less-client))
          (first (herdr-claude-code-ide-diagnostics-tests--adapter
                  (herdr-claude-code-ide-diagnostics-tests--session
                   server-key "first" project)
@@ -108,32 +113,50 @@
          deliveries)
     (unwind-protect
         (progn
+          (make-symbolic-link project project-alias)
+          (should-not (equal project-alias project))
+          (should (equal (file-truename project-alias) project))
           (setf (herdr-claude-code-ide-mcp-adapter-current-client stale) nil)
-          (herdr-claude-code-ide-diagnostics-tests--with-adapter-registry
-              (first second other stale uninitialized)
-            (cl-letf (((symbol-function 'websocket-send-text)
-                       (lambda (raw text) (push (cons raw text) deliveries))))
-              (herdr-claude-code-ide-diagnostics-tests--call
-               'herdr-claude-code-ide-mcp-broadcast-project-context
-               nil (concat project "/./") "selection_changed"
-               `((filePath . ,(expand-file-name "file.el" project))
-                 (text . "")
-                 (selection . ((start . ((line . 0) (character . 0)))
-                               (end . ((line . 0) (character . 0))))))))
-            (should (equal (sort (mapcar #'car
-                                         (herdr-claude-code-ide-diagnostics-tests--notifications
-                                          deliveries))
-                                 (lambda (left right)
-                                   (string< (symbol-name left) (symbol-name right))))
-                           '(first-client second-client)))))
+          (let ((registry-adapters
+                 (symbol-function 'herdr-claude-code-ide-mcp--registry-adapters)))
+            (herdr-claude-code-ide-diagnostics-tests--with-adapter-registry
+                (cwd-less first second other stale uninitialized)
+              (cl-letf (((symbol-function 'herdr-claude-code-ide-mcp--registry-adapters)
+                         (lambda (&optional adapters)
+                           (if (or (null adapters)
+                                   (eq adapters herdr-claude-code-ide-mcp--adapters))
+                               (list cwd-less first second other stale uninitialized)
+                             (funcall registry-adapters adapters))))
+                        ((symbol-function 'websocket-send-text)
+                         (lambda (raw text) (push (cons raw text) deliveries))))
+                (condition-case error-data
+                    (herdr-claude-code-ide-diagnostics-tests--call
+                     'herdr-claude-code-ide-mcp-broadcast-project-context
+                     nil project-alias "selection_changed"
+                     `((filePath . ,(expand-file-name "file.el" project))
+                       (text . "")
+                       (selection . ((start . ((line . 0) (character . 0)))
+                                     (end . ((line . 0) (character . 0)))))))
+                  (error
+                   (ert-fail
+                    (format "nil-root adapter blocked project context broadcast: %S"
+                            error-data))))
+              (should (equal (sort (mapcar #'car
+                                           (herdr-claude-code-ide-diagnostics-tests--notifications
+                                            deliveries))
+                                   (lambda (left right)
+                                     (string< (symbol-name left) (symbol-name right))))
+                             '(first-client second-client)))))))
+      (when (file-symlink-p project-alias)
+        (delete-file project-alias))
       (delete-directory server t)
       (delete-directory project t)
       (delete-directory other-project t))))
 
 (ert-deftest herdr-claude-code-ide-selection-context-walks-debounce-generation-and-cleanup ()
   (let* ((server (make-temp-file "herdr-t004-server" t))
-         (project (make-temp-file "herdr-t004-project" t))
-         (other-project (make-temp-file "herdr-t004-other-project" t))
+         (project (file-truename (make-temp-file "herdr-t004-project" t)))
+         (other-project (file-truename (make-temp-file "herdr-t004-other-project" t)))
          (server-key (expand-file-name "herdr.sock" server))
          (file (expand-file-name "selection.el" project))
          (other-file (expand-file-name "other.el" other-project))
@@ -383,8 +406,8 @@
 
 (ert-deftest herdr-claude-code-ide-at-mention-uses-ordered-lines-and-the-target-registry-session ()
   (let* ((server (make-temp-file "herdr-t004-server" t))
-         (project (make-temp-file "herdr-t004-project" t))
-         (other-project (make-temp-file "herdr-t004-other-project" t))
+         (project (file-truename (make-temp-file "herdr-t004-project" t)))
+         (other-project (file-truename (make-temp-file "herdr-t004-other-project" t)))
          (server-key (expand-file-name "herdr.sock" server))
          (other-server-key (expand-file-name "other-herdr.sock" server))
          (file (expand-file-name "mention.el" project))
@@ -452,8 +475,8 @@
       (delete-directory other-project t))))
 
 (ert-deftest herdr-claude-code-ide-diagnostics-normalizes-native-records-with-safe-severity ()
-  (let* ((project (make-temp-file "herdr-t004-project" t))
-         (other-project (make-temp-file "herdr-t004-other-project" t))
+  (let* ((project (file-truename (make-temp-file "herdr-t004-project" t)))
+         (other-project (file-truename (make-temp-file "herdr-t004-other-project" t)))
          (file (expand-file-name "diagnostics.el" project))
          (outside-file (expand-file-name "outside.el" other-project))
          (unvisited-file (expand-file-name "unvisited.el" project))
