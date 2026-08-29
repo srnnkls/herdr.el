@@ -52,22 +52,18 @@ alist.  Returns the socket path."
     (let ((herdr-socket-path "/tmp/other.sock"))
       (should (equal (herdr-socket-file) "/tmp/other.sock")))))
 
-(ert-deftest herdr-attach-command-shape ()
+(ert-deftest herdr-attach-command-always-starts-a-session-observer ()
   (let ((herdr-executable "herdr")
-        (herdr-terminal-backend 'vterm)
         (herdr-socket-path nil)
         (herdr-session 'shared))
-    (should (equal (herdr-attach-command "term_1")
-                   '("herdr" "terminal" "attach" "term_1")))
-    (should (equal (herdr-attach-command "term_1" t)
-                   '("herdr" "terminal" "attach" "term_1" "--takeover")))
-    (let ((herdr-session "agents"))
-      (should (equal (herdr-attach-command "term_1")
-                     '("herdr" "--session" "agents" "terminal" "attach" "term_1"))))
-    (let ((herdr-session "agents")
-          (herdr-socket-path "/tmp/probe/herdr.sock"))
-      (should (equal (herdr-attach-command "term_1")
-                     '("herdr" "terminal" "attach" "term_1"))))))
+    (cl-letf (((symbol-function 'herdr--attach-viewport)
+               (lambda (&optional _) '(120 . 50))))
+      (dolist (backend '(ghostel vterm eat))
+        (let ((herdr-terminal-backend backend))
+          (dolist (takeover '(nil t))
+            (should (equal (herdr-attach-command "term_1" takeover)
+                           '("herdr" "terminal" "session" "observe" "term_1"
+                             "--cols" "120" "--rows" "50")))))))))
 
 (ert-deftest herdr-attach-control-follows-focus-without-rebuilding-buffer ()
   "The selected focused terminal owns the canonical geometry; when focus
@@ -82,11 +78,14 @@ Duplicate focus notifications must not churn either state."
             (setq herdr--attach-follow-focus t
                   herdr--attach-control-state 'observe))
           (cl-letf (((symbol-function 'get-buffer-window)
-                     (lambda (&rest _) (selected-window)))
+                     (lambda (&rest _) (error "single-window lookup is ambiguous")))
+                    ((symbol-function 'get-buffer-window-list)
+                     (lambda (&rest _) '(first second)))
+                    ((symbol-function 'window-frame) (lambda (window) window))
                     ((symbol-function 'frame-selected-window)
-                     (lambda (_) (selected-window)))
+                     (lambda (frame) (if (eq frame 'second) 'second 'other)))
                     ((symbol-function 'frame-focus-state)
-                     (lambda (_) focused))
+                     (lambda (frame) (and focused (eq frame 'second))))
                     ((symbol-function 'herdr--set-attach-mode)
                      (lambda (target mode)
                        (push mode modes)
@@ -101,6 +100,190 @@ Duplicate focus notifications must not churn either state."
           (should (equal (nreverse modes) '(control observe))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest herdr-stream-cleanup-releases-control-without-killing-the-backend ()
+  (let* ((buffer (generate-new-buffer " *herdr-cleanup*"))
+         (backend (make-process :name "cleanup-backend" :buffer buffer
+                                :command '("cat") :noquery t))
+         (controller (make-process :name "cleanup-controller" :buffer nil
+                                   :command '("cat") :noquery t))
+         released)
+    (unwind-protect
+        (progn
+          (process-put backend 'herdr-session-stream-buffer buffer)
+          (with-current-buffer buffer
+            (setq herdr--attach-backend-process backend
+                  herdr--attach-sidecar controller
+                  herdr--attach-control-state 'control))
+          (cl-letf (((symbol-function 'herdr-session-stream-release)
+                     (lambda (process) (setq released process))))
+            (with-current-buffer buffer
+              (herdr--cleanup-session-stream)))
+          (should (eq released controller))
+          (should-not (process-live-p controller))
+          (should (process-live-p backend))
+          (should-not (process-get backend 'herdr-session-stream-buffer)))
+      (dolist (process (list backend controller))
+        (when (process-live-p process) (delete-process process)))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest herdr-session-stream-setup-keeps-the-backend-and-replays-history-first ()
+  (let* ((buffer (generate-new-buffer " *herdr-setup*"))
+         (events nil)
+         (backend (make-process :name "setup-backend" :buffer buffer
+                                :command '("cat") :noquery t)))
+    (unwind-protect
+        (progn
+          (set-process-filter
+           backend (lambda (process ansi)
+                     (push (list 'draw process ansi) events)))
+          (cl-letf (((symbol-function 'herdr--backend) (lambda () 'eat))
+                    ((symbol-function 'herdr--attach-viewport)
+                     (lambda (&optional _) '(80 . 24)))
+                    ((symbol-function 'herdr-session-stream-history)
+                     (lambda (&rest _) "history\n"))
+                    ((symbol-function 'herdr--start-sidecar)
+                     (lambda (given-buffer mode)
+                       (push (list 'start given-buffer mode) events))))
+            (herdr--configure-session-stream buffer "term_setup" t))
+          (should (eq (get-buffer-process buffer) backend))
+          (should (eq (process-get backend 'herdr-session-stream-buffer) buffer))
+          (should (equal (nreverse events)
+                         (list (list 'draw backend "history\n")
+                               (list 'start buffer 'observe))))
+          (should (eq (process-filter backend) #'ignore)))
+      (when (process-live-p backend) (delete-process backend))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest herdr-sidecar-switch-waits-for-a-full-frame-and-keeps-the-backend ()
+  (let* ((buffer (generate-new-buffer " *herdr-sidecar*"))
+         (backend (make-process :name "backend" :buffer buffer
+                                :command '("cat") :noquery t))
+         (observer (make-process :name "observer" :buffer nil
+                                 :command '("cat") :noquery t))
+         (controller (make-process :name "controller" :buffer nil
+                                   :command '("cat") :noquery t))
+         (drawn nil))
+    (unwind-protect
+        (progn
+          (process-put observer 'herdr-session-stream-mode 'observe)
+          (process-put controller 'herdr-session-stream-mode 'control)
+          (with-current-buffer buffer
+            (setq herdr--attach-backend-process backend
+                  herdr--attach-writer
+                  (lambda (process ansi) (push (cons process ansi) drawn))
+                  herdr--attach-sidecar observer
+                  herdr--attach-candidate controller
+                  herdr--attach-generation 4
+                  herdr--attach-control-state 'observe))
+          (herdr--sidecar-frame buffer controller 4 "delta" nil 80 24)
+          (should-not drawn)
+          (should (eq (buffer-local-value 'herdr--attach-sidecar buffer) observer))
+          (herdr--sidecar-frame buffer controller 4 "full" t 80 24)
+          (should (equal drawn (list (cons backend "full"))))
+          (should (eq (buffer-local-value 'herdr--attach-sidecar buffer) controller))
+          (should (eq (buffer-local-value 'herdr--attach-control-state buffer) 'control))
+          (should (process-live-p backend))
+          (should-not (process-live-p observer))
+          (herdr--sidecar-frame buffer observer 3 "stale" t 80 24)
+          (should (equal drawn (list (cons backend "full")))))
+      (dolist (process (list backend observer controller))
+        (when (process-live-p process) (delete-process process)))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest herdr-backend-input-routes-only-to-the-active-controller ()
+  (require 'herdr-session-stream)
+  (let* ((buffer (generate-new-buffer " *herdr-input*"))
+         (backend (make-process :name "input-backend" :buffer buffer
+                                :command '("cat") :noquery t))
+         (controller (make-process :name "input-controller" :buffer nil
+                                   :command '("cat") :noquery t))
+         (sent nil))
+    (unwind-protect
+        (progn
+          (process-put backend 'herdr-session-stream-buffer buffer)
+          (with-current-buffer buffer
+            (setq herdr--attach-sidecar controller
+                  herdr--attach-control-state 'control))
+          (cl-letf (((symbol-function 'herdr-session-stream-input)
+                     (lambda (process data) (setq sent (cons process data)))))
+            (process-send-string backend "hello"))
+          (should (equal sent (cons controller "hello")))
+          (with-current-buffer buffer
+            (setq herdr--attach-control-state 'observe))
+          (setq sent nil)
+          (cl-letf (((symbol-function 'herdr-session-stream-input)
+                     (lambda (&rest args) (setq sent args))))
+            (process-send-string backend "ignored"))
+          (should-not sent)
+          (process-put controller 'herdr-session-stream-mode 'control)
+          (with-current-buffer buffer
+            (setq herdr--attach-sidecar nil
+                  herdr--attach-candidate controller))
+          (cl-letf (((symbol-function 'herdr-session-stream-input)
+                     (lambda (process data) (setq sent (cons process data)))))
+            (process-send-string backend "first key"))
+          (should (equal sent (cons controller "first key"))))
+      (dolist (process (list backend controller))
+        (when (process-live-p process) (delete-process process)))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest herdr-vterm-viewport-matches-its-adjusted-core-size ()
+  (defvar vterm-min-window-width 80)
+  (let* ((buffer (generate-new-buffer " *herdr-vterm-size*"))
+         (process (make-process :name "vterm-size" :buffer buffer
+                                :command '("cat") :noquery t))
+         (vterm-min-window-width 80)
+         (window-adjust-process-window-size-function
+          (lambda (given-process windows)
+            (should (eq given-process process))
+            (should windows)
+            '(100 . 40))))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (setq herdr--attach-backend 'vterm
+                  herdr--attach-backend-process process))
+          (cl-letf (((symbol-function 'get-buffer-window-list)
+                     (lambda (&rest _) (list (selected-window))))
+                    ((symbol-function 'vterm--get-margin-width)
+                     (lambda () 3)))
+            (should (equal (herdr--attach-viewport buffer) '(97 . 40)))))
+      (when (process-live-p process) (delete-process process))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest herdr-resize-updates-a-controller-and-replaces-an-observer ()
+  (let ((buffer (generate-new-buffer " *herdr-resize*"))
+        (sidecar 'controller)
+        resized
+        restarted)
+    (unwind-protect
+        (cl-letf (((symbol-function 'window-live-p) (lambda (_) t))
+                  ((symbol-function 'window-buffer) (lambda (_) buffer))
+                  ((symbol-function 'herdr--attach-viewport)
+                   (lambda (&optional _) '(100 . 40)))
+                  ((symbol-function 'process-live-p)
+                   (lambda (process) (eq process sidecar)))
+                  ((symbol-function 'herdr-session-stream-resize)
+                   (lambda (process cols rows)
+                     (setq resized (list process cols rows))))
+                  ((symbol-function 'herdr--start-sidecar)
+                   (lambda (given-buffer mode)
+                     (setq restarted (list given-buffer mode)))))
+          (with-current-buffer buffer
+            (setq herdr--attach-stream t
+                  herdr--attach-sidecar sidecar
+                  herdr--attach-control-state 'control
+                  herdr--attach-size '(80 . 24)))
+          (herdr--resize-attach-stream 'window)
+          (should (equal resized '(controller 100 40)))
+          (should-not restarted)
+          (with-current-buffer buffer
+            (setq herdr--attach-control-state 'observe
+                  herdr--attach-size '(80 . 24)))
+          (herdr--resize-attach-stream 'window)
+          (should (equal restarted (list buffer 'observe))))
+      (kill-buffer buffer))))
 
 (ert-deftest herdr-session-stream-reassembles-a-frame-split-across-reads ()
   "herdr writes one JSON object per line and a read lands anywhere, so a
@@ -160,11 +343,7 @@ the terminal buffer has a real window and geometry."
                        '("herdr" "terminal" "session" "observe" "term_1"
                          "--cols" "120" "--rows" "50")))))))
 
-(ert-deftest herdr-terminal-exec-stream-leaves-emacs-reading-the-pty ()
-  "The frames are unwrapped in a process filter, so Emacs has to be what
-reads the process.  ghostel\='s native pty is read by its module instead,
-so focus handoff uses its Emacs-owned pty.  The plain exec leaves the
-default alone."
+(ert-deftest herdr-terminal-exec-keeps-ghostel-input-in-emacs ()
   (defvar ghostel-use-native-pty)
   (let ((ghostel-use-native-pty t)
         (seen 'unset))
@@ -172,34 +351,62 @@ default alone."
                (lambda (buffer &rest _)
                  (setq seen ghostel-use-native-pty)
                  buffer)))
-      (herdr--terminal-exec-stream (current-buffer) "herdr" nil)
+      (let ((herdr-terminal-backend 'ghostel))
+        (herdr--terminal-exec (current-buffer) "herdr" nil))
       (should-not seen)
-      (herdr--terminal-exec (current-buffer) "herdr" nil)
-      (should seen)
+      (setq seen 'unset)
+      (let ((herdr-terminal-backend 'eat))
+        (herdr--terminal-exec (current-buffer) "herdr" nil))
+      (should (eq seen t))
       (should ghostel-use-native-pty))))
 
-(ert-deftest herdr-session-stream-wrap-hands-the-emulator-raw-ansi ()
-  "The emulator keeps the filter it installed and never learns the stream
-was framed; a lifecycle message must not reach it at all."
+(ert-deftest herdr-session-stream-filter-exposes-frame-boundaries-and-full-state ()
   (require 'herdr-session-stream)
   (let* ((seen nil)
-         (buffer (generate-new-buffer " *wrap*"))
-         (process (make-process :name "wrap" :buffer buffer
-                                :command '("cat") :noquery t)))
+         (process (make-process :name "stream-filter" :buffer nil
+                                :command '("cat") :noquery t))
+         (filter (herdr-session-stream-filter
+                  (lambda (_process ansi full width height)
+                    (push (list ansi full width height) seen)))))
+    (unwind-protect
+        (funcall filter process
+                 (concat (json-serialize '((type . "terminal.closed")))
+                         "\n"
+                         (json-serialize
+                          `((type . "terminal.frame")
+                            (full . t) (width . 90) (height . 30)
+                            (bytes . ,(base64-encode-string "\e[2Jhi" t))))
+                         "\n"))
+      (delete-process process))
+    (should (equal seen '(("\e[2Jhi" t 90 30))))))
+
+(ert-deftest herdr-session-stream-filter-keeps-each-process-remainder-separate ()
+  (require 'herdr-session-stream)
+  (let* ((seen nil)
+         (first (make-process :name "stream-first" :buffer nil
+                              :command '("cat") :noquery t))
+         (second (make-process :name "stream-second" :buffer nil
+                               :command '("cat") :noquery t))
+         (filter (herdr-session-stream-filter
+                  (lambda (_process ansi &rest _)
+                    (push ansi seen))))
+         (one (concat (json-serialize
+                       `((type . "terminal.frame")
+                         (bytes . ,(base64-encode-string "one" t))))
+                      "\n"))
+         (two (concat (json-serialize
+                       `((type . "terminal.frame")
+                         (bytes . ,(base64-encode-string "two" t))))
+                      "\n"))
+         (split (/ (length one) 2)))
     (unwind-protect
         (progn
-          (set-process-filter process (lambda (_p out) (push out seen)))
-          (herdr-session-stream-wrap process)
-          (funcall (process-filter process) process
-                   (concat (json-serialize '((type . "terminal.closed")))
-                           "\n"
-                           (json-serialize
-                            `((type . "terminal.frame")
-                              (bytes . ,(base64-encode-string "\e[2Jhi" t))))
-                           "\n"))
-          (should (equal seen '("\e[2Jhi"))))
-      (delete-process process)
-      (kill-buffer buffer))))
+          (funcall filter first (substring one 0 split))
+          (funcall filter second two)
+          (funcall filter first (substring one split)))
+      (delete-process first)
+      (delete-process second))
+    (should (equal (nreverse seen) '("two" "one")))))
 
 (ert-deftest herdr-session-stream-history-asks-only-for-what-is-retained ()
   "A full-screen program redraws in place and never scrolls, so nothing
@@ -785,18 +992,42 @@ for it anyway would replay the current screen twice."
           (herdr-attach-takeover nil))
       (should-not (herdr-claude-code-ide--connect-p idle)))))
 
-(ert-deftest herdr-claude-code-ide-attaches-instead-of-spawning ()
-  (let* ((built nil)
+(ert-deftest herdr-claude-code-ide-configures-the-complete-session-stream ()
+  (defvar claude-code-ide-terminal-backend)
+  (defvar ghostel-use-native-pty)
+  (let* ((buffer (generate-new-buffer " *claude-stream*"))
+         (process 'backend-process)
+         (built nil)
+         (configured nil)
+         (native 'unset)
          (herdr-claude-code-ide--attach-terminal "term_adopted")
-         (herdr-executable "herdr")
-         (herdr-terminal-backend 'vterm)
+         (herdr-executable "/tmp/herdr cli")
+         (herdr-terminal-backend 'ghostel)
+         (claude-code-ide-terminal-backend 'ghostel)
+         (ghostel-use-native-pty t)
          (original (lambda (&rest _)
-                     (setq built (claude-code-ide--build-claude-command nil nil "s1")))))
-    (cl-letf (((symbol-function 'claude-code-ide--build-claude-command)
-               (lambda (&rest _) "claude --resume")))
-      (herdr-claude-code-ide--create-terminal-session
-       original "*claude-code[x]*" "/tmp" 4711 nil nil "s1"))
-    (should (equal built "herdr terminal attach term_adopted --takeover"))))
+                     (setq built (claude-code-ide--build-claude-command nil nil "s1")
+                           native ghostel-use-native-pty)
+                     (cons buffer process))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'herdr--attach-viewport)
+                   (lambda (&optional _) '(80 . 22)))
+                  ((symbol-function 'claude-code-ide--build-claude-command)
+                   (lambda (&rest _) "claude --resume"))
+                  ((symbol-function 'herdr-claim-buffer)
+                   (lambda (given-buffer terminal-id &rest _)
+                     (should (eq given-buffer buffer))
+                     (should (equal terminal-id "term_adopted"))))
+                  ((symbol-function 'herdr--configure-session-stream)
+                   (lambda (&rest args) (setq configured args))))
+          (herdr-claude-code-ide--create-terminal-session
+           original "*claude-code[x]*" "/tmp" 4711 nil nil "s1")
+          (should (equal built
+                         "/tmp/herdr\\ cli terminal session observe term_adopted --cols 80 --rows 22"))
+          (should-not native)
+          (should (equal configured
+                         (list buffer "term_adopted" t process 'ghostel))))
+      (kill-buffer buffer))))
 
 (ert-deftest herdr-live-server-answers-ping ()
   (let ((herdr-socket-path nil))

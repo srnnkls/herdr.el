@@ -33,8 +33,8 @@ Terminal buffers use ghostel, vterm or eat — whichever is installed, or set
 
 `M-x herdr-attach-agent` lists the agents herdr is running and opens the chosen
 one in an Emacs terminal buffer. `M-x herdr-attach-pane` does the same for any
-pane. Input goes straight to the herdr terminal; killing the buffer detaches
-and leaves the process running.
+pane. Input reaches the shared Herdr terminal while that buffer owns control;
+killing the buffer detaches and leaves the process running.
 
 With the claude-code-ide bridge loaded, picking a claude agent opens a real
 claude-code-ide session around it instead of a bare terminal. Anything else in
@@ -49,12 +49,12 @@ enough to stay clear of other side-window users such as claude-code-ide. Set
 `herdr-use-side-window` to nil to hand placement over to `display-buffer-alist`
 or a popup framework.
 
-Ghostel attachments stay in one searchable Emacs buffer while their Herdr
-child follows focus. The selected terminal controls input and sets the shared
-PTY geometry; focus loss replaces only that child with an observer, releasing
-the resize lock so Herdr's foreground iTerm, SSH or mobile client immediately
+Ghostel, vterm and Eat attachments keep one stable, searchable terminal buffer.
+A backend-neutral Herdr sidecar observes while unfocused and controls while any
+selected window for the buffer has frame focus. Focus loss releases input and
+the resize lock, so a foreground iTerm, SSH or mobile client immediately
 reflows the same terminal to its own size. `herdr-attach-takeover` disables
-that control path when nil. Other terminal backends use Herdr's direct attach.
+focus-driven control when nil; the buffer remains a live observer.
 
 ## One herdr server, or one of your own
 
