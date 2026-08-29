@@ -35,6 +35,8 @@
 (declare-function claude-code-ide-mcp-session-buffer "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp-session-project-dir "claude-code-ide-mcp" (session))
 (defvar claude-code-ide-focus-on-open)
+(defvar claude-code-ide-terminal-backend)
+(defvar ghostel-use-native-pty)
 
 (defgroup herdr-claude-code-ide nil
   "Run claude-code-ide sessions inside herdr panes."
@@ -113,9 +115,8 @@ worktree carries the worktree's name."
   (file-name-nondirectory (directory-file-name (expand-file-name directory))))
 
 (defun herdr-claude-code-ide--spawn (buffer-name working-dir port command)
-  "Start COMMAND in a new herdr tab and return its terminal id.
-The tab runs in WORKING-DIR, sits in that directory's herdr workspace,
-and its shell carries the claude-code-ide MCP environment for PORT."
+  "Start COMMAND in a new Herdr tab and return its terminal id.
+BUFFER-NAME labels the tab; WORKING-DIR and PORT configure its process."
   (let* ((tab (herdr-open-tab
                :cwd (expand-file-name working-dir)
                :label (funcall herdr-claude-code-ide-label-function
@@ -164,15 +165,29 @@ the attach command instead of the Claude CLI."
                           (herdr-session-for working-dir))
     (if-let* ((terminal-id (herdr-claude-code-ide--terminal-for
                             buffer-name working-dir port continue resume session-id)))
-        (cl-letf (((symbol-function 'claude-code-ide--build-claude-command)
-                   (lambda (&rest _)
-                     (mapconcat #'identity
-                                (herdr-attach-command terminal-id herdr-attach-takeover)
-                                " "))))
-          (let* ((process-environment (herdr-process-environment))
-                 (result (apply original args)))
-            (herdr-claim-buffer (car-safe result) terminal-id)
-            result))
+        (let* ((backend (if (memq claude-code-ide-terminal-backend
+                                   '(ghostel vterm eat))
+                            claude-code-ide-terminal-backend
+                          (herdr--backend)))
+               (herdr-terminal-backend backend)
+               (command (mapconcat
+                         #'shell-quote-argument
+                         (herdr-attach-command terminal-id)
+                         " ")))
+          (cl-letf (((symbol-function 'claude-code-ide--build-claude-command)
+                     (lambda (&rest _) command)))
+            (let* ((process-environment (herdr-process-environment))
+                   (ghostel-use-native-pty
+                    (and (not (eq backend 'ghostel))
+                         (boundp 'ghostel-use-native-pty)
+                         (symbol-value 'ghostel-use-native-pty)))
+                   (result (apply original args))
+                   (buffer (car result))
+                   (process (cdr result)))
+              (herdr-claim-buffer buffer terminal-id)
+              (herdr--configure-session-stream
+               buffer terminal-id herdr-attach-takeover process backend)
+              result)))
       (apply original args)))))
 
 (defun herdr-claude-code-ide-sessions ()

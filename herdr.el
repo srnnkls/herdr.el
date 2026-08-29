@@ -29,6 +29,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'seq)
 (require 'subr-x)
 (require 'timer)
 (require 'herdr-core)
@@ -54,11 +55,10 @@
   :group 'herdr)
 
 (defcustom herdr-attach-takeover t
-  "Whether an attached terminal accepts input while its window has focus.
-Ghostel swaps its Herdr child from observation to control when selected,
-and back on focus loss; that hands the shared PTY geometry to whichever
-Herdr client is active without replacing the Emacs buffer.  Other
-terminal backends retain Herdr\='s direct-attach takeover semantics."
+  "Whether terminal control follows Emacs focus.
+When non-nil, each supported backend controls the shared terminal only
+while one of its selected windows has frame focus.  It observes after
+focus leaves, releasing canonical PTY geometry to the active client."
   :type 'boolean
   :group 'herdr)
 
@@ -151,11 +151,12 @@ name of the one owning the directory, so the two line up."
                            (herdr-workspaces)))))
 
 (cl-defun herdr-open-tab (&key cwd label workspace env focus)
-  "Open a tab labelled LABEL in the herdr workspace labelled WORKSPACE.
-Creates that workspace when it does not exist yet, and labels the tab
-it comes with rather than leaving an empty one behind.  Without a
-WORKSPACE the tab goes to the focused workspace, or to a new one when
-the session has none.  The reply carries `root_pane' and `tab'."
+  "Open a tab labelled LABEL in the Herdr workspace labelled WORKSPACE.
+CWD, ENV and FOCUS configure the new tab.  A missing workspace is
+created, and LABEL is applied to its initial tab instead of creating an
+empty sibling.  Without WORKSPACE the tab goes to the focused workspace,
+or to a new one when the session has none.  The reply carries
+`root_pane' and `tab'."
   (let ((id (herdr-workspace-id workspace)))
     (if (or id (and (not workspace) (herdr-workspaces)))
         (herdr-api-tab-create :cwd cwd :label label :env env
@@ -205,7 +206,7 @@ scrollback, `ghostel-max-scrollback\=' or `eat-term-scrollback-size\='."
   :type '(choice (const :tag "As much as herdr will hand over" nil) natnum)
   :group 'herdr)
 
-(declare-function herdr-session-stream-wrap "herdr-session-stream" (process))
+(declare-function herdr-session-stream-filter "herdr-session-stream" (receiver))
 (declare-function herdr-session-stream-history "herdr-session-stream"
                   (terminal-id lines))
 (declare-function herdr-session-stream-command "herdr-session-stream"
@@ -213,40 +214,103 @@ scrollback, `ghostel-max-scrollback\=' or `eat-term-scrollback-size\='."
 (declare-function herdr-session-stream-release "herdr-session-stream" (process))
 (declare-function herdr-session-stream-resize "herdr-session-stream"
                   (process cols rows))
+(declare-function eat-term-size "eat" (terminal))
+(declare-function vterm--get-margin-width "vterm" ())
 
 (defvar ghostel-use-native-pty)
 (defvar ghostel--process)
-(defvar herdr-session-stream--pending)
+(defvar ghostel--term-cols)
+(defvar ghostel--term-rows)
+(defvar eat-terminal)
+(defvar vterm-min-window-width)
+(defvar window-adjust-process-window-size-function)
 (defvar herdr-terminal-session)
 
 (defvar-local herdr--attach-follow-focus nil
-  "Whether this relay claims control only while its window has focus.")
+  "Whether control follows this buffer's focused selected window.")
 
 (defvar-local herdr--attach-control-state nil
-  "Last focus state sent to this buffer's relay.")
+  "Mode of this buffer's active Herdr sidecar.")
 
 (defvar-local herdr--attach-stream nil
-  "Whether this buffer speaks Herdr\='s framed terminal session protocol.")
+  "Whether this buffer uses Herdr's framed session stream.")
 
 (defvar-local herdr--attach-size nil
-  "Last window size reported by this attached terminal.")
+  "Last viewport requested from the active sidecar.")
 
 (defvar-local herdr--attach-terminal-id nil
   "Terminal whose session stream this buffer shows.")
 
+(defvar-local herdr--attach-backend nil
+  "Terminal backend rendering this buffer.")
+
+(defvar-local herdr--attach-backend-process nil
+  "Stable process owned by this buffer's terminal backend.")
+
+(defvar-local herdr--attach-writer nil
+  "Original backend process filter receiving decoded ANSI.")
+
+(defvar-local herdr--attach-sidecar nil
+  "Active Herdr session stream process.")
+
+(defvar-local herdr--attach-candidate nil
+  "Herdr session stream waiting for its first full frame.")
+
+(defvar-local herdr--attach-generation 0
+  "Generation assigned to the newest sidecar candidate.")
+
+(defvar-local herdr--attach-closing nil
+  "Non-nil while this buffer's stream processes are being torn down.")
+
 (defvar herdr--attach-focus-timer nil
   "Timer reconciling attached terminals after focus settles.")
 
+(defun herdr--focused-window (buffer)
+  "Return BUFFER's selected window on a focused frame, if any."
+  (seq-find (lambda (window)
+              (and (eq window (frame-selected-window (window-frame window)))
+                   (eq t (frame-focus-state (window-frame window)))))
+            (get-buffer-window-list buffer nil t)))
+
+(defun herdr--attach-window (buffer)
+  "Return the window whose viewport BUFFER should use."
+  (or (herdr--focused-window buffer)
+      (car (get-buffer-window-list buffer nil t))
+      (selected-window)))
+
 (defun herdr--attach-viewport (&optional target)
-  "Return TARGET\='s size, using the selected window when it has none.
-TARGET may be a window or a buffer."
-  (let ((window (cond ((windowp target) target)
-                      ((bufferp target) (get-buffer-window target t))
-                      (t nil))))
-    (setq window (or window (selected-window)))
-    (cons (max 1 (window-max-chars-per-line window))
-          (max 1 (with-selected-window window
-                   (floor (window-screen-lines)))))))
+  "Return TARGET's terminal-core size as (COLS . ROWS)."
+  (let* ((buffer (if (bufferp target) target
+                   (and (windowp target) (window-buffer target))))
+         (buffer (or buffer (current-buffer)))
+         (window (if (windowp target) target (herdr--attach-window buffer))))
+    (with-current-buffer buffer
+      (pcase herdr--attach-backend
+        ('ghostel
+         (if (and (numberp ghostel--term-cols)
+                  (numberp ghostel--term-rows))
+             (cons (max 1 ghostel--term-cols) (max 1 ghostel--term-rows))
+           (cons (max 1 (window-body-width window))
+                 (max 1 (window-body-height window)))))
+        ('eat
+         (if eat-terminal
+             (eat-term-size eat-terminal)
+           (cons (max 1 (window-body-width window))
+                 (max 1 (window-body-height window)))))
+        ('vterm
+         (let* ((windows (get-buffer-window-list buffer nil t))
+                (size (and (processp herdr--attach-backend-process)
+                           (process-live-p herdr--attach-backend-process)
+                           windows
+                           (funcall window-adjust-process-window-size-function
+                                    herdr--attach-backend-process windows)))
+                (width (or (car-safe size) (window-body-width window)))
+                (height (or (cdr-safe size) (window-body-height window))))
+           (cons (max vterm-min-window-width
+                      (- width (vterm--get-margin-width)))
+                 (max 1 height))))
+        (_ (cons (max 1 (window-body-width window))
+                 (max 1 (window-body-height window))))))))
 
 (defun herdr--stream-command (terminal-id mode &optional buffer)
   "Return the Herdr command streaming TERMINAL-ID in MODE for BUFFER."
@@ -256,67 +320,131 @@ TARGET may be a window or a buffer."
                         ,@(herdr-session-stream-command
                            terminal-id (eq mode 'control) cols rows))))
 
-(defun herdr-attach-command (terminal-id &optional takeover)
-  "Return the command list attaching to TERMINAL-ID.
-Ghostel starts a session observer whose process can be replaced without
-rebuilding its terminal core.  TAKEOVER then follows focus by swapping
-that child between observation and control.  Other backends use Herdr\='s
-direct attach, where TAKEOVER keeps its native permanent meaning."
-  (if (eq (herdr--backend) 'ghostel)
-      (herdr--stream-command terminal-id 'observe)
-    `(,herdr-executable ,@(herdr-global-args)
-                        "terminal" "attach" ,terminal-id
-                        ,@(when takeover '("--takeover")))))
+(defun herdr-attach-command (terminal-id &optional _takeover)
+  "Return the initial observer command for TERMINAL-ID."
+  (herdr--stream-command terminal-id 'observe))
 
-(defun herdr--prepare-stream-process (process mode)
-  "Mark PROCESS as a MODE session stream and unwrap its output."
-  (process-put process 'herdr-session-stream t)
-  (process-put process 'herdr-session-stream-mode mode)
-  (setq herdr-session-stream--pending nil)
-  (herdr-session-stream-wrap process)
-  process)
+(defun herdr--stop-sidecar (process &optional release)
+  "Stop PROCESS, sending a release first when RELEASE is non-nil."
+  (when (processp process)
+    (when (and release (process-live-p process))
+      (ignore-errors (herdr-session-stream-release process)))
+    (set-process-sentinel process #'ignore)
+    (when (process-live-p process)
+      (delete-process process))))
 
-(defun herdr--replace-stream-process (buffer mode)
-  "Replace BUFFER\='s Herdr child with MODE without rebuilding its terminal."
-  (with-current-buffer buffer
-    (when-let* ((old (get-buffer-process buffer)))
-      (when (process-live-p old)
-        (when (eq (process-get old 'herdr-session-stream-mode) 'control)
-          (ignore-errors (herdr-session-stream-release old)))
-        (set-process-sentinel old #'ignore)
-        (delete-process old)))
-    (setq ghostel--process nil)
-    (let* ((herdr-session herdr-terminal-session)
-           (command (herdr--stream-command herdr--attach-terminal-id mode buffer))
-           (process-environment (herdr-process-environment))
-           (ghostel-use-native-pty nil)
-           (process (ghostel--spawn-pty (car command) (cdr command) nil)))
-      (herdr--prepare-stream-process process mode)
-      (setq herdr--attach-control-state mode
-            herdr--attach-size (herdr--attach-viewport buffer))
-      process)))
+(defun herdr--sidecar-frame (buffer process generation ansi full width height)
+  "Draw one frame from PROCESS's GENERATION into BUFFER."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (cond
+       ((and (eq process herdr--attach-candidate)
+             (= generation herdr--attach-generation)
+             full)
+        (let ((old herdr--attach-sidecar))
+          (setq herdr--attach-sidecar process
+                herdr--attach-candidate nil
+                herdr--attach-control-state
+                (process-get process 'herdr-session-stream-mode)
+                herdr--attach-size (cons width height))
+          (unless (eq old process)
+            (herdr--stop-sidecar old))
+          (when (and herdr--attach-writer
+                     (process-live-p herdr--attach-backend-process))
+            (funcall herdr--attach-writer
+                     herdr--attach-backend-process ansi))))
+       ((eq process herdr--attach-sidecar)
+        (when (and herdr--attach-writer
+                   (process-live-p herdr--attach-backend-process))
+          (funcall herdr--attach-writer
+                   herdr--attach-backend-process ansi)))))))
+
+(defun herdr--recover-sidecar (buffer)
+  "Restore BUFFER's sidecar after an unexpected exit."
+  (when (buffer-live-p buffer)
+    (if (buffer-local-value 'herdr--attach-follow-focus buffer)
+        (herdr--sync-attach-control buffer)
+      (herdr--set-attach-mode buffer 'observe))))
+
+(defun herdr--sidecar-sentinel (buffer process _event)
+  "Recover BUFFER when its sidecar PROCESS exits unexpectedly."
+  (when (and (buffer-live-p buffer)
+             (not (process-live-p process)))
+    (with-current-buffer buffer
+      (cond
+       ((eq process herdr--attach-candidate)
+        (setq herdr--attach-candidate nil))
+       ((eq process herdr--attach-sidecar)
+        (setq herdr--attach-sidecar nil
+              herdr--attach-control-state nil)
+        (unless herdr--attach-closing
+          (run-at-time 0.1 nil #'herdr--recover-sidecar buffer)))))))
+
+(defun herdr--start-sidecar (buffer mode)
+  "Start a fresh MODE sidecar candidate for BUFFER."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (require 'herdr-session-stream)
+      (cl-incf herdr--attach-generation)
+      (herdr--stop-sidecar herdr--attach-candidate)
+      (setq herdr--attach-candidate nil)
+      (when (and (eq mode 'observe)
+                 (eq herdr--attach-control-state 'control))
+        (herdr--stop-sidecar herdr--attach-sidecar t)
+        (setq herdr--attach-sidecar nil
+              herdr--attach-control-state nil))
+      (pcase-let* ((generation herdr--attach-generation)
+                   (herdr-session herdr-terminal-session)
+                   (command (herdr--stream-command
+                             herdr--attach-terminal-id mode buffer))
+                   (process-environment (herdr-process-environment))
+                   (process
+                    (make-process
+                     :name (format "herdr-%s-%s-%d"
+                                   herdr--attach-terminal-id mode generation)
+                     :buffer nil
+                     :command command
+                     :connection-type 'pipe
+                     :coding 'binary
+                     :noquery t
+                     :stderr (get-buffer-create " *herdr session stderr*")
+                     :filter
+                     (herdr-session-stream-filter
+                      (lambda (source ansi full width height)
+                        (herdr--sidecar-frame buffer source generation
+                                              ansi full width height)))
+                     :sentinel
+                     (lambda (source event)
+                       (herdr--sidecar-sentinel buffer source event)))))
+        (process-put process 'herdr-session-stream-mode mode)
+        (setq herdr--attach-candidate process)
+        process))))
 
 (defun herdr--set-attach-mode (buffer mode)
-  "Set BUFFER\='s session stream to MODE while preserving its terminal core."
+  "Set BUFFER's desired Herdr sidecar MODE."
   (when (and (buffer-live-p buffer)
-             (buffer-local-value 'herdr--attach-stream buffer)
-             (not (eq mode
-                      (buffer-local-value 'herdr--attach-control-state buffer))))
-    (herdr--replace-stream-process buffer mode)))
+             (buffer-local-value 'herdr--attach-stream buffer))
+    (with-current-buffer buffer
+      (let ((candidate-mode
+             (and (processp herdr--attach-candidate)
+                  (process-get herdr--attach-candidate
+                               'herdr-session-stream-mode))))
+        (cond
+         ((eq candidate-mode mode))
+         ((eq herdr--attach-control-state mode)
+          (cl-incf herdr--attach-generation)
+          (herdr--stop-sidecar herdr--attach-candidate)
+          (setq herdr--attach-candidate nil))
+         (t (herdr--start-sidecar buffer mode)))))))
 
 (defun herdr--sync-attach-control (buffer)
-  "Make BUFFER\='s controller follow its selected window\='s frame focus."
+  "Make BUFFER's controller follow focus across every displayed window."
   (when (and (buffer-live-p buffer)
              (buffer-local-value 'herdr--attach-follow-focus buffer))
-    (let* ((window (get-buffer-window buffer t))
-           (control (and window
-                         (eq window
-                             (frame-selected-window (window-frame window)))
-                         (eq t (frame-focus-state (window-frame window)))))
-           (state (if control 'control 'observe)))
-      (unless (eq state
+    (let ((mode (if (herdr--focused-window buffer) 'control 'observe)))
+      (unless (eq mode
                   (buffer-local-value 'herdr--attach-control-state buffer))
-        (herdr--set-attach-mode buffer state)))))
+        (herdr--set-attach-mode buffer mode)))))
 
 (defun herdr--sync-current-attach-control ()
   "Claim control before a command reaches the current terminal."
@@ -345,10 +473,62 @@ direct attach, where TAKEOVER keeps its native permanent meaning."
               (setq herdr--attach-size wanted)
               (pcase-let ((`(,cols . ,rows) wanted))
                 (if (eq herdr--attach-control-state 'control)
-                    (when-let* ((process (get-buffer-process buffer))
-                                ((process-live-p process)))
-                      (herdr-session-stream-resize process cols rows))
-                  (herdr--replace-stream-process buffer 'observe))))))))))
+                    (when (process-live-p herdr--attach-sidecar)
+                      (herdr-session-stream-resize
+                       herdr--attach-sidecar cols rows))
+                  (herdr--start-sidecar buffer 'observe))))))))))
+
+(defun herdr--cleanup-session-stream ()
+  "Release and stop the current buffer's Herdr sidecars."
+  (unless herdr--attach-closing
+    (setq herdr--attach-closing t)
+    (cl-incf herdr--attach-generation)
+    (herdr--stop-sidecar herdr--attach-candidate)
+    (herdr--stop-sidecar
+     herdr--attach-sidecar
+     (eq herdr--attach-control-state 'control))
+    (when (processp herdr--attach-backend-process)
+      (process-put herdr--attach-backend-process
+                   'herdr-session-stream-buffer nil))
+    (setq herdr--attach-candidate nil
+          herdr--attach-sidecar nil
+          herdr--attach-control-state nil)))
+
+(defun herdr--configure-session-stream (buffer terminal-id takeover
+                                               &optional backend-process backend)
+  "Configure BUFFER's BACKEND-PROCESS for TERMINAL-ID.
+TAKEOVER enables focus-driven control; BACKEND defaults to the selected
+terminal backend."
+  (require 'herdr-session-stream)
+  (with-current-buffer buffer
+    (let ((process (or backend-process (get-buffer-process buffer))))
+      (unless (process-live-p process)
+        (signal 'herdr-error (list "terminal backend created no live process")))
+      (let ((writer (process-filter process)))
+        (unless writer
+          (signal 'herdr-error (list "terminal backend installed no process filter")))
+        (setq herdr--attach-stream t
+              herdr--attach-follow-focus takeover
+              herdr--attach-control-state nil
+              herdr--attach-terminal-id terminal-id
+              herdr--attach-backend (or backend (herdr--backend))
+              herdr--attach-backend-process process
+              herdr--attach-writer writer
+              herdr--attach-size (herdr--attach-viewport buffer)
+              herdr--attach-closing nil)
+        (process-put process 'herdr-session-stream-buffer buffer)
+        (set-process-filter process #'ignore)
+        (when-let* ((history (herdr-session-stream-history
+                              terminal-id herdr-attach-history)))
+          (funcall writer process history))
+        (add-hook 'window-size-change-functions
+                  #'herdr--resize-attach-stream nil t)
+        (add-hook 'kill-buffer-hook #'herdr--cleanup-session-stream nil t)
+        (when takeover
+          (add-hook 'pre-command-hook
+                    #'herdr--sync-current-attach-control nil t))
+        (herdr--start-sidecar buffer 'observe)
+        buffer))))
 
 (add-function :after after-focus-change-function
               #'herdr--schedule-attach-control-sync)
@@ -357,13 +537,12 @@ direct attach, where TAKEOVER keeps its native permanent meaning."
 
 (defun herdr--terminal-exec (buffer program args)
   "Run PROGRAM with ARGS inside BUFFER and return the buffer used."
-  (let ((process-environment (herdr-process-environment)))
+  (let ((process-environment (herdr-process-environment))
+        (ghostel-use-native-pty
+         (and (not (eq herdr-terminal-backend 'ghostel))
+              (boundp 'ghostel-use-native-pty)
+              (symbol-value 'ghostel-use-native-pty))))
     (herdr--terminal-exec-1 buffer program args)))
-
-(defun herdr--terminal-exec-stream (buffer program args)
-  "Run PROGRAM with ARGS in BUFFER where Emacs can replace its pty child."
-  (let ((ghostel-use-native-pty nil))
-    (herdr--terminal-exec buffer program args)))
 
 (defun herdr--terminal-exec-1 (buffer program args)
   "Run PROGRAM with ARGS inside BUFFER using the configured backend."
@@ -485,45 +664,29 @@ counter.  Signals when TERMINAL-ID is the one already there."
     name))
 
 (cl-defun herdr-attach-terminal (terminal-id &key label directory takeover display)
-  "Attach herdr terminal TERMINAL-ID to an Emacs terminal buffer.
-LABEL names the buffer, DIRECTORY sets its `default-directory', and
-DISPLAY shows it.  Under ghostel, TAKEOVER controls only while its
-selected window has frame focus; losing focus returns geometry to
-Herdr's foreground client while this buffer keeps observing."
-  (let ((name (herdr--free-buffer-name (or label terminal-id) terminal-id)))
+  "Attach Herdr terminal TERMINAL-ID to a focus-following buffer.
+LABEL names it, DIRECTORY sets its working directory, TAKEOVER enables
+focus-driven control, and DISPLAY shows it."
+  (let ((name (herdr--free-buffer-name (or label terminal-id) terminal-id))
+        (backend (herdr--backend)))
     (when-let* ((existing (get-buffer name)))
       (kill-buffer existing))
     (let* ((buffer (get-buffer-create name))
-           (stream (eq (herdr--backend) 'ghostel))
+           (herdr-terminal-backend backend)
            (command (herdr-attach-command terminal-id takeover)))
       (with-current-buffer buffer
-        (when directory (setq default-directory (file-name-as-directory directory))))
-      (setq buffer (funcall (if stream
-                                #'herdr--terminal-exec-stream
-                              #'herdr--terminal-exec)
-                            buffer (car command) (cdr command)))
+        (when directory
+          (setq default-directory (file-name-as-directory directory))))
+      (setq buffer (herdr--terminal-exec
+                    buffer (car command) (cdr command)))
       (herdr-claim-buffer buffer terminal-id)
-      (when stream
-        (with-current-buffer buffer
-          (setq herdr--attach-stream t
-                herdr--attach-follow-focus takeover
-                herdr--attach-control-state 'observe
-                herdr--attach-terminal-id terminal-id
-                herdr--attach-size (herdr--attach-viewport buffer))
-          (add-hook 'window-size-change-functions
-                    #'herdr--resize-attach-stream nil t)
-          (when takeover
-            (add-hook 'pre-command-hook
-                      #'herdr--sync-current-attach-control nil t)))
-        (when-let* ((process (get-buffer-process buffer)))
-          (ignore-errors
-            (when-let* ((history (herdr-session-stream-history
-                                  terminal-id herdr-attach-history)))
-              (funcall (process-filter process) process history)))
-          (with-current-buffer buffer
-            (herdr--prepare-stream-process process 'observe))))
-      (when display (herdr-display-buffer buffer))
-      (when takeover (herdr--sync-attach-control buffer))
+      (let ((herdr-terminal-backend backend))
+        (herdr--configure-session-stream
+         buffer terminal-id takeover nil backend))
+      (when display
+        (herdr-display-buffer buffer))
+      (when takeover
+        (herdr--sync-attach-control buffer))
       buffer)))
 
 ;;;; Completion
@@ -776,7 +939,7 @@ attached."
 
 ;;;###autoload
 (defun herdr-jump (session)
-  "Jump to a running SESSION, whether or not Emacs already shows it."
+  "Jump to SESSION, attaching its terminal when needed."
   (interactive (list (herdr-read-entry "Jump to session: " (herdr-sessions))))
   (herdr-visit session))
 
