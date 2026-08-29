@@ -13,7 +13,7 @@
 
 (cl-defstruct (herdr-agent-session
                (:constructor herdr-agent--make-session))
-  key server terminal kind name agent-session project route workspace tab pane
+  key server terminal kind name requested-name agent-session project route workspace tab pane
   buffer attachment-process state ownership cleanup)
 
 (defvar herdr-agent-kind-adapters nil
@@ -54,6 +54,51 @@
 (defun herdr-agent--project (root)
   "Return ROOT in canonical form."
   (and root (directory-file-name (file-truename root))))
+
+(defun herdr-agent--name-valid-p (name)
+  "Return non-nil when NAME is valid for Herdr."
+  (let ((case-fold-search nil))
+    (and (stringp name)
+         (string-match-p "\\`[a-z][a-z0-9_-]\\{0,31\\}\\'" name))))
+
+(defun herdr-agent--blank-name-p (name)
+  "Return non-nil when NAME needs an automatic name."
+  (or (null name)
+      (and (stringp name) (string-match-p "\\`[[:space:]]*\\'" name))))
+
+(defun herdr-agent--occupied-names (server-key)
+  "Return agent names occupied on SERVER-KEY."
+  (append
+   (delq nil (mapcar (lambda (agent) (alist-get 'name agent))
+                     (alist-get 'agents (herdr-api-agent-list))))
+   (let (names)
+     (maphash (lambda (key session)
+                (when (equal (car key) server-key)
+                  (push (herdr-agent-session-name session) names)
+                  (push (herdr-agent-session-requested-name session) names)))
+              herdr-agent--sessions)
+     names)))
+
+(defun herdr-agent--available-name (name server-key)
+  "Return an unused valid NAME for SERVER-KEY."
+  (unless (or (herdr-agent--blank-name-p name)
+              (herdr-agent--name-valid-p name))
+    (user-error "Invalid Herdr agent name: %s" name))
+  (let* ((name (if (herdr-agent--blank-name-p name) "agent" name))
+         (occupied (herdr-agent--occupied-names server-key)))
+    (if (not (member name occupied))
+        name
+      (let ((suffix 2)
+            candidate)
+        (while (progn
+                 (setq candidate
+                       (format "%s-%d"
+                               (substring name 0 (min (length name)
+                                                      (- 32 (length (number-to-string suffix)) 1)))
+                               suffix))
+                 (setq suffix (1+ suffix))
+                 (member candidate occupied)))
+        candidate))))
 
 (defun herdr-agent--register (session)
   "Register SESSION and its derived indexes."
@@ -379,41 +424,45 @@
 (cl-defun herdr-agent-start-session
     (kind name &key server-key project-root workspace args (attach t) timeout-ms)
   "Start KIND named NAME on SERVER-KEY for PROJECT-ROOT in WORKSPACE with ARGS."
-  (let* ((server-key (herdr-agent--canonical-server-key
-                      (or server-key (herdr-server-key))))
-         (project-root (or project-root
+  (let* ((project-root (or project-root
                            (funcall herdr-project-root-function)
                            default-directory))
-         (current-server-key (herdr-agent--canonical-server-key (herdr-server-key))))
-    (when (equal server-key current-server-key)
-      (herdr-start-server-if-needed))
-    (herdr-agent--with-server server-key
-      (unless (equal server-key current-server-key)
-        (herdr-start-server-if-needed))
-      (let ((session (herdr-agent--make-session
-                      :server server-key :kind kind :name name
-                      :project (herdr-agent--project project-root) :state 'starting)))
-        (condition-case err
-            (let* ((env (herdr-agent--run-adapter session :prepare))
-                   (workspace (or workspace (herdr-workspace-label project-root)))
-                   (existing (herdr-workspace-id workspace))
-                   (created (herdr-open-tab :cwd project-root :label name :workspace workspace :env env))
-                   (tab (alist-get 'tab created))
-                   (pane (alist-get 'root_pane created))
-                   (workspace-id (or existing (alist-get 'workspace_id (alist-get 'workspace created))
-                                     (alist-get 'workspace_id pane))))
-              (setf (herdr-agent-session-workspace session) workspace-id
-                    (herdr-agent-session-tab session) (alist-get 'tab_id tab)
-                    (herdr-agent-session-pane session) (alist-get 'pane_id pane)
-                    (herdr-agent-session-ownership session)
-                    (list :tab (alist-get 'tab_id tab)
-                          :workspace (and (not existing) workspace-id)))
-              (herdr-agent-start-in-pane kind name pane :server-key server-key
-                                         :args args :attach attach :session session
-                                         :timeout-ms timeout-ms))
-          (error
-           (herdr-agent--rollback session)
-           (signal (car err) (cdr err))))))))
+         (project-session (and (not server-key) (herdr-session-for project-root)))
+         (server-key (if server-key
+                         (herdr-agent--canonical-server-key server-key)
+                       (herdr-with-session project-session
+                         (herdr-agent--canonical-server-key (herdr-server-key))))))
+    (herdr-with-session project-session
+      (unless (or (herdr-agent--blank-name-p name)
+                  (herdr-agent--name-valid-p name))
+        (user-error "Invalid Herdr agent name: %s" name))
+      (herdr-agent--with-server server-key
+        (herdr-start-server-if-needed)
+        (let* ((name (herdr-agent--available-name name server-key))
+               (session (herdr-agent--make-session
+                        :server server-key :kind kind :name name :requested-name name
+                        :project (herdr-agent--project project-root) :state 'starting)))
+          (condition-case err
+              (let* ((env (herdr-agent--run-adapter session :prepare))
+                     (workspace (or workspace (herdr-workspace-label project-root)))
+                     (existing (herdr-workspace-id workspace))
+                     (created (herdr-open-tab :cwd project-root :label name :workspace workspace :env env))
+                     (tab (alist-get 'tab created))
+                     (pane (alist-get 'root_pane created))
+                     (workspace-id (or existing (alist-get 'workspace_id (alist-get 'workspace created))
+                                       (alist-get 'workspace_id pane))))
+                (setf (herdr-agent-session-workspace session) workspace-id
+                      (herdr-agent-session-tab session) (alist-get 'tab_id tab)
+                      (herdr-agent-session-pane session) (alist-get 'pane_id pane)
+                      (herdr-agent-session-ownership session)
+                      (list :tab (alist-get 'tab_id tab)
+                            :workspace (and (not existing) workspace-id)))
+                (herdr-agent-start-in-pane kind name pane :server-key server-key
+                                           :args args :attach attach :session session
+                                           :timeout-ms timeout-ms))
+            (error
+             (herdr-agent--rollback session)
+             (signal (car err) (cdr err)))))))))
 
 (defun herdr-agent-attach-entry (entry)
   "Attach supported agent ENTRY through the generic lifecycle root."

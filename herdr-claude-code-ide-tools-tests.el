@@ -46,14 +46,17 @@
   (let* ((session (herdr-claude-code-ide-tools-tests--session root terminal-id))
          (client (make-herdr-claude-code-ide-mcp-client
                   :raw (intern (concat terminal-id "-client"))
-                  :open-p t :initialized-p t :generation 1)))
+                  :open-p t :initialized-p t :generation 1))
+         (raw-clients (make-hash-table :test #'eq)))
+    (puthash (herdr-claude-code-ide-mcp-client-raw client) client raw-clients)
     (make-herdr-claude-code-ide-mcp-adapter
      :session-key (herdr-agent-session-key session)
      :session session
      :state 'connected
      :clients (list client)
      :current-client client
-     :client-generation 1)))
+     :client-generation 1
+     :raw-clients raw-clients)))
 
 (defun herdr-claude-code-ide-tools-tests--client (adapter)
   (herdr-claude-code-ide-mcp-adapter-current-client adapter))
@@ -864,7 +867,8 @@
                               (and (eq (nth 0 entry) 'kill-buffer-hook)
                                    (nth 2 entry)))
                             additions)))
-                (herdr-claude-code-ide-mcp-cleanup adapter)
+                (should-error (herdr-claude-code-ide-mcp-cleanup adapter)
+                              :type 'error)
                 (should-not cleanup-fault)
                 (should (buffer-live-p proposed))
                 (should (eq (herdr-claude-code-ide-mcp-adapter-state adapter)

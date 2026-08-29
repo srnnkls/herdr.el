@@ -35,13 +35,16 @@
 (defun herdr-claude-code-ide-diagnostics-tests--adapter
     (session raw &optional initialized)
   (let ((client (make-herdr-claude-code-ide-mcp-client
-                 :raw raw :open-p t :initialized-p (not (eq initialized :no)))))
+                 :raw raw :open-p t :initialized-p (not (eq initialized :no))))
+        (raw-clients (make-hash-table :test #'eq)))
+    (puthash raw client raw-clients)
     (make-herdr-claude-code-ide-mcp-adapter
      :session-key (herdr-agent-session-key session)
      :session session
      :state 'connected
      :clients (list client)
-     :current-client client)))
+     :current-client client
+     :raw-clients raw-clients)))
 
 (defmacro herdr-claude-code-ide-diagnostics-tests--with-adapter-registry
     (adapters &rest body)
