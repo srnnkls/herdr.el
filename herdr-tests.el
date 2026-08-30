@@ -163,7 +163,8 @@ Duplicate focus notifications must not churn either state."
                                  :command '("cat") :noquery t))
          (controller (make-process :name "controller" :buffer nil
                                    :command '("cat") :noquery t))
-         (drawn nil))
+         (drawn nil)
+         (ready nil))
     (unwind-protect
         (progn
           (process-put observer 'herdr-session-stream-mode 'observe)
@@ -175,7 +176,9 @@ Duplicate focus notifications must not churn either state."
                   herdr--attach-sidecar observer
                   herdr--attach-candidate controller
                   herdr--attach-generation 4
-                  herdr--attach-control-state 'observe))
+                  herdr--attach-control-state 'observe)
+            (add-hook 'herdr-attach-ready-hook
+                      (lambda () (setq ready t)) nil t))
           (herdr--sidecar-frame buffer controller 4 "delta" nil 80 24)
           (should-not drawn)
           (should (eq (buffer-local-value 'herdr--attach-sidecar buffer) observer))
@@ -183,6 +186,11 @@ Duplicate focus notifications must not churn either state."
           (should (equal drawn (list (cons backend "full"))))
           (should (eq (buffer-local-value 'herdr--attach-sidecar buffer) controller))
           (should (eq (buffer-local-value 'herdr--attach-control-state buffer) 'control))
+          (should (eq (buffer-local-value 'herdr--attach-ready buffer) 'pending))
+          (should-not ready)
+          (herdr--mark-attach-ready buffer)
+          (should (herdr-attach-ready-p buffer))
+          (should ready)
           (should (process-live-p backend))
           (should-not (process-live-p observer))
           (herdr--sidecar-frame buffer observer 3 "stale" t 80 24)

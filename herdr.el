@@ -262,6 +262,25 @@ scrollback, `ghostel-max-scrollback\=' or `eat-term-scrollback-size\='."
 (defvar-local herdr--attach-closing nil
   "Non-nil while this buffer's stream processes are being torn down.")
 
+(defvar-local herdr--attach-ready nil
+  "Whether the first full frame has reached the terminal buffer.")
+
+(defvar-local herdr-attach-ready-hook nil
+  "Hook run after an attached terminal's first full frame is rendered.")
+
+(defun herdr-attach-ready-p (&optional buffer)
+  "Return non-nil when BUFFER can be searched for attached terminal output."
+  (with-current-buffer (or buffer (current-buffer))
+    (or (not herdr--attach-stream) (eq herdr--attach-ready t))))
+
+(defun herdr--mark-attach-ready (buffer)
+  "Mark BUFFER ready and run `herdr-attach-ready-hook'."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (eq herdr--attach-ready 'pending)
+        (setq herdr--attach-ready t)
+        (run-hooks 'herdr-attach-ready-hook)))))
+
 (defvar herdr--attach-focus-timer nil
   "Timer reconciling attached terminals after focus settles.")
 
@@ -352,7 +371,10 @@ scrollback, `ghostel-max-scrollback\=' or `eat-term-scrollback-size\='."
           (when (and herdr--attach-writer
                      (process-live-p herdr--attach-backend-process))
             (funcall herdr--attach-writer
-                     herdr--attach-backend-process ansi))))
+                     herdr--attach-backend-process ansi))
+          (unless herdr--attach-ready
+            (setq herdr--attach-ready 'pending)
+            (run-at-time 0.1 nil #'herdr--mark-attach-ready buffer))))
        ((eq process herdr--attach-sidecar)
         (when (and herdr--attach-writer
                    (process-live-p herdr--attach-backend-process))
@@ -515,6 +537,7 @@ terminal backend."
               herdr--attach-backend-process process
               herdr--attach-writer writer
               herdr--attach-size (herdr--attach-viewport buffer)
+              herdr--attach-ready nil
               herdr--attach-closing nil)
         (process-put process 'herdr-session-stream-buffer buffer)
         (set-process-filter process #'ignore)
