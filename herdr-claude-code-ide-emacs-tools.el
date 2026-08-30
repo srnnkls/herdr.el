@@ -1,5 +1,11 @@
 ;;; herdr-claude-code-ide-emacs-tools.el --- Emacs MCP tools -*- lexical-binding: t; -*-
 
+;;; Commentary:
+
+;; MCP tools that expose Emacs navigation and buffer information.
+
+;;; Code:
+
 (require 'xref)
 (require 'project)
 (require 'imenu)
@@ -11,9 +17,11 @@
 (declare-function treesit-node-end "treesit" (node))
 
 (defun herdr-claude-code-ide-emacs-tools--text (object)
+  "Return OBJECT as an MCP text content result."
   `((content . (((type . "text") (text . ,(herdr-claude-code-ide-mcp-server--body object)))))))
 
 (defun herdr-claude-code-ide-emacs-tools--references (identifier)
+  "Return Xref locations that reference IDENTIFIER."
   (mapcar (lambda (xref)
             (let ((location (xref-item-location xref)))
               `((path . ,(xref-location-group location))
@@ -21,6 +29,7 @@
           (xref-backend-references (xref-find-backend) identifier)))
 
 (defun herdr-claude-code-ide-emacs-tools--apropos (pattern)
+  "Return Xref locations matching PATTERN."
   (mapcar (lambda (xref)
             (let ((location (xref-item-location xref)))
               `((path . ,(xref-location-group location))
@@ -28,12 +37,14 @@
           (xref-backend-apropos (xref-find-backend) pattern)))
 
 (defun herdr-claude-code-ide-emacs-tools--imenu-position (position)
+  "Return the buffer position represented by POSITION."
   (cond
    ((markerp position) (marker-position position))
    ((overlayp position) (overlay-start position))
    ((numberp position) position)))
 
 (defun herdr-claude-code-ide-emacs-tools--symbols (&optional index)
+  "Return symbols in Imenu INDEX or the current buffer."
   (apply #'append
          (mapcar
           (lambda (entry)
@@ -49,6 +60,7 @@
           (or index (imenu--make-index-alist)))))
 
 (defun herdr-claude-code-ide-emacs-tools-register (context)
+  "Register Emacs navigation tools with MCP CONTEXT."
   (herdr-claude-code-ide-mcp-server-register-tool
    context "xref-references"
    '((type . "object") (properties . ((identifier . ((type . "string"))))) (required . ("identifier")))

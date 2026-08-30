@@ -1,5 +1,11 @@
 ;;; herdr-claude-code-ide-transient.el --- Claude IDE workflow transient -*- lexical-binding: t; -*-
 
+;;; Commentary:
+
+;; Transient menu for Claude Code IDE status and debugging.
+
+;;; Code:
+
 (require 'transient)
 (require 'herdr-agent)
 (require 'herdr-agent-transient)

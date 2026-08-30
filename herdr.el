@@ -4,7 +4,7 @@
 
 ;; Author: Sören Nikolaus <soeren@code17.io>
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1") (websocket "1.12") (web-server "0.1.2") (transient "0.9.0"))
+;; Package-Requires: ((emacs "29.1") (websocket "1.12") (transient "0.9.0"))
 ;; Keywords: terminals, tools, processes
 ;; URL: https://github.com/srnnkls/herdr.el
 
@@ -144,22 +144,40 @@ name of the one owning the directory, so the two line up."
                              (equal (alist-get 'label workspace) label))
                            (herdr-workspaces)))))
 
+(defvar herdr--open-tab-cleanup-failed-function nil)
+
 (cl-defun herdr-open-tab (&key cwd label workspace env focus)
   "Open a tab labelled LABEL in the herdr workspace labelled WORKSPACE.
-Creates that workspace when it does not exist yet, and labels the tab
-it comes with rather than leaving an empty one behind.  Without a
-WORKSPACE the tab goes to the focused workspace, or to a new one when
-the session has none.  The reply carries `root_pane' and `tab'."
+CWD is its working directory.  Creates that workspace when it does not
+exist yet, and labels the tab it comes with rather than leaving an empty
+one behind.  Without a WORKSPACE the tab goes to the focused workspace,
+or to a new one when the session has none.  The reply carries
+`root_pane' and `tab'."
   (let ((id (herdr-workspace-id workspace)))
     (if (or id (and (not workspace) (herdr-workspaces)))
         (herdr-api-tab-create :cwd cwd :label label :env env
                               :workspace-id id :focus focus)
       (let ((created (herdr-api-workspace-create
                       :cwd cwd :label (or workspace label) :env env :focus focus)))
-        (when-let* ((label label)
-                    (tab (alist-get 'tab created)))
-          (herdr-api-tab-rename label (alist-get 'tab_id tab)))
-        created))))
+        (condition-case err
+            (progn
+              (when-let* ((label label)
+                          (tab (alist-get 'tab created)))
+                (herdr-api-tab-rename label (alist-get 'tab_id tab)))
+              created)
+          (error
+           (when-let* ((workspace-id
+                        (or (alist-get 'workspace_id (alist-get 'workspace created))
+                            (alist-get 'workspace_id (alist-get 'tab created))
+                            (alist-get 'workspace_id (alist-get 'root_pane created))
+                            (when-let* ((tab-id (alist-get 'tab_id (alist-get 'tab created))))
+                              (car (split-string tab-id ":" t))))))
+             (condition-case nil
+                 (herdr-api-workspace-close workspace-id)
+               (error
+                (when herdr--open-tab-cleanup-failed-function
+                  (funcall herdr--open-tab-cleanup-failed-function created)))))
+           (signal (car err) (cdr err))))))))
 
 (defun herdr-pane-text (pane-id &optional source lines)
   "Return terminal output of PANE-ID.
@@ -615,7 +633,7 @@ attached."
 
 ;;;###autoload
 (defun herdr-jump (session)
-  "Jump to a running SESSION, whether or not Emacs already shows it."
+  "Jump to a running SESSION, whether or not Emacs already show it."
   (interactive (list (herdr-read-entry "Jump to session: " (herdr-sessions))))
   (herdr-visit session))
 

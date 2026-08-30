@@ -2,6 +2,12 @@
 
 ;; Copyright (C) 2026 Sören Nikolaus
 
+;;; Commentary:
+
+;; MCP transport and lifecycle adapter for Claude Code IDE sessions.
+
+;;; Code:
+
 (require 'cl-lib)
 (require 'json)
 (require 'herdr-agent)
@@ -43,10 +49,12 @@
   #'herdr-claude-code-ide-diagnostics-collect-diagnostics)
 
 (defun herdr-claude-code-ide-mcp--value (key object)
+  "Return KEY's value from OBJECT."
   (or (alist-get key object nil nil #'eq)
       (alist-get (symbol-name key) object nil nil #'equal)))
 
 (defun herdr-claude-code-ide-mcp--registry-adapters (&optional adapters)
+  "Return adapters from ADAPTERS or the global registry."
   (cond ((hash-table-p adapters)
          (let (values) (maphash (lambda (_ adapter) (push adapter values)) adapters) values))
         ((null adapters)
@@ -55,22 +63,27 @@
         (t (mapcar #'cdr adapters))))
 
 (defun herdr-claude-code-ide-mcp--port (server)
+  "Return SERVER's listening port."
   (let ((service (plist-get (process-contact server t) :service)))
     (if (stringp service) (string-to-number service) service)))
 
 (defun herdr-claude-code-ide-mcp--project-root (root)
+  "Return ROOT in canonical project form."
   (herdr-agent--project root))
 
 (defun herdr-claude-code-ide-mcp--same-project-root-p (left right)
+  "Return non-nil when LEFT and RIGHT name the same project."
   (and left right
        (equal (herdr-agent--project left) (herdr-agent--project right))))
 
 (defun herdr-claude-code-ide-mcp--adapter-root (adapter)
+  "Return ADAPTER's project root."
   (when-let* ((session (herdr-claude-code-ide-mcp-adapter-session adapter))
               (project (herdr-agent-session-project session)))
     (herdr-claude-code-ide-mcp--project-root project)))
 
 (defun herdr-claude-code-ide-mcp--current-client-p (adapter)
+  "Return non-nil when ADAPTER has an initialized client."
   (when-let* ((session (herdr-claude-code-ide-mcp-adapter-session adapter))
               ((equal (herdr-agent-session-kind session) "claude"))
               (client (herdr-claude-code-ide-mcp-adapter-current-client adapter)))
@@ -78,14 +91,15 @@
          (herdr-claude-code-ide-mcp-client-initialized-p client))))
 
 (defun herdr-claude-code-ide-mcp--observe (observers adapter client text)
+  "Notify OBSERVERS of TEXT for ADAPTER and CLIENT."
   (dolist (observer (symbol-value observers))
     (condition-case nil
         (funcall observer adapter client text)
       (error nil))))
 
 (defun herdr-claude-code-ide-mcp--send (adapter client payload)
-  (when (and (herdr-claude-code-ide-mcp-client-open-p client)
-             (herdr-claude-code-ide-mcp-client-raw client))
+  "Send PAYLOAD through CLIENT for ADAPTER."
+  (when (herdr-claude-code-ide-mcp-client-open-p client)
     (let ((text (json-serialize payload :false-object :json-false :null-object nil)))
       (herdr-claude-code-ide-mcp--observe
        'herdr-claude-code-ide-mcp--outgoing-observers adapter client text)
@@ -93,6 +107,7 @@
       t)))
 
 (defun herdr-claude-code-ide-mcp--notify (client method payload)
+  "Send METHOD with PAYLOAD to CLIENT."
   (herdr-claude-code-ide-mcp--send
    (herdr-claude-code-ide-mcp-client-adapter client) client
    `((jsonrpc . "2.0") (method . ,method) (params . ,payload))))
@@ -109,6 +124,7 @@ ADAPTERS selects a registry; nil uses the global registry."
          (herdr-claude-code-ide-mcp-adapter-current-client adapter) method payload)))))
 
 (defun herdr-claude-code-ide-mcp--selection-payload (buffer)
+  "Return BUFFER's selection context payload."
   (with-current-buffer buffer
     (let* ((first (min (point) (if mark-active (mark) (point))))
            (last (max (point) (if mark-active (mark) (point))))
@@ -122,12 +138,14 @@ ADAPTERS selects a registry; nil uses the global registry."
                       (end . ((line . ,(1- end-line)) (character . ,end-column)))))))))
 
 (defun herdr-claude-code-ide-mcp--cancel-selection (adapter)
+  "Cancel ADAPTER's pending selection notification."
   (when-let* ((timer (gethash adapter herdr-claude-code-ide-mcp--selection-timers)))
     (cancel-timer (nth 2 timer)))
   (remhash adapter herdr-claude-code-ide-mcp--selection-timers)
   (remhash adapter herdr-claude-code-ide-mcp--selection-contexts))
 
 (defun herdr-claude-code-ide-mcp--schedule-selection (adapter buffer)
+  "Schedule a selection notification for ADAPTER and BUFFER."
   (let* ((generation (herdr-claude-code-ide-mcp-adapter-client-generation adapter))
          (token (make-symbol "selection"))
          (previous (gethash adapter herdr-claude-code-ide-mcp--selection-timers)))
@@ -168,14 +186,14 @@ ADAPTERS selects a registry; BUFFER defaults to current."
   (let ((buffer (or buffer (current-buffer))))
     (when-let* ((file (buffer-file-name buffer)))
       (dolist (adapter (herdr-claude-code-ide-mcp--registry-adapters adapters))
-        (let ((adapter-root (herdr-claude-code-ide-mcp--adapter-root adapter)))
-          (when (and adapter-root
-                     (or (null root)
-                         (herdr-claude-code-ide-mcp--same-project-root-p
-                          (herdr-claude-code-ide-mcp--project-root root) adapter-root))
-                     (herdr-claude-code-ide-diagnostics--project-file-p file adapter-root)
-                     (herdr-claude-code-ide-mcp--current-client-p adapter))
-            (herdr-claude-code-ide-mcp--schedule-selection adapter buffer)))))))
+        (when (herdr-claude-code-ide-mcp--current-client-p adapter)
+          (let ((adapter-root (herdr-claude-code-ide-mcp--adapter-root adapter)))
+            (when (and adapter-root
+                       (or (null root)
+                           (herdr-claude-code-ide-mcp--same-project-root-p
+                            (herdr-claude-code-ide-mcp--project-root root) adapter-root))
+                       (herdr-claude-code-ide-diagnostics--project-file-p file adapter-root))
+              (herdr-claude-code-ide-mcp--schedule-selection adapter buffer))))))))
 
 (defun herdr-claude-code-ide-mcp-send-at-mentioned (&optional adapters session-key)
   "Send the current selection to SESSION-KEY as an at-mention.
@@ -199,6 +217,7 @@ ADAPTERS selects a registry; current buffer supplies file and range."
            (lineEnd . ,(line-number-at-pos last))))))))
 
 (defun herdr-claude-code-ide-mcp--start-server (adapter)
+  "Start ADAPTER's local MCP WebSocket server."
   (unless (require 'websocket nil t)
     (error "Claude Code IDE transport requires websocket.el"))
   (let ((server
@@ -227,6 +246,7 @@ ADAPTERS selects a registry; current buffer supplies file and range."
     (herdr-claude-code-ide-mcp--port server)))
 
 (defun herdr-claude-code-ide-mcp--default-tools ()
+  "Return the default MCP tool definitions."
   (let ((empty-properties (make-hash-table :test #'equal)))
     (list
      '((name . "openFile") (description . "Open a file in the editor.")
@@ -259,6 +279,7 @@ ADAPTERS selects a registry; current buffer supplies file and range."
                        (required . ["code"])))))))
 
 (defun herdr-claude-code-ide-mcp--initialize-result ()
+  "Return the MCP initialize response."
   '((protocolVersion . "2025-11-25")
     (capabilities . ((tools . ((listChanged . t)))
                      (resources . ((subscribe . :json-false) (listChanged . :json-false)))
@@ -266,9 +287,11 @@ ADAPTERS selects a registry; current buffer supplies file and range."
     (serverInfo . ((name . "herdr-claude-code-ide") (version . "fixture")))))
 
 (defun herdr-claude-code-ide-mcp--response (id result)
+  "Return a JSON-RPC success response for ID and RESULT."
   `((jsonrpc . "2.0") (id . ,id) (result . ,result)))
 
 (defun herdr-claude-code-ide-mcp--error (id code message)
+  "Return a JSON-RPC error response for ID, CODE, and MESSAGE."
   `((jsonrpc . "2.0") (id . ,id) (error . ((code . ,code) (message . ,message)))))
 
 (defun herdr-claude-code-ide-mcp-send-deferred (client response)
@@ -277,36 +300,50 @@ ADAPTERS selects a registry; current buffer supplies file and range."
    (herdr-claude-code-ide-mcp-client-adapter client) client response))
 
 (defun herdr-claude-code-ide-mcp--close-raw (client)
+  "Close CLIENT's raw WebSocket connection."
   (when-let* ((raw (herdr-claude-code-ide-mcp-client-raw client)))
-    (when (fboundp 'websocket-close) (ignore-errors (websocket-close raw)))))
+    (when (fboundp 'websocket-close)
+      (let* ((adapter (herdr-claude-code-ide-mcp-client-adapter client))
+             (raw-clients (herdr-claude-code-ide-mcp-adapter-raw-clients adapter))
+             (mapped (eq (gethash raw raw-clients) client)))
+        (when mapped (remhash raw raw-clients))
+        (condition-case err
+            (websocket-close raw)
+          (error
+           (when mapped (puthash raw client raw-clients))
+           (signal (car err) (cdr err))))))))
 
 (defconst herdr-claude-code-ide-mcp--deferred 'herdr-claude-code-ide-mcp--deferred)
 
 (defun herdr-claude-code-ide-mcp-invalid-params (&optional message)
+  "Return an invalid-parameters result with MESSAGE."
   (cons 'herdr-claude-code-ide-mcp--invalid-params (or message "Invalid params")))
 
 (defun herdr-claude-code-ide-mcp--cancel-work (adapter)
+  "Cancel ADAPTER's deferred work."
   (let ((cancel (herdr-claude-code-ide-mcp-adapter-cancel-work adapter))
-        (completed t))
+        (outcome t))
     (when cancel
       (condition-case nil
-          (setq completed (funcall cancel adapter))
-        (error (setq completed nil))))
-    (when completed
+          (setq outcome (funcall cancel adapter))
+        (error (setq outcome nil))))
+    (when (eq outcome t)
       (setf (herdr-claude-code-ide-mcp-adapter-cancelled-work adapter)
             `((requests . ,(herdr-claude-code-ide-mcp-adapter-pending adapter))
               (diffs . ,(herdr-claude-code-ide-mcp-adapter-diffs adapter)))
             (herdr-claude-code-ide-mcp-adapter-pending adapter) nil
             (herdr-claude-code-ide-mcp-adapter-diffs adapter) nil))
-    completed))
+    outcome))
 
 (defun herdr-claude-code-ide-mcp--cancel-deadline (adapter)
+  "Cancel ADAPTER's reconnect deadline."
   (when-let* ((timer (herdr-claude-code-ide-mcp-adapter-reconnect-deadline adapter)))
     (cancel-timer timer))
   (setf (herdr-claude-code-ide-mcp-adapter-reconnect-deadline adapter) nil
         (herdr-claude-code-ide-mcp-adapter-reconnect-token adapter) nil))
 
 (defun herdr-claude-code-ide-mcp--arm-deadline (adapter generation)
+  "Arm ADAPTER's reconnect deadline for GENERATION."
   (let ((token (make-symbol "reconnect")))
     (setf (herdr-claude-code-ide-mcp-adapter-reconnect-token adapter) token
           (herdr-claude-code-ide-mcp-adapter-reconnect-deadline-seconds adapter) 30
@@ -321,9 +358,12 @@ ADAPTERS selects a registry; current buffer supplies file and range."
                            (herdr-claude-code-ide-mcp-cleanup adapter)))))))
 
 (cl-defun herdr-claude-code-ide-mcp-prepare (agent &key server-key project-root instance-id discovery-directory tool-list tool-call session)
+  "Prepare an MCP adapter for AGENT on SERVER-KEY.
+PROJECT-ROOT, INSTANCE-ID, DISCOVERY-DIRECTORY, TOOL-LIST, TOOL-CALL, and
+SESSION configure it."
   (when (equal (herdr-claude-code-ide-mcp--value 'agent agent) "claude")
     (let* ((instance-id (or instance-id (herdr-claude-code-ide-mcp--value 'terminal_id agent)))
-           (session-key (or session (make-symbol "herdr-claude-code-ide-mcp")))
+           (session-key (make-symbol "herdr-claude-code-ide-mcp"))
            (existing (and session (gethash session herdr-claude-code-ide-mcp--starting))))
       (or existing
           (let* ((adapter (make-herdr-claude-code-ide-mcp-adapter
@@ -368,45 +408,82 @@ ADAPTERS selects a registry; current buffer supplies file and range."
                (signal (car err) (cdr err)))))))))
 
 (defun herdr-claude-code-ide-mcp-client-connect (adapter &optional raw)
+  "Create a client for ADAPTER and optional RAW connection."
   (let ((client (make-herdr-claude-code-ide-mcp-client
                  :raw raw :open-p t :adapter adapter)))
     (push client (herdr-claude-code-ide-mcp-adapter-clients adapter))
     client))
 
 (defun herdr-claude-code-ide-mcp--known-tool-p (adapter name)
+  "Return NAME's tool from ADAPTER, if present."
   (seq-find (lambda (tool) (equal (herdr-claude-code-ide-mcp--value 'name tool) name))
             (funcall (herdr-claude-code-ide-mcp-adapter-tool-list adapter))))
 
+(defun herdr-claude-code-ide-mcp--initialize-params-p (params)
+  "Return non-nil when PARAMS is a valid initialize payload."
+  (and (listp params)
+       (equal (herdr-claude-code-ide-mcp--value 'protocolVersion params) "2025-11-25")
+       (let ((capabilities (or (assoc 'capabilities params)
+                               (assoc "capabilities" params))))
+         (and capabilities (listp (cdr capabilities))))
+       (let ((client-info (herdr-claude-code-ide-mcp--value 'clientInfo params)))
+         (and (listp client-info)
+              (stringp (herdr-claude-code-ide-mcp--value 'name client-info))
+              (stringp (herdr-claude-code-ide-mcp--value 'version client-info))))))
+
+(defun herdr-claude-code-ide-mcp--initialize-params (text)
+  "Return initialize parameters parsed from TEXT."
+  (herdr-claude-code-ide-mcp--value
+   'params
+   (json-parse-string text :object-type 'alist :array-type 'array
+                      :null-object :json-null :false-object :json-false)))
+
+(defun herdr-claude-code-ide-mcp--reject-initialize (adapter client id close code message)
+  "Reject CLIENT initialization on ADAPTER with CODE and MESSAGE."
+  (when close
+    (if herdr-claude-code-ide-mcp--defer-close
+        (setq herdr-claude-code-ide-mcp--close-after-send t)
+      (herdr-claude-code-ide-mcp-client-close adapter client)))
+  (herdr-claude-code-ide-mcp--error id code message))
+
 (defun herdr-claude-code-ide-mcp--initialize (adapter client id params)
+  "Initialize CLIENT on ADAPTER with ID and PARAMS."
   (if (memq (herdr-claude-code-ide-mcp-adapter-state adapter) '(detaching stopped))
       (progn
         (herdr-claude-code-ide-mcp-client-close adapter client)
         nil)
-    (if (not (consp params))
-        (progn
-          (if herdr-claude-code-ide-mcp--defer-close
-              (setq herdr-claude-code-ide-mcp--close-after-send t)
-            (herdr-claude-code-ide-mcp-client-close adapter client))
-          (herdr-claude-code-ide-mcp--error id -32602 "Invalid params"))
-      (let ((old (herdr-claude-code-ide-mcp-adapter-current-client adapter))
-            (work (or (herdr-claude-code-ide-mcp-adapter-pending adapter)
-                      (herdr-claude-code-ide-mcp-adapter-diffs adapter))))
-        (if (and (or old work) (not (herdr-claude-code-ide-mcp--cancel-work adapter)))
-            (herdr-claude-code-ide-mcp--error id -32603 "Internal error")
-          (when old (herdr-claude-code-ide-mcp--cancel-selection adapter))
-          (herdr-claude-code-ide-mcp--cancel-deadline adapter)
-          (setf (herdr-claude-code-ide-mcp-adapter-current-client adapter) client
-                (herdr-claude-code-ide-mcp-adapter-client-generation adapter)
-                (1+ (or (herdr-claude-code-ide-mcp-adapter-client-generation adapter) 0))
-                (herdr-claude-code-ide-mcp-client-initialized-p client) t
-                (herdr-claude-code-ide-mcp-client-generation client)
-                (herdr-claude-code-ide-mcp-adapter-client-generation adapter))
-          (when old (herdr-claude-code-ide-mcp-client-close adapter old))
-          (unless (eq (herdr-claude-code-ide-mcp-adapter-state adapter) 'starting)
-            (setf (herdr-claude-code-ide-mcp-adapter-state adapter) 'connected))
-          (herdr-claude-code-ide-mcp--response id (herdr-claude-code-ide-mcp--initialize-result)))))))
+    (let ((old (herdr-claude-code-ide-mcp-adapter-current-client adapter)))
+      (cond
+       ((not (herdr-claude-code-ide-mcp--initialize-params-p params))
+        (herdr-claude-code-ide-mcp--reject-initialize
+         adapter client id (not (eq client old)) -32602 "Invalid params"))
+       ((eq client old)
+        (herdr-claude-code-ide-mcp--error id -32602 "Invalid params"))
+       (t
+        (let* ((work (or (herdr-claude-code-ide-mcp-adapter-pending adapter)
+                         (herdr-claude-code-ide-mcp-adapter-diffs adapter)))
+               (outcome (and (or old work)
+                             (herdr-claude-code-ide-mcp--cancel-work adapter))))
+          (if (and (or old work) (not (memq outcome '(t :committed))))
+              (progn
+                (herdr-claude-code-ide-mcp--reject-initialize
+                 adapter client id old -32603 "Internal error"))
+            (when old (herdr-claude-code-ide-mcp--cancel-selection adapter))
+            (herdr-claude-code-ide-mcp--cancel-deadline adapter)
+            (setf (herdr-claude-code-ide-mcp-adapter-current-client adapter) client
+                  (herdr-claude-code-ide-mcp-adapter-client-generation adapter)
+                  (1+ (or (herdr-claude-code-ide-mcp-adapter-client-generation adapter) 0))
+                  (herdr-claude-code-ide-mcp-client-initialized-p client) t
+                  (herdr-claude-code-ide-mcp-client-generation client)
+                  (herdr-claude-code-ide-mcp-adapter-client-generation adapter))
+            (when old (herdr-claude-code-ide-mcp-client-close adapter old))
+            (unless (eq (herdr-claude-code-ide-mcp-adapter-state adapter) 'starting)
+              (setf (herdr-claude-code-ide-mcp-adapter-state adapter) 'connected))
+            (herdr-claude-code-ide-mcp--response id
+                                                  (herdr-claude-code-ide-mcp--initialize-result)))))))))
 
 (defun herdr-claude-code-ide-mcp-receive (adapter client text)
+  "Process TEXT received from CLIENT for ADAPTER."
   (setf (herdr-claude-code-ide-mcp-client-adapter client) adapter)
   (herdr-claude-code-ide-mcp--observe
    'herdr-claude-code-ide-mcp--incoming-observers adapter client text)
@@ -422,7 +499,8 @@ ADAPTERS selects a registry; current buffer supplies file and range."
                 (not (stringp method)))
             (herdr-claude-code-ide-mcp--error nil -32600 "Invalid Request"))
            ((equal method "initialize")
-            (herdr-claude-code-ide-mcp--initialize adapter client id params))
+            (herdr-claude-code-ide-mcp--initialize
+             adapter client id (herdr-claude-code-ide-mcp--initialize-params text)))
            ((or (not (eq client (herdr-claude-code-ide-mcp-adapter-current-client adapter)))
                 (not (herdr-claude-code-ide-mcp-client-initialized-p client))) nil)
            ((equal method "ide_connected") nil)
@@ -453,17 +531,18 @@ ADAPTERS selects a registry; current buffer supplies file and range."
       (error (herdr-claude-code-ide-mcp--error nil -32700 "Parse error")))))
 
 (defun herdr-claude-code-ide-mcp-client-close (adapter client)
+  "Close CLIENT for ADAPTER."
   (let ((current (eq client (herdr-claude-code-ide-mcp-adapter-current-client adapter)))
         (raw (herdr-claude-code-ide-mcp-client-raw client)))
     (when current
       (herdr-claude-code-ide-mcp--cancel-work adapter))
+    (herdr-claude-code-ide-mcp--close-raw client)
     (setf (herdr-claude-code-ide-mcp-client-open-p client) nil
           (herdr-claude-code-ide-mcp-adapter-clients adapter)
           (delq client (herdr-claude-code-ide-mcp-adapter-clients adapter)))
     (when (and raw
                (eq (gethash raw (herdr-claude-code-ide-mcp-adapter-raw-clients adapter)) client))
       (remhash raw (herdr-claude-code-ide-mcp-adapter-raw-clients adapter)))
-    (herdr-claude-code-ide-mcp--close-raw client)
     (when current
       (setf (herdr-claude-code-ide-mcp-adapter-current-client adapter) nil)
       (when (memq (herdr-claude-code-ide-mcp-adapter-state adapter) '(connected waiting-for-client))
@@ -473,41 +552,63 @@ ADAPTERS selects a registry; current buffer supplies file and range."
   nil)
 
 (defun herdr-claude-code-ide-mcp-terminal-attached (adapter)
+  "Mark ADAPTER's terminal attachment complete."
   (when (eq (herdr-claude-code-ide-mcp-adapter-state adapter) 'starting)
     (setf (herdr-claude-code-ide-mcp-adapter-state adapter)
           (if (herdr-claude-code-ide-mcp-adapter-current-client adapter) 'connected 'waiting-for-client))))
 
 (defun herdr-claude-code-ide-mcp-track-pending (adapter client request diff)
+  "Track CLIENT's REQUEST and DIFF for ADAPTER."
   (when (and (eq client (herdr-claude-code-ide-mcp-adapter-current-client adapter))
              (herdr-claude-code-ide-mcp-client-initialized-p client))
     (push request (herdr-claude-code-ide-mcp-adapter-pending adapter))
     (push diff (herdr-claude-code-ide-mcp-adapter-diffs adapter))))
 
 (defun herdr-claude-code-ide-mcp-cleanup (adapter)
+  "Clean up ADAPTER resources."
   (unless (eq (herdr-claude-code-ide-mcp-adapter-state adapter) 'stopped)
     (setf (herdr-claude-code-ide-mcp-adapter-state adapter) 'detaching)
+    (unless (eq (herdr-claude-code-ide-mcp--cancel-work adapter) t)
+      (error "Deferred work cancellation is incomplete"))
     (herdr-claude-code-ide-mcp--cancel-deadline adapter)
     (herdr-claude-code-ide-mcp--cancel-selection adapter)
-    (dolist (client (herdr-claude-code-ide-mcp-adapter-clients adapter))
-      (setf (herdr-claude-code-ide-mcp-client-open-p client) nil)
-      (herdr-claude-code-ide-mcp--close-raw client))
-    (setf (herdr-claude-code-ide-mcp-adapter-clients adapter) nil
-          (herdr-claude-code-ide-mcp-adapter-current-client adapter) nil
-          (herdr-claude-code-ide-mcp-adapter-endpoint-live-p adapter) nil)
-    (clrhash (herdr-claude-code-ide-mcp-adapter-raw-clients adapter))
-    (when-let* ((server (herdr-claude-code-ide-mcp-adapter-server adapter)))
-      (if (fboundp 'websocket-server-close)
-          (ignore-errors (websocket-server-close server))
-        (when (process-live-p server) (delete-process server))))
-    (when-let* ((lockfile (herdr-claude-code-ide-mcp-adapter-lockfile adapter)))
-      (when (file-exists-p lockfile) (delete-file lockfile)))
-    (unless (herdr-claude-code-ide-mcp--cancel-work adapter)
-      (error "Deferred work cancellation is incomplete"))
-    (remhash (herdr-claude-code-ide-mcp-adapter-session-key adapter)
-             herdr-claude-code-ide-mcp--adapters)
-    (when-let* ((session (herdr-claude-code-ide-mcp-adapter-session adapter)))
-      (remhash session herdr-claude-code-ide-mcp--starting))
-    (setf (herdr-claude-code-ide-mcp-adapter-state adapter) 'stopped))
+    (let (errors)
+      (dolist (client (copy-sequence (herdr-claude-code-ide-mcp-adapter-clients adapter)))
+        (condition-case err
+            (let ((raw (herdr-claude-code-ide-mcp-client-raw client)))
+              (herdr-claude-code-ide-mcp--close-raw client)
+              (setf (herdr-claude-code-ide-mcp-client-open-p client) nil
+                    (herdr-claude-code-ide-mcp-adapter-clients adapter)
+                    (delq client (herdr-claude-code-ide-mcp-adapter-clients adapter)))
+              (when (and raw
+                         (eq (gethash raw
+                                      (herdr-claude-code-ide-mcp-adapter-raw-clients adapter))
+                             client))
+                (remhash raw (herdr-claude-code-ide-mcp-adapter-raw-clients adapter)))
+              (when (eq client (herdr-claude-code-ide-mcp-adapter-current-client adapter))
+                (setf (herdr-claude-code-ide-mcp-adapter-current-client adapter) nil)))
+          (error (push err errors))))
+      (when-let* ((server (herdr-claude-code-ide-mcp-adapter-server adapter)))
+        (condition-case err
+            (if (fboundp 'websocket-server-close)
+                (websocket-server-close server)
+              (when (process-live-p server) (delete-process server)))
+          (error (push err errors))))
+      (if errors
+          (signal (caar errors) (cdar errors))
+        (when-let* ((lockfile (herdr-claude-code-ide-mcp-adapter-lockfile adapter)))
+          (when (file-exists-p lockfile) (delete-file lockfile)))
+        (setf (herdr-claude-code-ide-mcp-adapter-clients adapter) nil
+              (herdr-claude-code-ide-mcp-adapter-current-client adapter) nil
+              (herdr-claude-code-ide-mcp-adapter-server adapter) nil
+              (herdr-claude-code-ide-mcp-adapter-endpoint-live-p adapter) nil
+              (herdr-claude-code-ide-mcp-adapter-discovery adapter) nil)
+        (clrhash (herdr-claude-code-ide-mcp-adapter-raw-clients adapter))
+        (remhash (herdr-claude-code-ide-mcp-adapter-session-key adapter)
+                 herdr-claude-code-ide-mcp--adapters)
+        (when-let* ((session (herdr-claude-code-ide-mcp-adapter-session adapter)))
+          (remhash session herdr-claude-code-ide-mcp--starting))
+        (setf (herdr-claude-code-ide-mcp-adapter-state adapter) 'stopped))))
   (let ((active (or (> (hash-table-count herdr-claude-code-ide-mcp--adapters) 0)
                     (> (hash-table-count herdr-claude-code-ide-mcp--starting) 0))))
     (unless active
@@ -517,12 +618,16 @@ ADAPTERS selects a registry; current buffer supplies file and range."
   adapter)
 
 (defun herdr-claude-code-ide-mcp-agent-released (adapter)
+  "Clean up ADAPTER after its agent is released."
   (herdr-claude-code-ide-mcp-cleanup adapter))
 
 (defun herdr-claude-code-ide-mcp-global-hooks-installed-p ()
+  "Return non-nil when MCP global hooks are installed."
   herdr-claude-code-ide-mcp--global-hooks-installed)
 
 (cl-defun herdr-claude-code-ide-mcp-adopt (session &key takeover project-root discovery-directory)
+  "Adopt a Claude SESSION into an MCP adapter.
+TAKEOVER, PROJECT-ROOT, and DISCOVERY-DIRECTORY configure it."
   (when (equal (herdr-agent-session-kind session) "claude")
     (let* ((key (herdr-agent-session-key session))
            (adapter (or (gethash key herdr-claude-code-ide-mcp--adapters)
@@ -549,6 +654,7 @@ ADAPTERS selects a registry; current buffer supplies file and range."
       adapter)))
 
 (defun herdr-claude-code-ide-mcp--prepare-session (session)
+  "Prepare an MCP adapter for SESSION."
   (let ((adapter
          (herdr-claude-code-ide-mcp-prepare
           `((agent . "claude") (terminal_id . ,(herdr-agent-session-name session))
@@ -561,6 +667,7 @@ ADAPTERS selects a registry; current buffer supplies file and range."
     (herdr-claude-code-ide-mcp-adapter-environment adapter)))
 
 (defun herdr-claude-code-ide-mcp--attached-session (session)
+  "Complete MCP attachment for SESSION."
   (when-let* ((adapter (or (gethash session herdr-claude-code-ide-mcp--starting)
                            (gethash (herdr-agent-session-key session)
                                     herdr-claude-code-ide-mcp--adapters))))
@@ -573,7 +680,15 @@ ADAPTERS selects a registry; current buffer supplies file and range."
     (puthash (herdr-agent-session-key session) adapter herdr-claude-code-ide-mcp--adapters)
     (herdr-claude-code-ide-mcp-terminal-attached adapter)))
 
+(defun herdr-claude-code-ide-mcp--status-session (session)
+  "Return MCP status for SESSION."
+  (when-let* ((adapter (gethash (herdr-agent-session-key session)
+                                herdr-claude-code-ide-mcp--adapters)))
+    `((ide_status . ,(symbol-name (herdr-claude-code-ide-mcp-adapter-state adapter)))
+      (ide_endpoint . ,(herdr-claude-code-ide-mcp-adapter-endpoint adapter)))))
+
 (defun herdr-claude-code-ide-mcp--detach-session (session)
+  "Detach SESSION's MCP adapter."
   (when-let* ((adapter (or (gethash (herdr-agent-session-key session)
                                     herdr-claude-code-ide-mcp--adapters)
                            (gethash session herdr-claude-code-ide-mcp--starting))))
@@ -583,7 +698,8 @@ ADAPTERS selects a registry; current buffer supplies file and range."
       (cons (list "claude" :prepare #'herdr-claude-code-ide-mcp--prepare-session
                   :adopted #'herdr-claude-code-ide-mcp-adopt
                   :attached #'herdr-claude-code-ide-mcp--attached-session
-                  :detach #'herdr-claude-code-ide-mcp--detach-session)
+                  :detach #'herdr-claude-code-ide-mcp--detach-session
+                  :status #'herdr-claude-code-ide-mcp--status-session)
             (assq-delete-all "claude" herdr-agent-kind-adapters)))
 
 (provide 'herdr-claude-code-ide-mcp)

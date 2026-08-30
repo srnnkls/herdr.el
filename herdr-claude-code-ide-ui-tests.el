@@ -16,7 +16,8 @@
   (let ((protocol-buffer (generate-new-buffer " *herdr-claude-code-ide-protocol*"))
         calls)
     (unwind-protect
-        (cl-letf (((symbol-function 'herdr-agent-start)
+        (progn
+          (cl-letf (((symbol-function 'herdr-agent-start)
                    (lambda (kind name &rest _) (push (list 'start kind name) calls)))
                   ((symbol-function 'herdr-agent-continue)
                    (lambda (kind name &rest _) (push (list 'continue kind name) calls)))
@@ -127,6 +128,50 @@
                          (setq calls (list (list 'switch target))))))
               (call-interactively #'herdr-agent-transient-switch))
             (should (equal calls '((switch ("server-a" . "term-7"))))))
+          (let* ((root (make-temp-file "herdr-claude-status" t))
+                 (buffer (generate-new-buffer " *herdr-claude-status*"))
+                 (server-key (expand-file-name "herdr.sock" root))
+                 (endpoint "ws://127.0.0.1:17171")
+                 (session (herdr-agent--make-session
+                           :server server-key :terminal "term-claude-status"
+                           :kind "claude" :project root :buffer buffer :state 'attached))
+                 displayed)
+            (unwind-protect
+                (let ((default-directory (file-name-as-directory root))
+                      (herdr-agent--sessions (make-hash-table :test #'equal))
+                      (herdr-agent--buffers (make-hash-table :test #'eq))
+                      (herdr-agent--projects (make-hash-table :test #'equal))
+                      (herdr-agent--panes (make-hash-table :test #'equal))
+                      (herdr-claude-code-ide-mcp--adapters
+                       (make-hash-table :test #'equal))
+                      (herdr-claude-code-ide-mcp--starting
+                       (make-hash-table :test #'eq)))
+                  (herdr-agent--register session)
+                  (let* ((client (make-herdr-claude-code-ide-mcp-client
+                                  :raw 'status-raw :open-p t :initialized-p t))
+                         (adapter (make-herdr-claude-code-ide-mcp-adapter
+                                   :session-key (herdr-agent-session-key session)
+                                   :session session :state 'connected :endpoint endpoint
+                                   :endpoint-live-p t :clients (list client)
+                                   :current-client client
+                                   :raw-clients (make-hash-table :test #'eq))))
+                    (puthash (herdr-agent-session-key session) adapter
+                             herdr-claude-code-ide-mcp--adapters)
+                    (cl-letf (((symbol-function 'herdr-api-agent-get)
+                               (lambda (&rest _)
+                                 '((agent . ((agent . "claude")
+                                             (agent_status . "idle"))))))
+                              ((symbol-function 'message)
+                               (lambda (format-string &rest arguments)
+                                 (setq displayed
+                                       (apply #'format format-string arguments)))))
+                      (herdr-agent-transient-status nil)
+                      (should (string-prefix-p "Claude Code | Herdr: connected | Agent: idle" displayed))
+                      (should (string-match-p "IDE: connected" displayed))
+                      (should (string-match-p (regexp-quote endpoint) displayed)))))
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer))
+              (delete-directory root t))))
       (kill-buffer protocol-buffer))))
 
 (ert-deftest herdr-claude-code-ide-ui-status-formatting-is-agent-specific ()

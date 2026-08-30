@@ -1,15 +1,24 @@
 ;;; herdr-claude-code-ide-debug.el --- Claude IDE protocol debugging -*- lexical-binding: t; -*-
 
+;;; Commentary:
+
+;; Debug controls for the Claude Code IDE integration.
+
+;;; Code:
+
 (require 'herdr-claude-code-ide-mcp)
 
 (defgroup herdr-claude-code-ide nil
   "Herdr Claude Code IDE integration."
   :group 'herdr)
 
-(defvar herdr-claude-code-ide-debug--log-buffer-name "*herdr-claude-code-ide-protocol*")
-(defvar herdr-claude-code-ide-debug--log-buffer nil)
+(defvar herdr-claude-code-ide-debug--log-buffer-name "*herdr-claude-code-ide-protocol*"
+  "Name of the raw Claude IDE protocol log buffer.")
+(defvar herdr-claude-code-ide-debug--log-buffer nil
+  "Raw Claude IDE protocol log buffer.")
 
 (defun herdr-claude-code-ide-debug--set-raw-protocol-logging (symbol value)
+  "Set SYMBOL to VALUE and update raw protocol logging hooks."
   (set-default symbol value)
   (if value
       (progn
@@ -41,6 +50,7 @@ Raw protocol data can expose sensitive project and user content."
             (generate-new-buffer herdr-claude-code-ide-debug--log-buffer-name))))
 
 (defun herdr-claude-code-ide-debug--record (direction adapter client text)
+  "Record DIRECTION TEXT for ADAPTER and CLIENT."
   (when herdr-claude-code-ide-raw-protocol-logging
     (with-current-buffer (herdr-claude-code-ide-debug-log-buffer)
       (goto-char (point-max))
@@ -51,9 +61,11 @@ Raw protocol data can expose sensitive project and user content."
                       text)))))
 
 (defun herdr-claude-code-ide-debug--incoming (adapter client text)
+  "Record incoming TEXT for ADAPTER and CLIENT."
   (herdr-claude-code-ide-debug--record "incoming" adapter client text))
 
 (defun herdr-claude-code-ide-debug--outgoing (adapter client text)
+  "Record outgoing TEXT for ADAPTER and CLIENT."
   (herdr-claude-code-ide-debug--record "outgoing" adapter client text))
 
 (defun herdr-claude-code-ide-debug-enable ()

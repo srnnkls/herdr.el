@@ -94,7 +94,7 @@
              :test #'equal)))
 
 (defun herdr-claude-code-ide--maybe-adopt (data &optional server-key)
-  "Adopt the detected Claude in event DATA when appropriate."
+  "Adopt the detected Claude in event DATA when SERVER-KEY permits it."
   (when (and (equal (alist-get 'agent data) "claude")
              (not (alist-get 'released data)))
     (when-let* ((server-key (or server-key (herdr-server-key)))

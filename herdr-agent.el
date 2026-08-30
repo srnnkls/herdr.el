@@ -175,7 +175,9 @@
                (funcall backend-sentinel process event)
              (error nil)))
          (unless (process-live-p process)
-           (herdr-agent-detach session)))))))
+           (process-put process 'herdr-agent--died t)
+           (unless (eq (herdr-agent-session-state session) 'starting)
+             (herdr-agent-detach session))))))))
 
 (defun herdr-agent--attach (session)
   "Attach SESSION's terminal and record its Emacs resources."
@@ -198,15 +200,24 @@
     (signal 'herdr-error (list "agent session is no longer starting")))
   (condition-case err
       (progn
-        (unless (and (buffer-live-p buffer) process)
+        (unless (and (buffer-live-p buffer) (processp process) (process-live-p process))
           (signal 'herdr-error (list "terminal attachment did not return a buffer and process")))
         (herdr-claim-buffer buffer (herdr-agent-session-terminal session))
         (setf (herdr-agent-session-buffer session) buffer
               (herdr-agent-session-attachment-process session) process)
+        (herdr-agent--watch-attachment session)
+        (unless (and (buffer-live-p buffer) (process-live-p process)
+                     (not (process-get process 'herdr-agent--died)))
+          (signal 'herdr-error (list "terminal attachment did not return a buffer and process")))
         (herdr-agent--register session)
         (herdr-agent--watch-buffer session)
-        (herdr-agent--watch-attachment session)
+        (unless (and (buffer-live-p buffer) (process-live-p process)
+                     (eq (herdr-agent-session-state session) 'starting))
+          (signal 'herdr-error (list "terminal attachment did not return a buffer and process")))
         (herdr-agent--run-adapter session :attached)
+        (unless (and (buffer-live-p buffer) (process-live-p process)
+                     (eq (herdr-agent-session-state session) 'starting))
+          (signal 'herdr-error (list "terminal attachment did not return a buffer and process")))
         (setf (herdr-agent-session-ownership session) nil
               (herdr-agent-session-state session) 'attached)
         session)
@@ -241,20 +252,26 @@
 
 (defun herdr-agent--subscribe-if-live (server-key)
   "Subscribe SERVER-KEY when it is available."
-  (herdr-agent--with-server server-key
-    (condition-case nil
-        (when (and (file-exists-p (herdr-socket-file)) (herdr-available-p))
-          (herdr-agent-subscribe server-key))
-      (error nil))))
+  (condition-case err
+      (herdr-agent-subscribe server-key)
+    (herdr-error
+     (unless (or (string-prefix-p "no herdr socket" (cadr err))
+                 (string-prefix-p "cannot reach herdr" (cadr err)))
+       (signal (car err) (cdr err))))))
+
+(defun herdr-agent--subscribe-before-start (server-key)
+  "Subscribe SERVER-KEY before creating startup resources."
+  (herdr-agent-subscribe server-key))
 
 (cl-defun herdr-agent-adopt (agent &key server-key (attach t))
-  "Adopt AGENT on SERVER-KEY, optionally deferring terminal attachment."
+  "Adopt AGENT on SERVER-KEY, optionally deferring ATTACH."
   (let* ((server-key (herdr-agent--canonical-server-key
                       (or server-key (alist-get 'server_key agent) (herdr-server-key))))
          (terminal (alist-get 'terminal_id agent)))
     (unless terminal
       (signal 'herdr-error (list "agent has no terminal_id")))
     (let ((existing (herdr-agent-find server-key terminal)))
+      (herdr-agent--subscribe-if-live server-key)
       (when (and existing (not (herdr-agent--live-session-p existing)))
         (herdr-agent-detach existing)
         (when (not (eq (herdr-agent-session-state existing) 'stopped))
@@ -265,7 +282,8 @@
                  (herdr-agent--make-session
                   :state 'starting)))
             (herdr-agent--apply-agent session agent server-key)
-            (herdr-agent--register session)
+            (unless attach
+              (herdr-agent--register session))
             (condition-case err
                 (progn
                   (herdr-agent--run-adapter session :adopted)
@@ -273,10 +291,9 @@
                   (when attach
                     (setf (herdr-agent-session-state session) 'attached
                           (herdr-agent-session-ownership session) nil))
-                  (herdr-agent--subscribe-if-live server-key)
                   session)
               (error
-               (herdr-agent-detach session)
+               (herdr-agent--rollback session)
                (signal (car err) (cdr err)))))))))
 
 (defun herdr-agent--request-target (_server-key terminal-id &optional _agent)
@@ -306,7 +323,7 @@
              :key (lambda (agent) (alist-get 'terminal_id agent)) :test #'equal)))
 
 (defun herdr-agent--call-with-request-target (server-key terminal-id function)
-  "Call FUNCTION with a compatible Herdr target."
+  "Call FUNCTION with a compatible Herdr target for SERVER-KEY and TERMINAL-ID."
   (condition-case err
       (funcall function (herdr-agent--request-target server-key terminal-id))
     (herdr-api-error
@@ -330,7 +347,7 @@
        (signal (car err) (cdr err))))))
 
 (defun herdr-agent--ready-agent (agent server-key timeout-ms)
-  "Return AGENT after its terminal becomes interactive-ready."
+  "Return AGENT after it becomes interactive-ready on SERVER-KEY within TIMEOUT-MS."
   (let ((terminal (alist-get 'terminal_id agent))
         (deadline (+ (float-time) (/ timeout-ms 1000.0))))
     (unless terminal
@@ -350,7 +367,8 @@
 
 (cl-defun herdr-agent-start-in-pane
     (kind name pane &key server-key args (attach t) session timeout-ms)
-  "Start KIND named NAME in PANE on SERVER-KEY with ARGS."
+  "Start KIND named NAME in PANE on SERVER-KEY.
+ARGS, ATTACH, SESSION, and TIMEOUT-MS control startup."
   (let* ((server-key (herdr-agent--canonical-server-key
                       (or server-key (herdr-server-key))))
          (start-timeout-ms (or timeout-ms 30000))
@@ -360,6 +378,7 @@
                        :server server-key :kind kind :name name :pane pane-id
                        :workspace (alist-get 'workspace_id pane)
                        :tab (alist-get 'tab_id pane) :state 'starting))))
+    (herdr-agent--subscribe-before-start server-key)
     (condition-case err
         (let* ((result (herdr-agent--with-server server-key
                          (if timeout-ms
@@ -373,12 +392,13 @@
            (herdr-agent--with-server server-key
              (herdr-agent--ready-agent agent server-key start-timeout-ms))
            server-key)
-          (herdr-agent--register session)
+          (unless attach
+            (herdr-agent--register session))
           (when attach (herdr-agent--attach session))
-          (when attach
-            (setf (herdr-agent-session-state session) 'attached
-                  (herdr-agent-session-ownership session) nil))
-          (herdr-agent--subscribe-if-live server-key)
+          (unless attach
+            (herdr-agent--run-adapter session :attached))
+          (setf (herdr-agent-session-state session) 'attached
+                (herdr-agent-session-ownership session) nil)
           session)
       (error
        (herdr-agent--rollback session)
@@ -397,6 +417,7 @@
 (defun herdr-agent--cleanup-ownership (session)
   "Clean SESSION's transaction-owned startup resources."
   (let ((ownership (herdr-agent-session-ownership session))
+        (had-tab (plist-get (herdr-agent-session-ownership session) :tab))
         errors)
     (when-let* ((tab (plist-get ownership :tab)))
       (condition-case err
@@ -408,10 +429,12 @@
                (plist-get ownership :workspace))
       (let ((workspace (plist-get ownership :workspace)))
         (condition-case err
-            (progn
-              (when (herdr-agent--workspace-empty-p workspace)
-                (herdr-api-workspace-close workspace))
-              (setf (plist-get ownership :workspace) nil))
+            (if (herdr-agent--workspace-empty-p workspace)
+                (progn
+                  (herdr-api-workspace-close workspace)
+                  (setf (plist-get ownership :workspace) nil))
+              (unless had-tab
+                (setf (plist-get ownership :workspace) nil)))
           (error (push err errors)))))
     (setf (herdr-agent-session-ownership session)
           (and (or (plist-get ownership :tab) (plist-get ownership :workspace)) ownership))
@@ -419,11 +442,22 @@
 
 (defun herdr-agent--rollback (session)
   "Clean SESSION's transaction-owned startup resources."
-  (herdr-agent-detach session))
+  (if (plist-get (herdr-agent-session-ownership session) :preterminal)
+      (setf (herdr-agent-session-state session) 'detaching
+            (herdr-agent-session-cleanup session)
+            (or (herdr-agent-session-cleanup session) '(preterminal)))
+    (unless (eq (herdr-agent-session-state session) 'detaching)
+      (herdr-agent-detach session)))
+  (when (and (eq (herdr-agent-session-state session) 'detaching)
+             (or (herdr-agent-session-cleanup session)
+                 (herdr-agent-session-ownership session)))
+    (herdr-agent--register session))
+  session)
 
 (cl-defun herdr-agent-start-session
     (kind name &key server-key project-root workspace args (attach t) timeout-ms)
-  "Start KIND named NAME on SERVER-KEY for PROJECT-ROOT in WORKSPACE with ARGS."
+  "Start KIND named NAME on SERVER-KEY for PROJECT-ROOT in WORKSPACE with ARGS.
+ATTACH controls terminal attachment; TIMEOUT-MS limits startup."
   (let* ((project-root (or project-root
                            (funcall herdr-project-root-function)
                            default-directory))
@@ -438,6 +472,11 @@
         (user-error "Invalid Herdr agent name: %s" name))
       (herdr-agent--with-server server-key
         (herdr-start-server-if-needed)
+        (when-let* ((existing (herdr-agent-find server-key nil)))
+          (herdr-agent-detach existing)
+          (unless (eq (herdr-agent-session-state existing) 'stopped)
+            (signal 'herdr-error (list "agent cleanup is still pending"))))
+        (herdr-agent--subscribe-before-start server-key)
         (let* ((name (herdr-agent--available-name name server-key))
                (session (herdr-agent--make-session
                         :server server-key :kind kind :name name :requested-name name
@@ -446,7 +485,47 @@
               (let* ((env (herdr-agent--run-adapter session :prepare))
                      (workspace (or workspace (herdr-workspace-label project-root)))
                      (existing (herdr-workspace-id workspace))
-                     (created (herdr-open-tab :cwd project-root :label name :workspace workspace :env env))
+                     (created
+                      (let ((herdr--open-tab-cleanup-failed-function
+                             (lambda (created)
+                               (let ((tab (alist-get 'tab created))
+                                     (pane (alist-get 'root_pane created)))
+                                 (setf (herdr-agent-session-workspace session)
+                                       (or (alist-get 'workspace_id (alist-get 'workspace created))
+                                           (alist-get 'workspace_id pane))
+                                       (herdr-agent-session-tab session) (alist-get 'tab_id tab)
+                                       (herdr-agent-session-pane session) (alist-get 'pane_id pane)
+                                       (herdr-agent-session-ownership session)
+                                       (list :tab (alist-get 'tab_id tab)
+                                             :workspace (herdr-agent-session-workspace session)
+                                             :preterminal t))
+                                 (unless (herdr-agent-session-cleanup session)
+                                   (condition-case err
+                                       (progn
+                                         (herdr-agent--run-adapter session :detach)
+                                         (setf (herdr-agent-session-cleanup session)
+                                               '(:adapter-detached)))
+                                     (error
+                                      (setf (herdr-agent-session-state session) 'detaching
+                                            (herdr-agent-session-cleanup session) (list err)))))
+                                 (unless (memq :preterminal (herdr-agent-session-cleanup session))
+                                   (setf (herdr-agent-session-cleanup session)
+                                         (cons :preterminal
+                                               (herdr-agent-session-cleanup session)))))))
+                            (workspace-close (symbol-function 'herdr-api-workspace-close)))
+                        (cl-letf (((symbol-function 'herdr-api-workspace-close)
+                                   (lambda (&rest arguments)
+                                     (unless (herdr-agent-session-cleanup session)
+                                       (condition-case err
+                                           (progn
+                                             (herdr-agent--run-adapter session :detach)
+                                             (setf (herdr-agent-session-cleanup session)
+                                                   '(:adapter-detached)))
+                                         (error
+                                          (setf (herdr-agent-session-state session) 'detaching
+                                                (herdr-agent-session-cleanup session) (list err)))))
+                                     (apply workspace-close arguments))))
+                          (herdr-open-tab :cwd project-root :label name :workspace workspace :env env))))
                      (tab (alist-get 'tab created))
                      (pane (alist-get 'root_pane created))
                      (workspace-id (or existing (alist-get 'workspace_id (alist-get 'workspace created))
@@ -520,7 +599,7 @@
   "Subscribe SERVER-KEY to generic agent lifecycle events."
   (let* ((server-key (herdr-agent--canonical-server-key server-key))
          (cached (gethash server-key herdr-agent--subscriptions)))
-    (if (and cached
+    (if (and (= (length cached) 5)
              (cl-every (lambda (process)
                          (and (processp process) (process-live-p process)))
                        cached))
@@ -528,26 +607,48 @@
       (dolist (process cached)
         (when (and (processp process) (process-live-p process))
           (delete-process process)))
-      (puthash
-       server-key
-       (herdr-agent--with-server server-key
-         (mapcar (lambda (type)
-                   (herdr-subscribe
-                    (list type)
-                    (lambda (data) (herdr-agent--handle-event server-key type data))))
-                 '("pane.agent_detected" "pane.exited" "pane.closed" "pane.updated" "pane.moved")))
-       herdr-agent--subscriptions))))
+      (remhash server-key herdr-agent--subscriptions)
+      (let (candidates)
+        (condition-case err
+            (progn
+              (dolist (type '("pane.agent_detected" "pane.exited" "pane.closed"
+                              "pane.updated" "pane.moved"))
+                (let ((process
+                       (herdr-agent--with-server server-key
+                         (herdr-subscribe
+                          (list type)
+                          (lambda (data)
+                            (herdr-agent--handle-event server-key type data))))))
+                  (unless (and (processp process) (process-live-p process))
+                    (signal 'herdr-error (list "subscription did not return a live process")))
+                  (push process candidates)))
+              (setq candidates (nreverse candidates))
+              (unless (cl-every (lambda (process)
+                                  (and (processp process) (process-live-p process)))
+                                candidates)
+                (signal 'herdr-error (list "subscription batch contains a dead process")))
+              (puthash server-key candidates herdr-agent--subscriptions)
+              candidates)
+          (error
+           (dolist (process candidates)
+             (when (and (processp process) (process-live-p process))
+               (delete-process process)))
+           (if (eq (car err) 'herdr-error)
+               (signal (car err) (cdr err))
+             (signal 'herdr-error (list (error-message-string err))))))))))
 
 (defun herdr-agent-detach (session)
   "Detach SESSION's Emacs resources without terminating its herdr pane."
   (unless (eq (herdr-agent-session-state session) 'stopped)
     (setf (herdr-agent-session-state session) 'detaching)
     (herdr-agent--with-server (herdr-agent-session-server session)
-      (let (errors)
+      (let (errors adapter-detached)
         (setq errors (herdr-agent--cleanup-ownership session))
-        (condition-case err
-            (herdr-agent--run-adapter session :detach)
-          (error (push err errors)))
+        (condition-case _err
+            (unless (memq :adapter-detached (herdr-agent-session-cleanup session))
+              (herdr-agent--run-adapter session :detach)
+              (setq adapter-detached t))
+          (error (push 'adapter errors)))
         (when-let* ((process (herdr-agent-session-attachment-process session)))
           (condition-case err
               (progn
@@ -563,8 +664,15 @@
                 (when (buffer-live-p buffer) (kill-buffer buffer))
                 (setf (herdr-agent-session-buffer session) nil))
             (error (push err errors))))
-        (setf (herdr-agent-session-cleanup session) errors)
-        (unless errors (herdr-agent--unregister session)))))
+        (setf (herdr-agent-session-cleanup session)
+              (append (and (or adapter-detached
+                               (memq :adapter-detached
+                                     (herdr-agent-session-cleanup session)))
+                           '(:adapter-detached))
+                      errors))
+        (unless (or errors (herdr-agent-session-ownership session))
+          (setf (herdr-agent-session-cleanup session) nil)
+          (herdr-agent--unregister session)))))
   session)
 
 (defun herdr-agent--native-args (kind action &optional reference)
@@ -583,21 +691,26 @@
 
 (cl-defun herdr-agent-start
     (kind name &key server-key project-root workspace (attach t) timeout-ms)
-  "Start native KIND named NAME."
+  "Start native KIND named NAME on SERVER-KEY for PROJECT-ROOT in WORKSPACE.
+ATTACH controls terminal attachment; TIMEOUT-MS limits startup."
   (herdr-agent-start-session
    kind name :server-key server-key :project-root project-root :workspace workspace
    :args (herdr-agent--native-args kind 'start) :attach attach :timeout-ms timeout-ms))
 
 (cl-defun herdr-agent-continue
     (kind name &key server-key project-root workspace (attach t) timeout-ms)
-  "Continue the most recent native KIND session named NAME."
+  "Continue the most recent native KIND session named NAME on SERVER-KEY.
+PROJECT-ROOT and WORKSPACE select its location; ATTACH controls terminal
+attachment; TIMEOUT-MS limits startup."
   (herdr-agent-start-session
    kind name :server-key server-key :project-root project-root :workspace workspace
    :args (herdr-agent--native-args kind 'continue) :attach attach :timeout-ms timeout-ms))
 
 (cl-defun herdr-agent-resume
     (kind name reference &key server-key project-root workspace (attach t) timeout-ms)
-  "Resume native KIND session REFERENCE named NAME."
+  "Resume native KIND session REFERENCE named NAME on SERVER-KEY.
+PROJECT-ROOT and WORKSPACE select its location; ATTACH controls terminal
+attachment; TIMEOUT-MS limits startup."
   (unless (and (stringp reference) (> (length reference) 0))
     (user-error "A session reference is required"))
   (herdr-agent-start-session
@@ -613,7 +726,7 @@
                          (file-name-as-directory (herdr-agent--project cwd))))))
 
 (defun herdr-agent-resolve-target (target agents project mru)
-  "Return TARGET from AGENTS, or the project-local MRU target."
+  "Return TARGET from AGENTS, or PROJECT's project-local MRU target."
   (if target
       (or (cl-find target agents :key (lambda (agent) (alist-get 'terminal_id agent))
                    :test #'equal)
@@ -694,7 +807,10 @@
       (herdr-agent--call-with-request-target
        server-key terminal
        (lambda (request-target)
-         (alist-get 'agent (herdr-api-agent-get request-target)))))))
+         (let ((status (alist-get 'agent (herdr-api-agent-get request-target))))
+           (append status
+                   (when-let* ((session (herdr-agent-find server-key terminal)))
+                     (herdr-agent--run-adapter session :status)))))))))
 
 (defun herdr-agent-stop (target)
   "Stop TARGET by closing its pane."

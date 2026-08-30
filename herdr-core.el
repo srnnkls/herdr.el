@@ -270,7 +270,11 @@ whatever an entry carries."
   (let* ((socket (expand-file-name (herdr-socket-file)))
          (parent (file-name-directory socket))
          (basename (file-name-nondirectory socket)))
-    (expand-file-name basename (file-truename parent))))
+    (if-let* ((target (file-symlink-p socket)))
+        (file-truename (expand-file-name target parent))
+      (if (file-exists-p socket)
+          (file-truename socket)
+        (expand-file-name basename (file-truename parent))))))
 
 (defun herdr-global-args ()
   "Return the herdr CLI flags selecting the session Emacs talks to.

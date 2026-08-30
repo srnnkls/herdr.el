@@ -709,6 +709,8 @@
                 (lambda (&rest _) (gensym "websocket-server")))
                ((symbol-function 'websocket-server-close)
                 (lambda (&rest _) nil))
+               ((symbol-function 'websocket-close)
+                (lambda (&rest _) nil))
                ((symbol-function 'herdr-claude-code-ide-mcp--port)
                 (lambda (&rest _) (cl-incf port))))
        ,@body)))
@@ -728,6 +730,7 @@
          (server-key (expand-file-name "herdr.sock" root))
          (claude (herdr-claude-code-ide-mcp-tests--t003-agent "claude" "term-claude" root))
          (operations nil)
+         (subscription-processes nil)
          (adapter nil)
          (session nil))
     (unwind-protect
@@ -735,6 +738,11 @@
                    (lambda (&rest _) t))
                   ((symbol-function 'herdr-workspace-id)
                    (lambda (&rest _) nil))
+                  ((symbol-function 'herdr-subscribe)
+                   (lambda (&rest _)
+                     (let ((process (start-process "herdr-mcp-subscription" nil "sleep" "30")))
+                       (push process subscription-processes)
+                       process)))
                   ((symbol-function 'herdr-api-agent-list)
                    (lambda () '((agents . ()))))
                   ((symbol-function 'herdr-open-tab)
@@ -862,6 +870,11 @@
         (should-not
          (herdr-claude-code-ide-mcp-tests--t003-prepare
           (herdr-claude-code-ide-mcp-tests--t003-agent kind kind root) root)))
+      (dolist (process subscription-processes)
+        (when (process-live-p process)
+          (delete-process process)))
+      (remhash (herdr-agent--canonical-server-key server-key)
+               herdr-agent--subscriptions)
       (delete-directory root t)))))
 
 (ert-deftest herdr-claude-code-ide-mcp-requires-websocket-before-publishing-discovery ()
@@ -1042,7 +1055,32 @@
                       (should (= (gethash "code" (gethash "error" invalid-response)) -32602)))
                     (assert-json-rpc-error
                      (nth 2 (car events))
-                     (herdr-claude-code-ide-mcp-tests--t003-error "invalid-params"))))
+                     (herdr-claude-code-ide-mcp-tests--t003-error "invalid-params")))
+                  (setq events nil)
+                  (let ((replacement 'replacement-client)
+                        (cancel-work
+                         (herdr-claude-code-ide-mcp-adapter-cancel-work adapter)))
+                    (herdr-claude-code-ide-mcp-track-pending
+                     adapter client "old-generation-request" "old-generation-diff")
+                    (funcall open replacement)
+                    (setf (herdr-claude-code-ide-mcp-adapter-cancel-work adapter)
+                          (lambda (&rest _) nil))
+                    (unwind-protect
+                        (progn
+                          (funcall message replacement
+                                   (json-serialize
+                                    (herdr-claude-code-ide-mcp-tests--t003-payload
+                                     "client-originated.json" "initialize")))
+                          (setq events (nreverse events))
+                          (should (equal (mapcar #'car events) '(send close)))
+                          (should (eq (nth 1 (car events)) replacement))
+                          (should (eq (nth 1 (cadr events)) replacement))
+                          (assert-json-rpc-error
+                           (nth 2 (car events))
+                           '((jsonrpc . "2.0") (id . 0)
+                             (error . ((code . -32603) (message . "Internal error"))))))
+                      (setf (herdr-claude-code-ide-mcp-adapter-cancel-work adapter)
+                            cancel-work))))
               (when adapter
                 (herdr-claude-code-ide-mcp-cleanup adapter)))))
       (setq features original-features)
@@ -1179,6 +1217,8 @@
   (let* ((root (make-temp-file "herdr-claude-mcp-adopt" t))
          (server-key (expand-file-name "herdr.sock" root))
          (commands nil)
+         (transition-session nil)
+         (transition-adapter nil)
          (first-session nil)
          (second-session nil)
          (first nil)
@@ -1194,6 +1234,40 @@
                        (let ((adapter (apply mcp-adopt session options)))
                          (push adapter adapters)
                          adapter))))
+            (let ((agent (herdr-claude-code-ide-mcp-tests--t003-agent
+                          "claude" "term-provisional" root)))
+              (setq transition-session
+                    (herdr-agent--make-session :kind "claude" :name "provisional"
+                                                :state 'starting)
+                    transition-adapter
+                    (herdr-claude-code-ide-mcp-prepare
+                     agent :server-key server-key :project-root root
+                     :instance-id "term-provisional"
+                     :discovery-directory (expand-file-name "provisional" root)
+                     :tool-list (lambda () nil) :session transition-session))
+              (let ((provisional-key
+                     (herdr-claude-code-ide-mcp-adapter-session-key transition-adapter)))
+              (should-not (eq provisional-key transition-session))
+              (should (eq (gethash provisional-key herdr-claude-code-ide-mcp--adapters)
+                          transition-adapter))
+              (herdr-agent--apply-agent transition-session agent server-key)
+              (should (eq provisional-key
+                          (herdr-claude-code-ide-mcp-adapter-session-key transition-adapter)))
+              (herdr-claude-code-ide-mcp--attached-session transition-session)
+              (should (= (hash-table-count herdr-claude-code-ide-mcp--adapters) 1))
+              (should (eq (gethash (herdr-agent-session-key transition-session)
+                                   herdr-claude-code-ide-mcp--adapters)
+                          transition-adapter))
+              (should-not (gethash provisional-key herdr-claude-code-ide-mcp--adapters))
+              (should
+               (equal
+                (herdr-claude-code-ide-mcp--status-session transition-session)
+                `((ide_status . "waiting-for-client")
+                  (ide_endpoint . ,(herdr-claude-code-ide-mcp-adapter-endpoint
+                                    transition-adapter)))))
+              (herdr-claude-code-ide-mcp-cleanup transition-adapter)
+              (should (= (hash-table-count herdr-claude-code-ide-mcp--adapters) 0))
+              (should-not (herdr-claude-code-ide-mcp-global-hooks-installed-p))))
             (setq first-session
                   (herdr-agent-adopt
                    (herdr-claude-code-ide-mcp-tests--t003-agent
@@ -1234,6 +1308,8 @@
               (should (eq (herdr-claude-code-ide-mcp-adapter-state first) 'connected))
               (should (eq (herdr-claude-code-ide-mcp-adapter-state second)
                           'waiting-for-client)))))
+      (when transition-adapter
+        (herdr-claude-code-ide-mcp-cleanup transition-adapter))
       (when first
         (herdr-claude-code-ide-mcp-cleanup first))
       (when second
@@ -1295,7 +1371,9 @@
                               '((content . ((type . "text") (text . "handled")))))))
           (herdr-claude-code-ide-mcp-terminal-attached adapter)
           (let ((first (herdr-claude-code-ide-mcp-client-connect adapter)))
-            (herdr-claude-code-ide-mcp-tests--t003-initialize adapter first)
+            (herdr-claude-code-ide-mcp-receive
+             adapter first
+             "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"clientInfo\":{\"name\":\"T003\",\"version\":\"1\"}}}")
             (herdr-claude-code-ide-mcp-track-pending
              adapter first "old-generation-request" "old-generation-diff")
             (let ((failed (herdr-claude-code-ide-mcp-client-connect adapter)))
@@ -1309,8 +1387,47 @@
               (should (eq (herdr-claude-code-ide-mcp-adapter-current-client adapter)
                           first))
               (should-not (herdr-claude-code-ide-mcp-client-open-p failed)))
-            (let ((replacement (herdr-claude-code-ide-mcp-client-connect adapter)))
-              (herdr-claude-code-ide-mcp-tests--t003-initialize adapter replacement)
+            (dolist (payload
+                     '("{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"clientInfo\":{\"name\":\"T003\",\"version\":\"1\"}}}"
+                       "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":null,\"clientInfo\":{\"name\":\"T003\",\"version\":\"1\"}}}"
+                       "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":[],\"clientInfo\":{\"name\":\"T003\",\"version\":\"1\"}}}"))
+              (let ((incomplete (herdr-claude-code-ide-mcp-client-connect adapter)))
+                (let ((response
+                       (herdr-claude-code-ide-mcp-receive adapter incomplete payload)))
+                  (should (equal (herdr-claude-code-ide-mcp-tests--value 'id response) 8))
+                  (should (equal (herdr-claude-code-ide-mcp-tests--value
+                                  'code
+                                  (herdr-claude-code-ide-mcp-tests--value 'error response))
+                                 -32602)))
+                (should (eq (herdr-claude-code-ide-mcp-adapter-current-client adapter)
+                            first))
+                (should (herdr-claude-code-ide-mcp-client-open-p first))
+                (should-not (herdr-claude-code-ide-mcp-client-open-p incomplete))
+                (should-not (memq incomplete
+                                  (herdr-claude-code-ide-mcp-adapter-clients adapter)))
+                (should-not
+                 (gethash (herdr-claude-code-ide-mcp-client-raw incomplete)
+                          (herdr-claude-code-ide-mcp-adapter-raw-clients adapter)))))
+            (should-not (herdr-claude-code-ide-mcp-adapter-cancelled-work adapter))
+            (let ((generation (herdr-claude-code-ide-mcp-adapter-client-generation adapter)))
+              (let ((response
+                     (herdr-claude-code-ide-mcp-tests--t003-initialize adapter first)))
+                (should (equal (herdr-claude-code-ide-mcp-tests--value 'id response) 0))
+                (should (equal (herdr-claude-code-ide-mcp-tests--value
+                                'code
+                                (herdr-claude-code-ide-mcp-tests--value 'error response))
+                               -32602)))
+              (should (herdr-claude-code-ide-mcp-client-open-p first))
+              (should (eq (herdr-claude-code-ide-mcp-adapter-current-client adapter)
+                          first))
+              (should (= (herdr-claude-code-ide-mcp-adapter-client-generation adapter)
+                         generation))
+              (should-not (herdr-claude-code-ide-mcp-adapter-cancelled-work adapter)))
+            (let* ((old-raw 'old-current-raw)
+                   (replacement (herdr-claude-code-ide-mcp-client-connect adapter old-raw)))
+              (herdr-claude-code-ide-mcp-receive
+               adapter replacement
+               "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"clientInfo\":{\"name\":\"T003\",\"version\":\"1\"}}}")
               (should (eq (herdr-claude-code-ide-mcp-adapter-state adapter) 'connected))
               (should (eq (herdr-claude-code-ide-mcp-adapter-current-client adapter)
                           replacement))
@@ -1329,7 +1446,56 @@
               (herdr-claude-code-ide-mcp-client-close adapter first)
               (should (eq (herdr-claude-code-ide-mcp-adapter-current-client adapter)
                           replacement))
-              (should (= (herdr-claude-code-ide-mcp-adapter-client-generation adapter) 2))))
+              (should (= (herdr-claude-code-ide-mcp-adapter-client-generation adapter) 2))
+              (let* ((candidate-raw 'cancellation-failed-raw)
+                     (failed (herdr-claude-code-ide-mcp-client-connect adapter candidate-raw)))
+                (puthash old-raw replacement
+                         (herdr-claude-code-ide-mcp-adapter-raw-clients adapter))
+                (puthash candidate-raw failed
+                         (herdr-claude-code-ide-mcp-adapter-raw-clients adapter))
+                (herdr-claude-code-ide-mcp-track-pending
+                 adapter replacement "partially-cancelled-request" "partially-cancelled-diff")
+                (let ((pending-before
+                       (copy-tree (herdr-claude-code-ide-mcp-adapter-pending adapter)))
+                      (diffs-before
+                       (copy-tree (herdr-claude-code-ide-mcp-adapter-diffs adapter)))
+                      (generation-before
+                       (herdr-claude-code-ide-mcp-adapter-client-generation adapter))
+                      (state-before (herdr-claude-code-ide-mcp-adapter-state adapter))
+                      (deadline-before
+                       (herdr-claude-code-ide-mcp-adapter-reconnect-deadline adapter))
+                      (raw-closes nil))
+                  (setf (herdr-claude-code-ide-mcp-adapter-cancel-work adapter)
+                        (lambda (&rest _) (error "cancellation failed")))
+                  (cl-letf (((symbol-function 'websocket-close)
+                             (lambda (raw &rest _) (push raw raw-closes))))
+                    (let ((response
+                           (herdr-claude-code-ide-mcp-receive
+                            adapter failed
+                            "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"clientInfo\":{\"name\":\"T003\",\"version\":\"1\"}}}")))
+                      (should (= (herdr-claude-code-ide-mcp-tests--value
+                                  'code (herdr-claude-code-ide-mcp-tests--value 'error response))
+                                 -32603)))
+                    (should (equal raw-closes (list candidate-raw)))
+                    (should-not (memq failed (herdr-claude-code-ide-mcp-adapter-clients adapter)))
+                    (should (eq (gethash old-raw
+                                         (herdr-claude-code-ide-mcp-adapter-raw-clients adapter))
+                                replacement))
+                    (should (eq (herdr-claude-code-ide-mcp-adapter-current-client adapter)
+                                replacement))
+                    (should (herdr-claude-code-ide-mcp-client-open-p replacement))
+                    (should (equal (herdr-claude-code-ide-mcp-adapter-pending adapter)
+                                   pending-before))
+                    (should (equal (herdr-claude-code-ide-mcp-adapter-diffs adapter)
+                                   diffs-before))
+                    (should (= (herdr-claude-code-ide-mcp-adapter-client-generation adapter)
+                               generation-before))
+                    (should (eq (herdr-claude-code-ide-mcp-adapter-state adapter)
+                                state-before))
+                    (should (eq (herdr-claude-code-ide-mcp-adapter-reconnect-deadline adapter)
+                                deadline-before)))
+                  (setf (herdr-claude-code-ide-mcp-adapter-cancel-work adapter)
+                        (lambda (&rest _) t))))))
       (when adapter
         (herdr-claude-code-ide-mcp-cleanup adapter))
       (delete-directory root t))))))
@@ -1425,26 +1591,50 @@
            (adapter nil)
            (websocket-open nil)
            (websocket-message nil)
+           (websocket-close-callback nil)
            (websocket-events nil)
-           (failed-raw nil))
-      (unwind-protect
-          (cl-letf (((symbol-function 'websocket-server)
-                     (lambda (&rest options)
-                       (when (not (keywordp (car options)))
-                         (setq options (cdr options)))
-                       (setq websocket-open (plist-get options :on-open)
-                             websocket-message (plist-get options :on-message))
-                       'websocket-server))
-                    ((symbol-function 'websocket-frame-text)
-                     (lambda (frame) frame))
-                    ((symbol-function 'websocket-send-text)
-                     (lambda (socket _text)
-                       (if (eq socket failed-raw)
-                           (error "deferred response send failed")
-                         (push (list 'send socket) websocket-events))))
-                    ((symbol-function 'websocket-close)
-                     (lambda (socket &rest _)
-                       (push (list 'close socket) websocket-events))))
+           (failed-raw nil)
+           (synchronous-close-raw nil)
+           (synchronous-close-attempts 0)
+           (raw-close-failures nil)
+           (server-close-failures 0))
+      (cl-letf (((symbol-function 'websocket-server)
+                 (lambda (&rest options)
+                   (when (not (keywordp (car options)))
+                     (setq options (cdr options)))
+                   (setq websocket-open (plist-get options :on-open)
+                         websocket-message (plist-get options :on-message)
+                         websocket-close-callback (plist-get options :on-close))
+                   'websocket-server))
+                ((symbol-function 'websocket-frame-text)
+                 (lambda (frame) frame))
+                ((symbol-function 'websocket-send-text)
+                 (lambda (socket _text)
+                   (if (eq socket failed-raw)
+                       (error "deferred response send failed")
+                     (push (list 'send socket) websocket-events))))
+                ((symbol-function 'websocket-close)
+                 (lambda (socket &rest _)
+                   (if (memq socket raw-close-failures)
+                       (progn
+                         (setq raw-close-failures
+                               (delq socket raw-close-failures))
+                         (error "raw close failed"))
+                     (push (list 'close socket) websocket-events)
+                     (when (eq socket synchronous-close-raw)
+                       (cl-incf synchronous-close-attempts)
+                       (when (= synchronous-close-attempts 1)
+                         (should-not
+                          (gethash socket
+                                   (herdr-claude-code-ide-mcp-adapter-raw-clients adapter)))
+                         (funcall websocket-close-callback socket))))))
+                ((symbol-function 'websocket-server-close)
+                 (lambda (server &rest _)
+                   (if (zerop server-close-failures)
+                       (push (list 'server-close server) websocket-events)
+                     (cl-decf server-close-failures)
+                     (error "listener close failed")))))
+        (unwind-protect
             (progn
             (setq session
                   (herdr-agent-adopt
@@ -1499,7 +1689,18 @@
                 adapter invalid
                 (json-serialize
                  '((jsonrpc . "2.0") (id . 7) (method . "initialize") (params . nil)))))
+              (setq raw-close-failures (list closed-raw))
+              (should-error (herdr-claude-code-ide-mcp-client-close adapter closed)
+                            :type 'error)
+              (should (memq closed
+                            (herdr-claude-code-ide-mcp-adapter-clients adapter)))
+              (should (eq (gethash closed-raw
+                                   (herdr-claude-code-ide-mcp-adapter-raw-clients adapter))
+                          closed))
+              (setq synchronous-close-raw closed-raw)
               (herdr-claude-code-ide-mcp-client-close adapter closed)
+              (should (= synchronous-close-attempts 1))
+              (should (member (list 'close closed-raw) websocket-events))
               (should-not (memq closed
                                 (herdr-claude-code-ide-mcp-adapter-clients adapter)))
               (should-not
@@ -1515,44 +1716,75 @@
               (herdr-claude-code-ide-mcp-track-pending
                adapter replacement "deferred-request" "deferred-work")
               (should (herdr-claude-code-ide-mcp-adapter-pending adapter))
-              (let ((cancellation-fault t)
+              (let ((cancellation-result :committed)
                     (cancellation-calls nil))
                 (setf (herdr-claude-code-ide-mcp-adapter-cancel-work adapter)
                       (lambda (&rest arguments)
                         (push arguments cancellation-calls)
-                        (if cancellation-fault
-                            (progn
-                              (setq cancellation-fault nil)
-                              (error "deferred cancellation failed"))
-                          t)))
-                (herdr-agent-detach session)
-                (should-not cancellation-fault)
+                        cancellation-result))
+                (should-error (herdr-claude-code-ide-mcp-cleanup adapter)
+                              :type 'error)
                 (should (= (length cancellation-calls) 1))
-                (should (eq (herdr-agent-session-state session) 'detaching))
-                (should (eq (herdr-agent-find server-key terminal-id) session))
+                (should (eq (herdr-claude-code-ide-mcp-adapter-state adapter)
+                            'detaching))
+                (should (eq (gethash (herdr-claude-code-ide-mcp-adapter-session-key adapter)
+                                     herdr-claude-code-ide-mcp--adapters)
+                            adapter))
                 (should (herdr-claude-code-ide-mcp-adapter-pending adapter))
-                (should-not
-                 (herdr-claude-code-ide-mcp-receive
-                  adapter replacement
-                  (json-serialize
-                   '((jsonrpc . "2.0") (id . 9) (method . "tools/call")
-                     (params . ((name . "unknown") (arguments . ())))))))
-                (herdr-agent-detach session)
-                (should (= (length cancellation-calls) 2))
-              (should (eq (herdr-agent-session-state session) 'stopped))
-              (should-not (herdr-agent-find server-key terminal-id))
-              (should-not (herdr-claude-code-ide-mcp-adapter-pending adapter))
-              (should-not (memq replacement
-                                (herdr-claude-code-ide-mcp-adapter-clients adapter)))
-              (should-not
-               (gethash replacement-raw
-                        (herdr-claude-code-ide-mcp-adapter-raw-clients adapter)))))
-        (when session
-          (herdr-agent-detach session))
-        (when adapter
-          (herdr-claude-code-ide-mcp-cleanup adapter))
-        (should-not (directory-files-recursively root "\\.lock\\'"))
-        (delete-directory root t)))))))
+                (should (herdr-claude-code-ide-mcp-adapter-diffs adapter))
+                (setq cancellation-result t
+                      raw-close-failures (list replacement-raw)
+                      server-close-failures 1)
+                (should-error (herdr-claude-code-ide-mcp-cleanup adapter)
+                              :type 'error)
+                (should-not raw-close-failures)
+                (should (= server-close-failures 0))
+                (should (eq (herdr-claude-code-ide-mcp-adapter-state adapter)
+                            'detaching))
+                (should (memq replacement
+                              (herdr-claude-code-ide-mcp-adapter-clients adapter)))
+                (should (eq (gethash replacement-raw
+                                     (herdr-claude-code-ide-mcp-adapter-raw-clients adapter))
+                            replacement))
+                (should (herdr-claude-code-ide-mcp-adapter-server adapter))
+                (should (herdr-claude-code-ide-mcp-adapter-endpoint-live-p adapter))
+                (should (herdr-claude-code-ide-mcp-adapter-discovery adapter))
+                (should (file-exists-p
+                         (herdr-claude-code-ide-mcp-adapter-lockfile adapter)))
+                (should (eq (gethash (herdr-claude-code-ide-mcp-adapter-session-key adapter)
+                                     herdr-claude-code-ide-mcp--adapters)
+                            adapter))
+                (let ((server (herdr-claude-code-ide-mcp-adapter-server adapter)))
+                  (setq synchronous-close-attempts 0
+                        synchronous-close-raw replacement-raw)
+                  (herdr-claude-code-ide-mcp-cleanup adapter)
+                  (should (= synchronous-close-attempts 1))
+                  (should (= (length cancellation-calls) 3))
+                  (should-not (herdr-claude-code-ide-mcp-adapter-reconnect-deadline adapter))
+                  (should (member (list 'close replacement-raw) websocket-events))
+                  (should (member (list 'server-close server) websocket-events))
+                (should (eq (herdr-claude-code-ide-mcp-adapter-state adapter) 'stopped))
+                (should-not (gethash (herdr-claude-code-ide-mcp-adapter-session-key adapter)
+                                     herdr-claude-code-ide-mcp--adapters))
+                (should-not (herdr-claude-code-ide-mcp-adapter-pending adapter))
+                (should-not (herdr-claude-code-ide-mcp-adapter-diffs adapter))
+                (should-not (herdr-claude-code-ide-mcp-adapter-clients adapter))
+                (should (= (hash-table-count
+                            (herdr-claude-code-ide-mcp-adapter-raw-clients adapter))
+                           0))
+                (should-not (herdr-claude-code-ide-mcp-adapter-server adapter))
+                (should-not (herdr-claude-code-ide-mcp-adapter-endpoint-live-p adapter))
+                (should-not (herdr-claude-code-ide-mcp-adapter-discovery adapter))
+                (should-not (file-exists-p
+                             (herdr-claude-code-ide-mcp-adapter-lockfile adapter)))))))
+          (unwind-protect
+              (progn
+                (when session
+                  (herdr-agent-detach session))
+                (when adapter
+                  (herdr-claude-code-ide-mcp-cleanup adapter))
+                (should-not (directory-files-recursively root "\\.lock\\'")))
+            (delete-directory root t)))))))
 
 (provide 'herdr-claude-code-ide-mcp-tests)
 ;;; herdr-claude-code-ide-mcp-tests.el ends here

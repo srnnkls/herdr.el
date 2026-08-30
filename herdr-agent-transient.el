@@ -1,5 +1,11 @@
 ;;; herdr-agent-transient.el --- Agent workflow transient -*- lexical-binding: t; -*-
 
+;;; Commentary:
+
+;; Transient menu for common herdr agent workflow commands.
+
+;;; Code:
+
 (require 'transient)
 (require 'herdr-agent)
 

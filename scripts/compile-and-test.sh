@@ -28,7 +28,6 @@ clean_bytecode
         package-archive-priorities '((\"gnu\" . 10) (\"melpa\" . 5)))
   (package-initialize)
   (dolist (dependency '((websocket . (1 12))
-                        (web-server . (0 1 2))
                         (transient . (0 9 0))))
     (let ((name (car dependency))
           (minimum-version (cdr dependency)))

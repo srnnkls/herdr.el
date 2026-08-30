@@ -38,13 +38,16 @@
                  :raw raw :open-p t :initialized-p (not (eq initialized :no))))
         (raw-clients (make-hash-table :test #'eq)))
     (puthash raw client raw-clients)
-    (make-herdr-claude-code-ide-mcp-adapter
-     :session-key (herdr-agent-session-key session)
-     :session session
-     :state 'connected
-     :clients (list client)
-     :current-client client
-     :raw-clients raw-clients)))
+    (let ((adapter
+           (make-herdr-claude-code-ide-mcp-adapter
+            :session-key (herdr-agent-session-key session)
+            :session session
+            :state 'connected
+            :clients (list client)
+            :current-client client
+            :raw-clients raw-clients)))
+      (setf (herdr-claude-code-ide-mcp-client-adapter client) adapter)
+      adapter)))
 
 (defmacro herdr-claude-code-ide-diagnostics-tests--with-adapter-registry
     (adapters &rest body)
@@ -163,6 +166,7 @@
          (server-key (expand-file-name "herdr.sock" server))
          (file (expand-file-name "selection.el" project))
          (other-file (expand-file-name "other.el" other-project))
+         (linked-file (expand-file-name "linked-outside.el" project))
          (dead-file (expand-file-name "dead.el" project))
          (drift-file (expand-file-name "drift.el" project))
          (drifted-file (expand-file-name "drifted.el" other-project))
@@ -172,8 +176,11 @@
                    session 'selection-client))
          (post-cleanup (herdr-claude-code-ide-diagnostics-tests--adapter
                         session 'post-cleanup-client))
+         (no-client (herdr-claude-code-ide-diagnostics-tests--adapter
+                     session 'no-client :no))
          (buffer nil)
          (other-buffer nil)
+         (linked-buffer nil)
          (dead-buffer nil)
          (drift-buffer nil)
          (non-file-buffer (generate-new-buffer " *herdr-t004-non-file*"))
@@ -185,13 +192,18 @@
         (progn
           (with-temp-file file (insert "first\nsecond\nthird\n"))
           (with-temp-file other-file (insert "outside\n"))
+          (make-symbolic-link other-file linked-file)
           (with-temp-file dead-file (insert "dead\n"))
           (with-temp-file drift-file (insert "drift\n"))
           (with-temp-file drifted-file (insert "outside drift\n"))
           (setq buffer (find-file-noselect file)
                 other-buffer (find-file-noselect other-file)
+                linked-buffer (generate-new-buffer " *herdr-t004-linked-outside*")
                 dead-buffer (find-file-noselect dead-file)
                 drift-buffer (find-file-noselect drift-file))
+          (with-current-buffer linked-buffer
+            (setq buffer-file-name linked-file)
+            (insert "outside\n"))
           (with-current-buffer buffer
             (goto-char (point-min))
             (forward-line 2)
@@ -215,13 +227,31 @@
                            (setf (nth 2 timer) t)
                            (push timer cancelled)))
                         ((symbol-function 'websocket-send-text)
-                         (lambda (raw text) (push (cons raw text) deliveries))))
+                         (lambda (raw text) (push (cons raw text) deliveries)))
+                        ((symbol-function 'websocket-close)
+                         (lambda (&rest _))))
                 (herdr-claude-code-ide-diagnostics-tests--call
                  'herdr-claude-code-ide-mcp-selection-context-changed
                  nil project other-buffer)
                 (herdr-claude-code-ide-diagnostics-tests--call
                  'herdr-claude-code-ide-mcp-selection-context-changed
                  nil project non-file-buffer)
+                (herdr-claude-code-ide-diagnostics-tests--call
+                 'herdr-claude-code-ide-mcp-selection-context-changed
+                 nil project linked-buffer)
+                (should-not timers)
+                (cl-letf (((symbol-function 'herdr-claude-code-ide-mcp--adapter-root)
+                           (lambda (&rest _)
+                             (ert-fail "selection checked a no-client adapter's root")))
+                          ((symbol-function 'herdr-claude-code-ide-mcp--same-project-root-p)
+                           (lambda (&rest _)
+                             (ert-fail "selection checked a no-client adapter's project")))
+                          ((symbol-function 'herdr-claude-code-ide-diagnostics--project-file-p)
+                           (lambda (&rest _)
+                             (ert-fail "selection checked a no-client adapter's file"))))
+                  (herdr-claude-code-ide-diagnostics-tests--call
+                   'herdr-claude-code-ide-mcp-selection-context-changed
+                   (list no-client) project buffer))
                 (should-not timers)
                 (herdr-claude-code-ide-diagnostics-tests--call
                  'herdr-claude-code-ide-mcp-selection-context-changed
@@ -401,7 +431,7 @@
                     (should (= (hash-table-count
                                 herdr-claude-code-ide-mcp--selection-contexts)
                                0))))))))
-      (dolist (candidate (list buffer other-buffer dead-buffer drift-buffer non-file-buffer))
+      (dolist (candidate (list buffer other-buffer linked-buffer dead-buffer drift-buffer non-file-buffer))
         (when (buffer-live-p candidate) (kill-buffer candidate)))
       (delete-directory server t)
       (delete-directory project t)
@@ -481,18 +511,25 @@
   (let* ((project (file-truename (make-temp-file "herdr-t004-project" t)))
          (other-project (file-truename (make-temp-file "herdr-t004-other-project" t)))
          (file (expand-file-name "diagnostics.el" project))
+         (linked-file (expand-file-name "linked-outside.el" project))
          (outside-file (expand-file-name "outside.el" other-project))
          (unvisited-file (expand-file-name "unvisited.el" project))
          (visited nil)
          (outside nil)
+         (linked nil)
          providers-called)
     (unwind-protect
         (progn
           (with-temp-file file (insert "one\ntwo\nthree\n"))
           (with-temp-file outside-file (insert "outside\n"))
+          (make-symbolic-link outside-file linked-file)
           (with-temp-file unvisited-file (insert "unvisited\n"))
           (setq visited (find-file-noselect file)
-                outside (find-file-noselect outside-file))
+                outside (find-file-noselect outside-file)
+                linked (generate-new-buffer " *herdr-t004-linked-diagnostic*"))
+          (with-current-buffer linked
+            (setq buffer-file-name linked-file)
+            (insert "outside\n"))
           (let* ((flycheck-record
                   (when (require 'flycheck nil t)
                     (flycheck-error-new-at 2 3 'warning "flycheck warning")))
@@ -517,7 +554,7 @@
                                    (ert-fail "diagnostics opened an unvisited file"))))
                         (herdr-claude-code-ide-diagnostics-tests--call
                          'herdr-claude-code-ide-mcp-collect-diagnostics
-                         providers (list visited outside) project))
+                         providers (list visited outside linked) project))
                     (error
                      (ert-fail
                       (format "diagnostic normalization crashed: %S" error-data))))))
@@ -547,7 +584,7 @@
               (when flycheck-record
                 (should (herdr-claude-code-ide-diagnostics-tests--diagnostic
                          "flycheck warning" diagnostics))))))
-      (dolist (buffer (list visited outside))
+      (dolist (buffer (list visited outside linked))
         (when (buffer-live-p buffer) (kill-buffer buffer)))
       (delete-directory project t)
       (delete-directory other-project t))))

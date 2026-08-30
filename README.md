@@ -4,7 +4,7 @@
 
 ## Install
 
-Install `websocket` 1.12+, `web-server` 0.1.2+, and `transient` 0.9.0+ from GNU ELPA or another configured archive, then load the package directory:
+Install `websocket` 1.12+ and `transient` 0.9.0+ from GNU ELPA or another configured archive, then load the package directory:
 
 ```elisp
 (use-package herdr
@@ -59,9 +59,11 @@ Herdr is the authority for process lifetime and terminal input ownership. Emacs 
 
 | Platform | Emacs | Status |
 | --- | --- | --- |
-| macOS | 29, 30 | Supported |
-| GNU/Linux | 29, 30 | Supported |
-| Windows | — | Not supported |
+| Ubuntu | 29.1, 30.1 | Supported |
+| macOS | 29.1, 30.1 | Supported |
+| Windows | 29.1, 30.1 | Supported |
+
+CI also runs an experimental, soft-failing Ubuntu snapshot job.
 
 ## Troubleshooting
 

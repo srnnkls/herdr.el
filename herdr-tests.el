@@ -199,22 +199,47 @@ alist.  Returns the socket path."
 (ert-deftest herdr-open-tab-creates-a-missing-workspace-and-names-its-tab ()
   (unwind-protect
       (let* ((calls nil)
+             (rename-fault nil)
+             (close-fault nil)
              (herdr-socket-path
               (herdr-tests--start-server
                (lambda (request)
                  (push (cons (alist-get 'method request) (alist-get 'params request))
                        calls)
-                 `((id . ,(alist-get 'id request))
-                   (result . ((type . "ok")
-                              (tab . ((tab_id . "w2:t1")))
-                              (workspaces . ,(vector '((workspace_id . "w1")
-                                                       (label . "other")))))))))))
+                 (let ((id (alist-get 'id request)))
+                   (if (or (and rename-fault
+                                (equal (alist-get 'method request) "tab.rename"))
+                           (and close-fault
+                                (equal (alist-get 'method request) "workspace.close")))
+                       (progn
+                         (if (equal (alist-get 'method request) "tab.rename")
+                             (setq rename-fault nil)
+                           (setq close-fault nil))
+                         `((id . ,id)
+                           (error . ((code . "topology_transition_failed")
+                                     (message . "topology transition failed")))))
+                     `((id . ,id)
+                       (result . ((type . "ok")
+                                  (tab . ((tab_id . "w2:t1")))
+                                  (workspaces . ,(vector '((workspace_id . "w1")
+                                                           (label . "other")))))))))))))
         (herdr-open-tab :cwd "/tmp" :label "feat-x" :workspace "app")
         (let ((methods (mapcar #'car (reverse calls))))
           (should (equal methods '("workspace.list" "workspace.create" "tab.rename"))))
         (should (equal (cdr (assq 'label (cdr (nth 1 (reverse calls))))) "app"))
         (should (equal (cdr (assq 'label (cdar calls))) "feat-x"))
-        (should (equal (cdr (assq 'tab_id (cdar calls))) "w2:t1")))
+        (should (equal (cdr (assq 'tab_id (cdar calls))) "w2:t1"))
+        (setq calls nil
+              rename-fault t)
+        (should-error (herdr-open-tab :cwd "/tmp" :label "retry" :workspace "app")
+                      :type 'herdr-api-error)
+        (should (equal (mapcar #'car (reverse calls))
+                       '("workspace.list" "workspace.create" "tab.rename"
+                         "workspace.close")))
+        (setq calls nil)
+        (herdr-open-tab :cwd "/tmp" :label "retry" :workspace "app")
+        (should (equal (mapcar #'car (reverse calls))
+                       '("workspace.list" "workspace.create" "tab.rename"))))
     (herdr-tests--teardown)))
 
 (ert-deftest herdr-buffer-names-make-room-for-repeated-labels ()
