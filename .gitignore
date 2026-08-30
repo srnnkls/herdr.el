@@ -1,2 +1,8 @@
 *.elc
 *~
+.worktrees/
+.worktreeinclude
+.peer
+scopes
+resources
+gestalt.local.toml

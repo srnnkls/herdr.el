@@ -1,0 +1,14 @@
+amends "package://github.com/jdx/hk/releases/download/v1.56.1/hk@1.56.1#/Config.pkl"
+
+hooks {
+  ["post-checkout"] {
+    env {
+      ["MISE_CONFIG_DIR"] = "{{ root }}"
+    }
+    steps {
+      ["worktreeinclude"] {
+        check = "git worktreeinclude apply --quiet"
+      }
+    }
+  }
+}
