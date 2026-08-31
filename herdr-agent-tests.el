@@ -28,6 +28,13 @@
     (unless (fboundp function)
       (ert-fail (format "missing Herdr-native action: %s" function)))))
 
+(defun herdr-agent-tests--with-adapter (kind adapter)
+  "Return isolated test harnesses with KIND using ADAPTER."
+  (let ((harnesses (copy-tree herdr-agent-harnesses)))
+    (setf (plist-get (cdr (assoc "claude" harnesses)) :adapter) nil
+          (plist-get (cdr (assoc kind harnesses)) :adapter) adapter)
+    harnesses))
+
 (defun herdr-agent-tests--pane (kind terminal-id pane-id workspace-id)
   `((agent . ,kind)
     (name . "review")
@@ -110,7 +117,9 @@
       (delete-directory root t))))
 
 (ert-deftest herdr-agent-adoption-separates-same-label-terminal-on-explicit-servers ()
-  (let* ((root (make-temp-file "herdr-agent-servers" t))
+  (let* ((herdr-agent-harnesses
+          (herdr-agent-tests--with-adapter "claude" nil))
+         (root (make-temp-file "herdr-agent-servers" t))
          (socket-a (expand-file-name "a/herdr.sock" root))
          (socket-b (expand-file-name "b/herdr.sock" root))
          server-a server-b
@@ -173,11 +182,14 @@
          (adapted nil)
          sessions)
     (unwind-protect
-        (let ((herdr-agent-kind-adapters
-               `(("claude" . ,(lambda (session)
-                                  (push "claude" adapted)
-                                  (with-current-buffer (herdr-agent-session-buffer session)
-                                    (setq-local herdr-agent-tests--ide-state "claude")))))))
+        (let ((herdr-agent-harnesses
+               (herdr-agent-tests--with-adapter
+                "claude"
+                (lambda (session phase &optional _context)
+                  (when (eq phase :attached)
+                    (push "claude" adapted)
+                    (with-current-buffer (herdr-agent-session-buffer session)
+                      (setq-local herdr-agent-tests--ide-state "claude")))))))
           (cl-letf (((symbol-function 'herdr-api-agent-start)
                      (lambda (kind name pane-id &rest arguments)
                        (push (list kind name pane-id arguments) starts)
@@ -234,7 +246,9 @@
       (delete-directory root t))))
 
 (ert-deftest herdr-agent-adoption-reuses-three-kinds-and-cleans-a-failed-attachment ()
-  (let* ((root (make-temp-file "herdr-agent-adoption" t))
+  (let* ((herdr-agent-harnesses
+          (herdr-agent-tests--with-adapter "claude" nil))
+         (root (make-temp-file "herdr-agent-adoption" t))
          (server-key (expand-file-name "herdr.sock" root))
          (fixtures '(("claude" . "term-claude")
                      ("pi" . "term-pi")
@@ -280,7 +294,7 @@
                  (operations nil)
                  adopted-session adoption-error session)
             (cl-letf (((symbol-function 'herdr-agent--run-adapter)
-                       (lambda (candidate phase)
+                       (lambda (candidate phase &optional _context)
                          (pcase phase
                            (:adopted
                             (setq adopted-session candidate)
@@ -331,22 +345,24 @@
          (startup-count 0)
          (attached-count 0)
          (attached-terminals nil)
-         (herdr-agent-kind-adapters
-          `(("pi" :prepare
-             ,(lambda (&rest _)
+         (herdr-agent-harnesses
+          (herdr-agent-tests--with-adapter
+           "pi"
+           (lambda (session phase &optional _context)
+             (pcase phase
+               (:prepare
                 (let ((cached (gethash server-a herdr-agent--subscriptions)))
                   (push (list (length cached) (cl-every #'process-live-p cached))
                         prepared-subscription-states))
-                (push 'prepare operations))
-             :attached
-             ,(lambda (session)
+                (push 'prepare operations)
+                nil)
+               (:attached
                 (should (stringp (herdr-agent-session-terminal session)))
                 (should (eq (herdr-agent-session-state session) 'starting))
                 (cl-incf attached-count)
                 (push (herdr-agent-session-terminal session) attached-terminals)
                 (push 'attached operations))
-             :status
-             ,(lambda (_session) '((ide_status . "published"))))))
+               (:status '((integration_status . "published")))))))
          session-a session-b alias-session startup-session nil-subscription-session)
     (unwind-protect
         (progn
@@ -439,7 +455,7 @@
             (should (eq (herdr-agent-session-state startup-session) 'attached))
             (should (equal (herdr-agent-status
                            (herdr-agent-session-key startup-session))
-                           '((ide_status . "published"))))
+                           '((integration_status . "published"))))
             (should (= attached-count 1))
             (should (equal attached-terminals '("term-startup-1")))
             (should-not (herdr-agent-session-ownership startup-session))
@@ -524,7 +540,9 @@
       (delete-directory root t))))
 
 (ert-deftest herdr-agent-detach-and-attachment-death-keep-herdr-open-and-retry-cleanup ()
-  (let* ((root (make-temp-file "herdr-agent-detach" t))
+  (let* ((herdr-agent-harnesses
+          (herdr-agent-tests--with-adapter "claude" nil))
+         (root (make-temp-file "herdr-agent-detach" t))
          (server-key (expand-file-name "herdr.sock" root))
          (attachments nil)
          (subscription-processes nil)
@@ -575,8 +593,12 @@
                  (original-set-process-sentinel (symbol-function 'set-process-sentinel))
                  (sentinel-installed nil))
             (push attachment attachments)
-            (let ((herdr-agent-kind-adapters
-                   `(("claude" . ,(lambda (&rest _) (setq adapter-ran t))))))
+            (let ((herdr-agent-harnesses
+                   (herdr-agent-tests--with-adapter
+                    "claude"
+                    (lambda (_session phase &optional _context)
+                      (when (eq phase :attached)
+                        (setq adapter-ran t))))))
               (cl-letf (((symbol-function 'herdr-agent--rollback)
                          (lambda (candidate)
                            (cl-incf rollback-count)
@@ -612,13 +634,15 @@
                  (adapter-error nil)
                  (adapter-session nil)
                  (original-set-process-sentinel (symbol-function 'set-process-sentinel))
-                 (herdr-agent-kind-adapters
-                  `(("claude" :attached
-                     ,(lambda (session)
-                        (when (equal (herdr-agent-session-terminal session)
-                                     "term-adapter-death")
-                          (delete-process
-                           (herdr-agent-session-attachment-process session))))))))
+                 (herdr-agent-harnesses
+                  (herdr-agent-tests--with-adapter
+                   "claude"
+                   (lambda (session phase &optional _context)
+                     (when (and (eq phase :attached)
+                                (equal (herdr-agent-session-terminal session)
+                                       "term-adapter-death"))
+                       (delete-process
+                        (herdr-agent-session-attachment-process session)))))))
             (cl-letf (((symbol-function 'herdr-attach-terminal)
                        (lambda (candidate &rest _)
                          (let ((attachment
@@ -692,7 +716,9 @@
       (delete-directory root t))))
 
 (ert-deftest herdr-agent-start-rollback-cleans-only-transaction-owned-resources ()
-  (let ((root (make-temp-file "herdr-agent-rollback" t)))
+  (let ((herdr-agent-harnesses
+         (herdr-agent-tests--with-adapter "claude" nil))
+        (root (make-temp-file "herdr-agent-rollback" t)))
     (unwind-protect
         (progn
           (let* ((server-key (expand-file-name "subscription-batch-death/herdr.sock" root))
@@ -910,14 +936,16 @@
                  (process (cdr attachment))
                  (callbacks (make-hash-table :test #'equal)))
             (unwind-protect
-                (let ((herdr-agent-kind-adapters
-                       `(("pi" :attached
-                          ,(lambda (_session)
-                             (when-let ((callback (gethash "pane.exited" callbacks)))
-                               (should (process-live-p process))
-                               (funcall callback
-                                        '((pane_id . "work:pane")
-                                          (workspace_id . "work")))))))))
+                (let ((herdr-agent-harnesses
+                       (herdr-agent-tests--with-adapter
+                        "pi"
+                        (lambda (_session phase &optional _context)
+                          (when (eq phase :attached)
+                            (when-let ((callback (gethash "pane.exited" callbacks)))
+                              (should (process-live-p process))
+                              (funcall callback
+                                       '((pane_id . "work:pane")
+                                         (workspace_id . "work")))))))))
                   (cl-letf (((symbol-function 'herdr-subscribe)
                              (lambda (types callback &rest _)
                                (dolist (type types)
@@ -1347,7 +1375,8 @@
                    ((terminal_id . "term-b") (pane_id . "w:p-b")
                     (agent . "aider") (name . "generic"))))
          (calls nil)
-         (herdr-agent-kind-adapters nil))
+         (herdr-agent-harnesses
+          (herdr-agent-tests--with-adapter "claude" nil)))
     (cl-letf (((symbol-function 'herdr-attach-terminal)
                (lambda (terminal-id &rest _)
                  (generate-new-buffer (format " *herdr-agent-%s*" terminal-id))))
@@ -1562,7 +1591,9 @@
    'herdr-agent-list 'herdr-agent-switch 'herdr-agent-rename
    'herdr-agent-status 'herdr-agent-stop 'herdr-agent-stop-all
    'herdr-agent-prompt 'herdr-agent-escape 'herdr-agent-newline)
-  (let* ((root (make-temp-file "herdr-agent-composite" t))
+  (let* ((herdr-agent-harnesses
+          (herdr-agent-tests--with-adapter "claude" nil))
+         (root (make-temp-file "herdr-agent-composite" t))
          (socket-a (expand-file-name "a/herdr.sock" root))
          (socket-b (expand-file-name "b/herdr.sock" root))
          (attachments nil)
@@ -1670,7 +1701,9 @@
 (ert-deftest herdr-agent-native-public-target-ladder-keeps-composite-identity ()
   (herdr-agent-tests--require-functions
    'herdr-agent-adopt 'herdr-agent-prompt)
-  (let* ((root (make-temp-file "herdr-agent-target-ladder" t))
+  (let* ((herdr-agent-harnesses
+          (herdr-agent-tests--with-adapter "claude" nil))
+         (root (make-temp-file "herdr-agent-target-ladder" t))
          (project-a (expand-file-name "project-a" root))
          (project-b (expand-file-name "project-b" root))
          (socket-a (expand-file-name "a/herdr.sock" root))
@@ -1784,7 +1817,7 @@
       (should-not starts)
       (should-not server-starts))))
 
-(ert-deftest herdr-agent-public-modules-activate-claude-without-claude-code-ide ()
+(ert-deftest herdr-agent-public-modules-load-canonical-transient-lazily ()
   (let* ((root herdr-agent-tests--root)
          (package-root (make-temp-file "herdr-agent-shadow-package" t))
          (shadow-directory (expand-file-name "herdr-0.0.0" package-root))
@@ -1803,43 +1836,73 @@
                 (call-process
                  (concat invocation-directory invocation-name) nil buffer nil
                  "-Q" "--batch" "-L" root "--eval"
-                 (format "(progn (require 'package) (setq package-directory-list (cons %S package-directory-list)) (package-initialize) (setq load-path (cons %S (delete %S load-path))) (require 'cl-lib) (require 'herdr-agent) (require 'herdr-agent-transient) (require 'herdr-claude-code-ide) (let ((herdr-claude-code-ide-adopt-on-attach t) (entry '((agent . \"claude\") (cwd . \"/tmp\") (terminal_id . \"term\"))) calls) (cl-letf (((symbol-function 'herdr-claude-code-ide-adopt) (lambda (&rest arguments) (push arguments calls) 'adopted))) (unless (and (eq (herdr-claude-code-ide--attach-entry entry) 'adopted) (equal calls (list (list entry)))) (error \"Claude adapter did not adopt exactly once\")))))"
-                         package-root root root))))
+                 (format
+                  (concat
+                   "(progn (require 'package) "
+                   "(setq package-directory-list (cons %S package-directory-list)) "
+                   "(package-initialize) (setq load-path (cons %S (delete %S load-path))) "
+                   "(global-set-key (kbd \"C-c h\") #'ignore) "
+                   "(require 'herdr-transient) "
+                   "(unless (eq (lookup-key global-map (kbd \"C-c h\")) #'ignore) "
+                   "(error \"Herdr transient changed the global binding\")) "
+                   "(unless (= 1 (length (cl-remove-if-not "
+                   "(lambda (entry) (equal (car entry) \"claude\")) herdr-agent-harnesses))) "
+                   "(error \"Claude harness registration is not singular\")) "
+                   "(when (or (featurep 'herdr-claude) "
+                   "(featurep 'herdr-claude-protocol) (featurep 'websocket)) "
+                   "(error \"Generic transient eagerly loaded Claude\")))")
+                  package-root root root))))
       (setq output (with-current-buffer buffer (buffer-string)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (when (file-directory-p package-root)
         (delete-directory package-root t)))
     (unless (zerop status)
-      (ert-fail (format "Clean Claude adapter activation failed: %s" output)))))
+      (ert-fail (format "Clean Herdr transient load failed: %s" output)))))
 
-(ert-deftest herdr-agent-runtime-tree-has-no-claude-code-ide-bridge ()
+(ert-deftest herdr-agent-runtime-tree-has-no-legacy-bridge ()
   (let* ((root herdr-agent-tests--root)
-         (files (process-lines "git" "-C" root "ls-files" "*.el"))
-         (pattern "\\(?:^\\|[^[:alnum:]-]\\)claude-code-ide\\(?:\\_>\\|-[[:alnum:]-]+\\)")
+         (files
+          (seq-remove
+           (lambda (file)
+             (let ((relative (file-relative-name file root)))
+               (or (string-prefix-p "." relative)
+                   (string-prefix-p "resources/" relative))))
+           (directory-files-recursively root "\\.el\\'")))
+         (pattern
+          (regexp-opt (list (concat "herdr-claude-" "code-ide")
+                            (concat "herdr-agent-" "transient")
+                            (concat "herdr-transient-claude-" "code-ide"))))
          offenders)
     (dolist (file files)
-      (unless (string-match-p "-tests\\.el\\'" file)
-        (with-temp-buffer
-          (insert-file-contents (expand-file-name file root))
-          (when (re-search-forward pattern nil t)
-            (push file offenders)))))
+      (with-temp-buffer
+        (insert-file-contents file)
+        (when (or (string-match-p pattern (file-name-nondirectory file))
+                  (re-search-forward pattern nil t))
+          (push (file-relative-name file root) offenders))))
     (should-not offenders)))
 
-(ert-deftest herdr-claude-code-ide-explicit-adoption-activates-a-preexisting-generic-session ()
-  (let ((buffer (generate-new-buffer " *herdr-agent-clean-adopt*"))
-        status output)
+(ert-deftest herdr-agent-reused-session-runs-current-harness-adoption ()
+  (let* ((agent '((agent . "claude") (cwd . "/tmp")
+                  (server_key . "/tmp/herdr-reused.sock")
+                  (terminal_id . "term-reused") (agent_status . "idle")))
+         (herdr-agent-harnesses
+          (herdr-agent-tests--with-adapter "claude" nil))
+         (session (herdr-agent-adopt
+                   agent :server-key "/tmp/herdr-reused.sock" :attach nil))
+         calls)
+    (setf (plist-get (cdr (assoc "claude" herdr-agent-harnesses)) :adapter)
+          (lambda (candidate phase &optional context)
+            (when (eq phase :adopted)
+              (push (list candidate context) calls))))
     (unwind-protect
-        (setq status
-              (call-process
-               (concat invocation-directory invocation-name) nil buffer nil
-               "-Q" "--batch" "-L" herdr-agent-tests--root "--eval"
-               "(progn (require 'cl-lib) (require 'herdr) (require 'herdr-agent) (let* ((agent '((agent . \"claude\") (cwd . \"/tmp\") (server_key . \"/tmp/herdr-reused.sock\") (terminal_id . \"term-reused\") (agent_status . \"idle\"))) (session (let ((herdr-agent-kind-adapters nil)) (herdr-agent-adopt agent :server-key \"/tmp/herdr-reused.sock\" :attach nil))) calls) (require 'herdr-claude-code-ide) (cl-letf (((symbol-function 'herdr-api-pane-send-text) (lambda (&rest _) nil)) ((symbol-function 'herdr-claude-code-ide-mcp-adopt) (lambda (&rest arguments) (push arguments calls)))) (herdr-claude-code-ide-adopt agent)) (unless (= (length calls) 1) (error \"IDE adapter was not activated for the reused generic session\")) (unless (eq (caar calls) session) (error \"IDE adapter did not activate the reused generic session\")) (herdr-agent-detach session)))"))
-      (setq output (with-current-buffer buffer (buffer-string)))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))
-    (unless (zerop status)
-      (ert-fail (format "Clean Claude adoption failed: %s" output)))))
+        (progn
+          (should (eq (herdr-agent-adopt
+                       agent :server-key "/tmp/herdr-reused.sock" :attach nil)
+                      session))
+          (should (equal calls (list (list session agent)))))
+      (setf (plist-get (cdr (assoc "claude" herdr-agent-harnesses)) :adapter) nil)
+      (herdr-agent-detach session))))
 
 (ert-deftest herdr-agent-start-preflights-names-on-the-resolved-project-server ()
   (herdr-agent-tests--require-functions

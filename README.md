@@ -1,59 +1,83 @@
 # herdr.el
 
-`herdr.el` is an Emacs 29.1+ client for [herdr](https://herdr.dev), the persistent terminal workspace manager. Herdr owns the agent process, terminal, tab, and workspace; Emacs attaches a terminal view and, for Claude, provides the native IDE protocol endpoint.
+`herdr.el` is an Emacs 29.1+ client for [Herdr](https://herdr.dev), the persistent terminal workspace manager. Herdr owns agent processes, terminals, tabs, and workspaces. Emacs owns attached terminal views and, for Claude, a loopback editor endpoint with file, diagnostic, context, and diff operations.
 
 ## Install
 
-Install `websocket` 1.12+ and `transient` 0.9.0+ from GNU ELPA or another configured archive, then load the package directory:
+Install `websocket` 1.12+ and `transient` 0.9.0+ from a configured package archive. Terminal attachment also requires one of Ghostel, vterm, or Eat.
 
 ```elisp
 (use-package herdr
   :load-path "~/src/herdr.el"
   :commands (herdr-attach-agent herdr-attach-pane herdr-jump))
 
-(use-package herdr-agent-transient
-  :after herdr
-  :commands herdr-agent-transient)
-
-(use-package herdr-claude-code-ide
-  :after herdr
-  :demand t
-  :commands (herdr-claude-code-ide-adopt
-             herdr-claude-code-ide-auto-adopt-mode
-             herdr-claude-code-ide-connect-ide))
+(use-package herdr-transient
+  :load-path "~/src/herdr.el"
+  :commands herdr-transient
+  :bind (("C-c h" . herdr-transient)))
 ```
 
-Terminal attachment requires one of `ghostel`, `vterm`, or `eat`; set `herdr-terminal-backend` when automatic selection is not suitable.
+Set `herdr-terminal-backend` when automatic backend selection is unsuitable. The package installs no global keybinding itself.
 
 ## Agent workflows
 
-`herdr-agent.el` is the lifecycle surface for Claude Code, Pi, and Codex. `M-x herdr-agent-transient` provides the same operations interactively.
+`herdr-agent.el` provides one lifecycle for Claude Code, Codex, and Pi.
 
 | Operation | Meaning |
 | --- | --- |
-| start | Creates a herdr tab and starts a new Claude, Pi, or Codex agent. |
-| continue | Starts the harness's most recent session in a new herdr tab. |
-| resume | Starts the named harness session reference in a new herdr tab. |
-| adopt | Attaches an already-running herdr agent to Emacs without starting a second CLI. Claude adoption also prepares its native IDE endpoint. |
-| detach | Killing an attached terminal buffer releases only the Emacs attachment. The herdr pane and agent continue. |
-| stop | Closes one agent's herdr pane, ending that agent. |
-| stop all | Closes every reported agent pane on the selected herdr server. |
+| start | Create a Herdr tab and start a new harness session. |
+| continue | Continue the harness's latest session in a new tab. |
+| resume | Resume a named harness session reference in a new tab. |
+| adopt | Attach an already-running Herdr agent without starting another CLI. |
+| detach | Release the Emacs terminal and integration state; keep the Herdr pane and agent alive. |
+| stop | Close one agent's Herdr pane. |
+| stop all | Close every reported agent pane on the selected server. |
 
-Use `herdr-agent-start`, `herdr-agent-continue`, and `herdr-agent-resume` from Lisp. `herdr-agent-stop` requires an explicit target; `herdr-agent-stop-all` operates on the current server. `herdr-attach-agent`, `herdr-attach-pane`, and `herdr-jump` attach existing work. `herdr-attach-takeover` controls whether Emacs claims terminal input.
+Use `herdr-agent-start`, `herdr-agent-continue`, and `herdr-agent-resume` from Lisp. `herdr-agent-stop` takes a composite `(server-key . terminal-id)` target. Existing work is available through `herdr-attach-agent`, `herdr-attach-pane`, `herdr-attach-session`, and `herdr-jump`.
 
-## Claude IDE
+A harness is one registry entry: its display label, native start/continue/resume arguments, and an optional phase-aware adapter.
 
-Loading `herdr-claude-code-ide` installs the Claude attachment adapter. A Claude entry with a working directory and terminal ID is adopted through `herdr-claude-code-ide-adopt`; set `herdr-claude-code-ide-adopt-on-attach` to nil to retain a plain generic attachment. Enable `herdr-claude-code-ide-auto-adopt-mode` to adopt detected Claude agents whose directories pass `herdr-claude-code-ide-auto-adopt-predicate`.
+```elisp
+(herdr-agent-register-harness
+ "aider"
+ :label "Aider"
+ :arguments '((start)
+              (continue "--continue")
+              (resume "--resume" :reference)))
+```
 
-Each adopted Claude session gets a loopback WebSocket MCP endpoint and discovery lockfile under `~/.claude/ide`. `herdr-claude-code-ide-connect-on-adopt` controls whether `/ide` is sent while the terminal is owned by Emacs: `idle` is the default, `t` always requests connection, and nil never does. `M-x herdr-claude-code-ide-connect-ide` requests it later.
+The adapter contract is `(session phase &optional context)`. Generic harnesses need no adapter. The Herdr server must support the registered kind.
 
-The endpoint exposes editor context, selected-file mentions, diagnostics, file opening, and editable diffs. Diff tabs remain Emacs-owned; closing or accepting them does not stop the agent. The optional loopback HTTP MCP service is available through `herdr-claude-code-ide-mcp-server` and `herdr-claude-code-ide-emacs-tools`; it only accepts `127.0.0.1` contexts.
+## Transient
 
-`executeCode` evaluates Emacs Lisp only when explicitly enabled by the package's tools configuration. It should remain disabled for untrusted sessions. Raw protocol logging is opt-in through `herdr-claude-code-ide-raw-protocol-logging`; its buffer can expose prompts, selected text, paths, diagnostics, and tool payloads. Disable it after debugging and do not share its contents casually.
+`C-c h` opens the canonical Herdr menu:
 
-## Ownership boundaries
+```text
+Session:  s start       c continue      r resume
+Agent:    j switch      p prompt        n rename
+          e escape      RET return      k stop       K stop all
+Attach:   a agent       P pane          A session
+          J jump        R route project
+Status:   i status      C customize     I Claude
+```
 
-Herdr is the authority for process lifetime and terminal input ownership. Emacs owns attached buffers, MCP transport, editor context, and diff views. Detaching or closing an Emacs buffer never stops a herdr agent; use stop to end it. Claude IDE modules adapt the generic lifecycle and do not launch or manage an Emacs-owned fallback CLI.
+`C-c h I` opens Claude actions for adoption, explicit connection, auto-adoption, at-mention, status, and protocol logging. Opening either menu starts no process or transport and does not load the Claude protocol stack.
+
+## Claude editor integration
+
+Every adopted Claude session gets its own loopback WebSocket MCP endpoint and discovery lockfile under `~/.claude/ide`, or `$CLAUDE_CONFIG_DIR/ide` when configured. The generic agent lifecycle invokes the Claude adapter; there is no second attach route.
+
+`herdr-claude-connect-on-adopt` controls when Herdr sends `/ide`: `idle` connects an idle agent, `t` always requests connection, and nil requires `M-x herdr-claude-connect`. `M-x herdr-claude-auto-adopt-mode` adopts matching agents according to `herdr-claude-auto-adopt-predicate`.
+
+`M-x herdr-claude-at-mention` sends the current file or active region to the initialized Claude connection for that project. The endpoint also provides selection updates, visited-buffer diagnostics, file opening, tab closing, and editable Ediff-backed diffs.
+
+`executeCode` evaluates Emacs Lisp only when `herdr-claude-enable-elisp-tool` is non-nil. Keep it disabled for untrusted sessions. Raw payload logging is also disabled by default; enable `herdr-claude-protocol-logging` only while debugging and inspect it with `M-x herdr-claude-debug-open-log`.
+
+## Ownership and security
+
+Herdr remains authoritative for process lifetime and terminal input. Emacs owns terminal buffers, Claude endpoints, editor views, diagnostics, and diffs. Killing an Emacs buffer or detaching a session never stops the Herdr agent; use `herdr-agent-stop` to end it.
+
+Claude endpoints bind only to loopback. Discovery files are mode `0600`. Editor paths stay inside the adopted project root, raw logging is opt-in, and Elisp execution is opt-in.
 
 ## Platforms
 
@@ -67,13 +91,13 @@ CI also runs an experimental, soft-failing Ubuntu snapshot job.
 
 ## Troubleshooting
 
-- `no terminal backend`: install `ghostel`, `vterm`, or `eat`, or configure `herdr-terminal-backend`.
-- `No herdr server`: start herdr, or allow `herdr-auto-start-server` for the selected session.
-- Claude does not connect: confirm the agent is idle or set `herdr-claude-code-ide-connect-on-adopt` to `t`, then run `herdr-claude-code-ide-connect-ide`.
-- Claude has no editor context: verify the discovery directory is writable and that the loopback endpoint is not blocked.
-- A terminal is read-only: attach with `herdr-attach-takeover` enabled, understanding that this transfers input ownership.
-- A diff or protocol buffer remains after work: close its Emacs buffer; this only releases editor-side state.
+- `no terminal backend`: install Ghostel, vterm, or Eat, or set `herdr-terminal-backend`.
+- `No herdr server`: start Herdr, or allow `herdr-auto-start-server` for the selected session.
+- Claude does not connect: run `M-x herdr-claude-connect` and confirm the agent is idle.
+- Claude has no editor context: confirm the connection initialized and the current file belongs to the adopted project.
+- A terminal is read-only: enable `herdr-attach-takeover` when attaching to transfer input ownership.
+- A diff remains: reject or accept it, or detach the Claude integration; the Herdr pane remains alive.
 
 ## License and attribution
 
-herdr.el is GPL-3.0-or-later; see [LICENSE](LICENSE). Earlier versions included material adapted from [manzaltu/claude-code-ide.el](https://github.com/manzaltu/claude-code-ide.el), also GPL-3.0-or-later. That external bridge has been removed from the runtime implementation.
+herdr.el is GPL-3.0-or-later; see [LICENSE](LICENSE). Earlier versions included material adapted from [manzaltu/claude-code-ide.el](https://github.com/manzaltu/claude-code-ide.el), also GPL-3.0-or-later. That external bridge is absent from the runtime implementation.

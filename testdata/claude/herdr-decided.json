@@ -7,7 +7,7 @@
   },
   "provenance": "herdr-decided",
   "exchanges": [
-    { "id": "initialize-result", "provenance": "herdr-decided", "category": "decided", "basis": "design.md Protocol boundary; current MCP initialization", "result": { "protocolVersion": "2025-11-25", "capabilities": { "tools": { "listChanged": true }, "resources": { "subscribe": false, "listChanged": false }, "prompts": { "listChanged": true } }, "serverInfo": { "name": "herdr-claude-code-ide", "version": "fixture" } } },
+    { "id": "initialize-result", "provenance": "herdr-decided", "category": "decided", "basis": "Claude MCP protocol boundary", "result": { "protocolVersion": "2025-11-25", "capabilities": { "tools": { "listChanged": true }, "resources": { "subscribe": false, "listChanged": false }, "prompts": { "listChanged": true } }, "serverInfo": { "name": "herdr", "version": "0.1.0" } } },
     { "id": "server-capabilities", "provenance": "herdr-decided", "category": "decided", "basis": "design.md Protocol boundary", "capabilities": { "tools": { "listChanged": true }, "resources": { "subscribe": false, "listChanged": false }, "prompts": { "listChanged": true } } },
     { "id": "selection", "provenance": "herdr-decided", "category": "decided", "basis": "scope.md IDE discovery and protocol requirement", "coordinate_convention": "zero-based-line-and-character", "coordinates": { "coordinate_base": 0, "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } }, "payload": { "filePath": "/project/file.el", "text": "", "selection": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } } } },
     { "id": "at-mention", "provenance": "herdr-decided", "category": "decided", "basis": "Claude Code 2.1.235 at_mentioned payload", "coordinate_convention": "one-based-lines", "payload": { "filePath": "/project/file.el", "lineStart": 1, "lineEnd": 1 } },
@@ -19,15 +19,6 @@
       { "id": "unknown-tool", "response": { "jsonrpc": "2.0", "id": 9, "error": { "code": -32602, "message": "Unknown tool" } } },
       { "id": "cancelled", "response": { "jsonrpc": "2.0", "id": 10, "error": { "code": -32800, "message": "Request cancelled" } } },
       { "id": "internal-error", "response": { "jsonrpc": "2.0", "id": 11, "error": { "code": -32603, "message": "Internal error" } } }
-    ] },
-    { "id": "http-mcp-errors", "provenance": "herdr-decided", "category": "decided", "basis": "MCP Streamable HTTP and JSON-RPC 2.0", "errors": [
-      { "id": "parse-error", "status": 400, "headers": { "Content-Type": "application/json" }, "response": { "jsonrpc": "2.0", "id": null, "error": { "code": -32700, "message": "Parse error" } } },
-      { "id": "invalid-request", "status": 400, "headers": { "Content-Type": "application/json" }, "response": { "jsonrpc": "2.0", "id": null, "error": { "code": -32600, "message": "Invalid Request" } } },
-      { "id": "invalid-params", "status": 200, "headers": { "Content-Type": "application/json" }, "response": { "jsonrpc": "2.0", "id": 20, "error": { "code": -32602, "message": "Invalid params" } } },
-      { "id": "unknown-method", "status": 200, "headers": { "Content-Type": "application/json" }, "response": { "jsonrpc": "2.0", "id": 21, "error": { "code": -32601, "message": "Method not found" } } },
-      { "id": "unknown-tool", "status": 200, "headers": { "Content-Type": "application/json" }, "response": { "jsonrpc": "2.0", "id": 22, "error": { "code": -32602, "message": "Unknown tool" } } },
-      { "id": "cancelled", "status": 200, "headers": { "Content-Type": "application/json" }, "response": { "jsonrpc": "2.0", "id": 23, "error": { "code": -32800, "message": "Request cancelled" } } },
-      { "id": "internal-error", "status": 200, "headers": { "Content-Type": "application/json" }, "response": { "jsonrpc": "2.0", "id": 24, "error": { "code": -32603, "message": "Internal error" } } }
     ] },
     { "id": "reconnect-deadline", "provenance": "herdr-decided", "category": "decided", "basis": "design.md Client disconnect", "deadline_seconds": 30, "trigger": "current-client-disconnect", "initial_wait_has_deadline": false },
     { "id": "deferred-response-cancellation", "provenance": "herdr-decided", "category": "decided", "basis": "design.md INV-4", "invalidated_generation": 1, "replacement_generation": 2, "cancelled_request_ids": ["old-generation-request"], "cancelled_diff_ids": ["old-generation-diff"] },

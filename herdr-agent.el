@@ -11,13 +11,36 @@
 (require 'cl-lib)
 (require 'herdr)
 
+(autoload 'herdr-claude--adapter "herdr-claude")
+
 (cl-defstruct (herdr-agent-session
                (:constructor herdr-agent--make-session))
   key server terminal kind name requested-name agent-session project route workspace tab pane
   buffer attachment-process state ownership cleanup)
 
-(defvar herdr-agent-kind-adapters nil
-  "Functions keyed by supported agent kind.")
+(defvar herdr-agent-harnesses
+  '(("claude" :label "Claude Code"
+     :arguments ((start) (continue "--continue")
+                           (resume "--resume" :reference))
+     :adapter herdr-claude--adapter)
+    ("codex" :label "Codex"
+     :arguments ((start) (continue "resume" "--last")
+                  (resume "resume" :reference)))
+    ("pi" :label "Pi"
+     :arguments ((start) (continue "--continue")
+                       (resume "--session" :reference))))
+  "Harness descriptors keyed by Herdr agent kind.")
+
+(defun herdr-agent-register-harness (kind &rest properties)
+  "Register KIND with descriptor PROPERTIES.
+PROPERTIES accepts an `:arguments' action alist and optional phase-aware
+`:adapter' function."
+  (unless (and (stringp kind) (plist-member properties :arguments))
+    (signal 'wrong-type-argument (list 'herdr-agent-harness kind properties)))
+  (setq herdr-agent-harnesses
+        (cons (cons kind properties)
+              (cl-remove kind herdr-agent-harnesses :key #'car :test #'equal)))
+  kind)
 (defvar herdr-agent--sessions (make-hash-table :test #'equal)
   "Primary agent sessions keyed by server and terminal.")
 (defvar herdr-agent--buffers (make-hash-table :test #'eq)
@@ -44,11 +67,16 @@
   (gethash (cons (herdr-agent--canonical-server-key server-key) terminal-id)
            herdr-agent--sessions))
 
+(defun herdr-agent--harness (kind &optional noerror)
+  "Return KIND's harness descriptor, or nil when NOERROR permits it."
+  (or (cdr (assoc kind herdr-agent-harnesses))
+      (unless noerror
+        (signal 'herdr-error (list (format "unsupported agent kind %s" kind))))))
+
 (defun herdr-agent--kind (agent)
   "Return AGENT's supported kind."
   (let ((kind (alist-get 'agent agent)))
-    (unless (member kind '("claude" "pi" "codex"))
-      (signal 'herdr-error (list (format "unsupported agent kind %s" kind))))
+    (herdr-agent--harness kind)
     kind))
 
 (defun herdr-agent--project (root)
@@ -137,15 +165,12 @@
     (setf (herdr-agent-session-state session) 'stopped)
     session))
 
-(defun herdr-agent--run-adapter (session phase)
-  "Run SESSION's adapter PHASE."
-  (when-let* ((adapter (cdr (assoc (herdr-agent-session-kind session)
-                                   herdr-agent-kind-adapters))))
-    (cond
-     ((functionp adapter)
-      (when (eq phase :attached) (funcall adapter session)))
-     ((functionp (plist-get adapter phase))
-      (funcall (plist-get adapter phase) session)))))
+(defun herdr-agent--run-adapter (session phase &optional context)
+  "Run SESSION's adapter PHASE with optional CONTEXT."
+  (when-let* ((harness (herdr-agent--harness
+                        (herdr-agent-session-kind session) t))
+              (adapter (plist-get harness :adapter)))
+    (funcall adapter session phase context)))
 
 (defun herdr-agent--buffer-died ()
   "Clean the session whose attachment buffer is being killed."
@@ -277,24 +302,27 @@
         (when (not (eq (herdr-agent-session-state existing) 'stopped))
           (signal 'herdr-error (list "agent cleanup is still pending")))
         (setq existing nil))
-      (or existing
-          (let ((session
-                 (herdr-agent--make-session
-                  :state 'starting)))
-            (herdr-agent--apply-agent session agent server-key)
-            (unless attach
-              (herdr-agent--register session))
-            (condition-case err
-                (progn
-                  (herdr-agent--run-adapter session :adopted)
-                  (when attach (herdr-agent--attach session))
-                  (when attach
-                    (setf (herdr-agent-session-state session) 'attached
-                          (herdr-agent-session-ownership session) nil))
-                  session)
-              (error
-               (herdr-agent--rollback session)
-               (signal (car err) (cdr err)))))))))
+      (if existing
+          (progn
+            (herdr-agent--run-adapter existing :adopted agent)
+            existing)
+        (let ((session
+               (herdr-agent--make-session
+                :state 'starting)))
+          (herdr-agent--apply-agent session agent server-key)
+          (unless attach
+            (herdr-agent--register session))
+          (condition-case err
+              (progn
+                (herdr-agent--run-adapter session :adopted agent)
+                (when attach (herdr-agent--attach session))
+                (when attach
+                  (setf (herdr-agent-session-state session) 'attached
+                        (herdr-agent-session-ownership session) nil))
+                session)
+            (error
+             (herdr-agent--rollback session)
+             (signal (car err) (cdr err)))))))))
 
 (defun herdr-agent--request-target (_server-key terminal-id &optional _agent)
   "Return a Herdr agent target for TERMINAL-ID."
@@ -545,7 +573,7 @@ ATTACH controls terminal attachment; TIMEOUT-MS limits startup."
 
 (defun herdr-agent-attach-entry (entry)
   "Attach supported agent ENTRY through the generic lifecycle root."
-  (when (and (member (alist-get 'agent entry) '("claude" "pi" "codex"))
+  (when (and (herdr-agent--harness (alist-get 'agent entry) t)
              (alist-get 'terminal_id entry))
     (herdr-agent-session-buffer
      (herdr-agent-adopt entry :server-key (or (alist-get 'server_key entry)
@@ -677,17 +705,14 @@ ATTACH controls terminal attachment; TIMEOUT-MS limits startup."
 
 (defun herdr-agent--native-args (kind action &optional reference)
   "Return arguments for native KIND ACTION and optional REFERENCE."
-  (pcase (list kind action)
-    (`("claude" start) nil)
-    (`("pi" start) nil)
-    (`("codex" start) nil)
-    (`("claude" continue) '("--continue"))
-    (`("pi" continue) '("--continue"))
-    (`("codex" continue) '("resume" "--last"))
-    (`("claude" resume) (list "--resume" reference))
-    (`("pi" resume) (list "--session" reference))
-    (`("codex" resume) (list "resume" reference))
-    (_ (signal 'herdr-error (list (format "unsupported agent kind %s" kind))))))
+  (let* ((arguments (plist-get (herdr-agent--harness kind) :arguments))
+         (entry (assq action arguments)))
+    (unless entry
+      (signal 'herdr-error
+              (list (format "unsupported %s action for agent kind %s" action kind))))
+    (mapcar (lambda (argument)
+              (if (eq argument :reference) reference argument))
+            (cdr entry))))
 
 (cl-defun herdr-agent-start
     (kind name &key server-key project-root workspace (attach t) timeout-ms)

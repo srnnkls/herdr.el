@@ -28,6 +28,9 @@
 ;;; Code:
 
 (require 'cl-lib)
+
+(defconst herdr-version "0.1.0"
+  "Herdr package version.")
 (require 'subr-x)
 (require 'herdr-core)
 (require 'herdr-api)

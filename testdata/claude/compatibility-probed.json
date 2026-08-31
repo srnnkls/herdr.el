@@ -16,7 +16,7 @@
       "payload": {
         "path": "~/.claude/ide/<port>.lock",
         "pid": 11220,
-        "workspaceFolders": ["/Users/srnnkls/projects/herdr.el/.worktrees/feat-herdr-native-claude-code-ide"],
+        "workspaceFolders": ["<project-root>"],
         "ideName": "Emacs",
         "transport": "ws"
       }
