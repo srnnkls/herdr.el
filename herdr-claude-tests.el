@@ -24,7 +24,7 @@
                  :state 'connected
                  :client-generation 1
                  :tool-list (lambda () '(((name . "openDiff"))))
-                 :tool-call #'herdr-claude-protocol--dispatch-editor
+                 :tool-call #'herdr-claude-protocol--dispatch-operation
                  :raw-clients (make-hash-table :test #'eq)))
          (client (make-herdr-claude-protocol-client
                   :raw 'socket
@@ -102,7 +102,7 @@
         (herdr-claude--adapter session :detach))
       (delete-directory root t))))
 
-(ert-deftest herdr-claude-normalizes-wire-input-before-editor-dispatch ()
+(ert-deftest herdr-claude-normalizes-wire-input-before-operation-dispatch ()
   (let* ((root (make-temp-file "herdr-claude-normalize" t))
          (session (herdr-claude-tests--session root "terminal"))
          (pair (herdr-claude-tests--state session 'owner))
@@ -110,10 +110,9 @@
          (client (cdr pair))
          captured response)
     (unwind-protect
-        (cl-letf (((symbol-function 'herdr-claude-editor-dispatch)
-                   (lambda (owner actual-root operation arguments request)
-                     (setq captured
-                           (list owner actual-root operation arguments request))
+        (cl-letf (((symbol-function 'emacsctl-call)
+                   (lambda (operation arguments context)
+                     (setq captured (list operation arguments context))
                      (make-herdr-claude-editor-result
                       :kind 'text :value "diff opened"))))
           (setq response
@@ -125,15 +124,17 @@
                     (new_file_path . "after.el")
                     (new_file_contents . "replacement")
                     (tab_name . "change-37")))))
-          (should (eq (nth 0 captured) 'owner))
-          (should (equal (nth 1 captured) (file-truename root)))
-          (should (eq (nth 2 captured) 'open-diff))
-          (should (equal (nth 3 captured)
-                         '(:old-path "before.el"
-                           :new-path "after.el"
-                           :contents "replacement"
-                           :tab-name "change-37")))
-          (should (functionp (plist-get (nth 4 captured) :resolve)))
+          (should (equal (nth 0 captured) "diff.open"))
+          (should (equal (nth 1 captured)
+                         '((old_path . "before.el")
+                           (new_path . "after.el")
+                           (contents . "replacement")
+                           (name . "change-37"))))
+          (let ((context (nth 2 captured)))
+            (should (eq (plist-get context :owner) 'owner))
+            (should (equal (plist-get context :project-root)
+                           (file-truename root)))
+            (should (functionp (plist-get context :resolve))))
           (should (= (herdr-claude-tests--value 'id response) 37))
           (let* ((result (herdr-claude-tests--value 'result response))
                  (content (herdr-claude-tests--value 'content result)))
@@ -152,9 +153,9 @@
                       :generation 2 :state state :owner 'new-owner))
          completion deliveries)
     (unwind-protect
-        (cl-letf (((symbol-function 'herdr-claude-editor-dispatch)
-                   (lambda (_owner _root _operation _arguments request)
-                     (setq completion (plist-get request :resolve))
+        (cl-letf (((symbol-function 'emacsctl-call)
+                   (lambda (_operation _arguments context)
+                     (setq completion (plist-get context :resolve))
                      herdr-claude-editor-deferred))
                   ((symbol-function 'websocket-send-text)
                    (lambda (&rest delivery) (push delivery deliveries))))
@@ -190,16 +191,16 @@
          (old-a (cdr pair-a))
          (old-b (cdr pair-b))
          (candidate (herdr-claude-protocol-client-connect state-a 'candidate-socket))
-         (herdr-claude-editor--views (make-hash-table :test #'eq))
+         (emacsctl--buffers (make-hash-table :test #'eq))
          (herdr-claude-editor--diffs (make-hash-table :test #'eq))
          (herdr-claude-editor--selection-timers (make-hash-table :test #'eq))
          (herdr-claude-editor--selection-contexts (make-hash-table :test #'eq))
-         (views-a (make-hash-table :test #'equal))
-         (views-b (make-hash-table :test #'equal)))
+         (buffers-a (make-hash-table :test #'equal))
+         (buffers-b (make-hash-table :test #'equal)))
     (unwind-protect
         (progn
-          (puthash owner-a views-a herdr-claude-editor--views)
-          (puthash owner-b views-b herdr-claude-editor--views)
+          (puthash owner-a buffers-a emacsctl--buffers)
+          (puthash owner-b buffers-b emacsctl--buffers)
           (puthash owner-a 'selection-a herdr-claude-editor--selection-contexts)
           (puthash owner-b 'selection-b herdr-claude-editor--selection-contexts)
           (cl-letf (((symbol-function 'websocket-close) (lambda (&rest _) nil)))
@@ -211,13 +212,13 @@
           (should (eq (herdr-claude-protocol-state-current-client state-a)
                       candidate))
           (should-not (herdr-claude-protocol-client-open-p old-a))
-          (should-not (gethash owner-a herdr-claude-editor--views))
+          (should-not (gethash owner-a emacsctl--buffers))
           (should-not (gethash owner-a
                                herdr-claude-editor--selection-contexts))
           (should (eq (herdr-claude-protocol-state-current-client state-b)
                       old-b))
           (should (herdr-claude-protocol-client-open-p old-b))
-          (should (eq (gethash owner-b herdr-claude-editor--views) views-b))
+          (should (eq (gethash owner-b emacsctl--buffers) buffers-b))
           (should (eq (gethash owner-b
                                herdr-claude-editor--selection-contexts)
                       'selection-b)))

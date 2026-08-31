@@ -1,6 +1,6 @@
 # herdr.el
 
-`herdr.el` is an Emacs 29.1+ client for [Herdr](https://herdr.dev), the persistent terminal workspace manager. Herdr owns agent processes, terminals, tabs, and workspaces. Emacs owns attached terminal views and, for Claude, a loopback editor endpoint with file, diagnostic, context, and diff operations.
+`herdr.el` is an Emacs 29.1+ client for [Herdr](https://herdr.dev), the persistent terminal workspace manager. Herdr owns agent processes, terminals, tabs, and workspaces. Emacs owns attached terminal buffers and, for Claude, a loopback Emacs endpoint with buffer, diagnostic, context, and diff operations.
 
 ## Install
 
@@ -63,21 +63,46 @@ Status:   i status      C customize     I Claude
 
 `C-c h I` opens Claude actions for adoption, explicit connection, auto-adoption, at-mention, status, and protocol logging. Opening either menu starts no process or transport and does not load the Claude protocol stack.
 
-## Claude editor integration
+## emacsctl
+
+`emacsctl` is an Emacs interface for agents. Claude, Codex, Pi, and other local harnesses can compose its operations through their existing shell access:
+
+```text
+emacsctl operations
+emacsctl call buffer.list
+emacsctl call buffer.open '{"path":"src/example.el","line":20}'
+emacsctl skill
+```
+
+`call` also accepts `-` and reads one JSON object from standard input. Normal output is one compact versioned JSON object; `skill` prints Markdown generated from the installed command contract and live operation registry.
+
+The base registry exposes buffer listing/opening, window listing, and visited-buffer Flymake diagnostics. Additional Emacs configuration can register coarse operations without changing Herdr:
+
+```elisp
+(emacsctl-register-operation
+ "workspace.list" #'+my-workspace-list
+ :description "List Emacs workspaces."
+ :effect 'read
+ :parameters nil)
+```
+
+`elisp.eval` is absent and rejected unless `emacsctl-enable-elisp-eval` is non-nil. This gate limits accidental use and command discovery; it is not a sandbox. A same-user process with shell and Emacs-server access can already run arbitrary code through `emacsclient -e` or another local runtime. Actual isolation requires separate OS users, processes, or server-socket permissions.
+
+## Claude Emacs integration
 
 Every adopted Claude session gets its own loopback WebSocket MCP endpoint and discovery lockfile under `~/.claude/ide`, or `$CLAUDE_CONFIG_DIR/ide` when configured. The generic agent lifecycle invokes the Claude adapter; there is no second attach route.
 
 `herdr-claude-connect-on-adopt` controls when Herdr sends `/ide`: `idle` connects an idle agent, `t` always requests connection, and nil requires `M-x herdr-claude-connect`. `M-x herdr-claude-auto-adopt-mode` adopts matching agents according to `herdr-claude-auto-adopt-predicate`.
 
-`M-x herdr-claude-at-mention` sends the current file or active region to the initialized Claude connection for that project. The endpoint also provides selection updates, visited-buffer diagnostics, file opening, tab closing, and editable Ediff-backed diffs.
+`M-x herdr-claude-at-mention` sends the current file or active region to the initialized Claude connection for that project. The endpoint also provides selection updates, visited-buffer diagnostics, buffer opening/release, and editable Ediff-backed diffs.
 
-`executeCode` evaluates Emacs Lisp only when `herdr-claude-enable-elisp-tool` is non-nil. Keep it disabled for untrusted sessions. Raw payload logging is also disabled by default; enable `herdr-claude-protocol-logging` only while debugging and inspect it with `M-x herdr-claude-debug-open-log`.
+Claude’s fixed compatibility catalog contains `openFile`, `getDiagnostics`, `close_tab`, `openDiff`, and `closeAllDiffTabs`. Those external names stay at the wire boundary; internal operations use `buffer.*`, `diagnostic.*`, and `diff.*`. Newly registered `emacsctl` operations never appear in MCP automatically. Raw payload logging is disabled by default; enable `herdr-claude-protocol-logging` only while debugging and inspect it with `M-x herdr-claude-debug-open-log`.
 
 ## Ownership and security
 
-Herdr remains authoritative for process lifetime and terminal input. Emacs owns terminal buffers, Claude endpoints, editor views, diagnostics, and diffs. Killing an Emacs buffer or detaching a session never stops the Herdr agent; use `herdr-agent-stop` to end it.
+Herdr remains authoritative for process lifetime and terminal input. Emacs owns terminal buffers, Claude endpoints, project buffers, diagnostics, and diffs. Killing an Emacs buffer or detaching a session never stops the Herdr agent; use `herdr-agent-stop` to end it.
 
-Claude endpoints bind only to loopback. Discovery files are mode `0600`. Editor paths stay inside the adopted project root, raw logging is opt-in, and Elisp execution is opt-in.
+Claude endpoints bind only to loopback. Discovery files are mode `0600`, operation paths stay inside the caller’s project root, and raw logging is opt-in. `emacsctl` sends Base64-framed JSON through a fixed local `emacsclient` expression so caller data never becomes Elisp source.
 
 ## Platforms
 
@@ -85,7 +110,7 @@ Claude endpoints bind only to loopback. Discovery files are mode `0600`. Editor 
 | --- | --- | --- |
 | Ubuntu | 29.1, 30.1 | Supported |
 | macOS | 29.1, 30.1 | Supported |
-| Windows | 29.1, 30.1 | Supported |
+| Windows | 29.1, 30.1 | Supported; the `emacsctl` launcher uses Git Bash. |
 
 CI also runs an experimental, soft-failing Ubuntu snapshot job.
 
@@ -94,7 +119,7 @@ CI also runs an experimental, soft-failing Ubuntu snapshot job.
 - `no terminal backend`: install Ghostel, vterm, or Eat, or set `herdr-terminal-backend`.
 - `No herdr server`: start Herdr, or allow `herdr-auto-start-server` for the selected session.
 - Claude does not connect: run `M-x herdr-claude-connect` and confirm the agent is idle.
-- Claude has no editor context: confirm the connection initialized and the current file belongs to the adopted project.
+- Claude has no Emacs context: confirm the connection initialized and the current file belongs to the adopted project.
 - A terminal is read-only: enable `herdr-attach-takeover` when attaching to transfer input ownership.
 - A diff remains: reject or accept it, or detach the Claude integration; the Herdr pane remains alive.
 

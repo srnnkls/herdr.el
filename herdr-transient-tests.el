@@ -72,7 +72,7 @@
            '(((agent . "claude")
               (herdr_status . "connected")
               (agent_status . "idle")
-              (integration_label . "Claude editor")
+              (integration_label . "Claude Emacs")
               (integration_status . "connected")
               (integration_endpoint . "ws://127.0.0.1:17171"))
              ((agent . "pi")
@@ -93,9 +93,9 @@
                (format "Agent: %s" (alist-get 'agent_status expectation)) view))
       (if (equal (alist-get 'agent expectation) "claude")
           (progn
-            (should (string-match-p "Claude editor: connected" view))
+            (should (string-match-p "Claude Emacs: connected" view))
             (should (string-match-p "ws://127.0.0.1:17171" view)))
-        (should-not (string-match-p "Claude editor" view))))))
+        (should-not (string-match-p "Claude Emacs" view))))))
 
 
 (ert-deftest herdr-claude-raw-logging-keeps-context-and-cleans-up ()

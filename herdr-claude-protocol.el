@@ -4,11 +4,12 @@
 
 ;;; Commentary:
 
-;; MCP transport and lifecycle state for Claude editor sessions.
+;; MCP transport and lifecycle state for Claude Emacs sessions.
 
 ;;; Code:
 
 (require 'cl-lib)
+(require 'emacsctl)
 (require 'json)
 (require 'seq)
 (require 'herdr-agent)
@@ -39,10 +40,14 @@
 (defvar herdr-claude-protocol--incoming-observers nil)
 (defvar herdr-claude-protocol--outgoing-observers nil)
 
+(defconst herdr-claude-protocol--invalid-params
+  'herdr-claude-protocol--invalid-params)
+
 (defun herdr-claude-protocol--value (key object)
   "Return KEY's value from OBJECT."
   (or (alist-get key object nil nil #'eq)
-      (alist-get (symbol-name key) object nil nil #'equal)))
+      (alist-get (symbol-name key) object nil nil #'equal)
+      (plist-get object (intern (concat ":" (symbol-name key))))))
 
 (defun herdr-claude-protocol--registry-states (&optional states)
   "Return states from STATES or the global registry."
@@ -115,7 +120,7 @@ STATES selects a registry; nil uses the global registry."
          (herdr-claude-protocol-state-current-client state) method payload)))))
 
 (defun herdr-claude-protocol--selection-payload (snapshot)
-  "Convert normalized editor SNAPSHOT to Claude selection payload."
+  "Convert normalized Emacs SNAPSHOT to Claude selection payload."
   `((filePath . ,(plist-get snapshot :file))
     (text . ,(plist-get snapshot :text))
     (selection . ((start . ((line . ,(plist-get snapshot :start-line))
@@ -124,7 +129,7 @@ STATES selects a registry; nil uses the global registry."
                           (character . ,(plist-get snapshot :end-column))))))))
 
 (defun herdr-claude-protocol--cancel-selection (state)
-  "Cancel STATE's pending editor selection notification."
+  "Cancel STATE's pending Emacs selection notification."
   (when-let* ((client (herdr-claude-protocol-state-current-client state))
               (owner (herdr-claude-protocol-client-owner client)))
     (herdr-claude-editor-cancel-selection owner)))
@@ -158,7 +163,7 @@ STATES selects a registry; BUFFER defaults to current."
                        (or (null root)
                            (herdr-claude-protocol--same-project-root-p
                             (herdr-claude-protocol--project-root root) state-root))
-                       (herdr-claude-editor--project-file-p file state-root))
+                       (emacsctl-project-file-p file state-root))
               (herdr-claude-protocol--schedule-selection state buffer))))))))
 
 (defun herdr-claude-protocol--state-for-target (target &optional states)
@@ -176,7 +181,7 @@ STATES selects a registry; BUFFER defaults to current."
   "Send the current selection as an at-mention to TARGET in STATES."
   (when-let* ((state (herdr-claude-protocol--state-for-target target states))
               (file (buffer-file-name))
-              ((herdr-claude-editor--project-file-p
+              ((emacsctl-project-file-p
                 file (herdr-claude-protocol--state-root state)))
               ((herdr-claude-protocol--current-client-p state)))
     (let ((mention (herdr-claude-editor-mention)))
@@ -219,7 +224,7 @@ STATES selects a registry; BUFFER defaults to current."
   "Return the default MCP tool definitions."
   (let ((empty-properties (make-hash-table :test #'equal)))
     (list
-     '((name . "openFile") (description . "Open a file in the editor.")
+     '((name . "openFile") (description . "Open a file in Emacs.")
        (inputSchema . ((type . "object")
                        (properties . ((filePath . ((type . "string")))
                                       (startLine . ((type . "integer")))
@@ -230,7 +235,8 @@ STATES selects a registry; BUFFER defaults to current."
      '((name . "getDiagnostics") (description . "Get diagnostics for visited files.")
        (inputSchema . ((type . "object") (properties . ((uri . ((type . "string")))))
                        (required . []))))
-     '((name . "close_tab") (description . "Release the requesting session view.")
+     '((name . "close_tab")
+       (description . "Release the requesting session buffer or diff.")
        (inputSchema . ((type . "object")
                        (properties . ((path . ((type . "string")))
                                       (tab_name . ((type . "string")))))
@@ -242,51 +248,83 @@ STATES selects a registry; BUFFER defaults to current."
                                       (new_file_contents . ((type . "string")))
                                       (tab_name . ((type . "string")))))
                        (required . ["new_file_contents" "new_file_path" "old_file_path" "tab_name"]))))
-     `((name . "closeAllDiffTabs") (description . "Close all session-owned diff tabs.")
-       (inputSchema . ((type . "object") (properties . ,empty-properties) (required . []))))
-     '((name . "executeCode") (description . "Evaluate explicitly enabled Emacs Lisp.")
-       (inputSchema . ((type . "object") (properties . ((code . ((type . "string")))))
-                       (required . ["code"])))))))
+     `((name . "closeAllDiffTabs") (description . "Close all session-owned diffs.")
+       (inputSchema . ((type . "object") (properties . ,empty-properties)
+                       (required . [])))))))
 
 (defun herdr-claude-protocol--available-tools ()
-  "Return the currently enabled Claude tool definitions."
-  (seq-remove
-   (lambda (tool)
-     (and (not herdr-claude-enable-elisp-tool)
-          (equal (herdr-claude-protocol--value 'name tool) "executeCode")))
-   (herdr-claude-protocol--default-tools)))
+  "Return the Claude compatibility tool definitions."
+  (herdr-claude-protocol--default-tools))
+
+(defun herdr-claude-protocol--wire-argument (key target arguments)
+  "Map wire KEY in ARGUMENTS to canonical TARGET when present."
+  (when-let* ((value (herdr-claude-protocol--value key arguments)))
+    (cons target value)))
 
 (defun herdr-claude-protocol--normalize-tool-call (name arguments)
-  "Convert wire tool NAME and ARGUMENTS to one normalized editor request."
+  "Return canonical operations for wire tool NAME and ARGUMENTS."
   (when (listp arguments)
     (pcase name
       ("openFile"
-       (cons 'open-file
-             (list :path (herdr-claude-protocol--value 'filePath arguments)
-                   :start-line (herdr-claude-protocol--value 'startLine arguments)
-                   :end-line (herdr-claude-protocol--value 'endLine arguments)
-                   :start-text (herdr-claude-protocol--value 'startText arguments)
-                   :end-text (herdr-claude-protocol--value 'endText arguments))))
+       (list
+        (cons "buffer.open"
+              (delq nil
+                    (list
+                     (herdr-claude-protocol--wire-argument
+                      'filePath 'path arguments)
+                     (herdr-claude-protocol--wire-argument
+                      'startLine 'line arguments)
+                     (herdr-claude-protocol--wire-argument
+                      'endLine 'end_line arguments)
+                     (herdr-claude-protocol--wire-argument
+                      'startText 'start_text arguments)
+                     (herdr-claude-protocol--wire-argument
+                      'endText 'end_text arguments))))))
       ("getDiagnostics"
-       (cons 'diagnostics
-             (list :uri (herdr-claude-protocol--value 'uri arguments))))
+       (list
+        (cons "diagnostic.list"
+              (delq nil
+                    (list (herdr-claude-protocol--wire-argument
+                           'uri 'uri arguments))))))
       ("close_tab"
-       (cons 'close-tab
-             (list :path (herdr-claude-protocol--value 'path arguments)
-                   :tab-name (herdr-claude-protocol--value 'tab_name arguments))))
+       (or (delq nil
+                 (list
+                  (when-let* ((path (herdr-claude-protocol--value
+                                     'path arguments)))
+                    (list "buffer.release" (cons 'path path)))
+                  (when-let* ((diff-name (herdr-claude-protocol--value
+                                          'tab_name arguments)))
+                    (list "diff.close" (cons 'name diff-name)))))
+           'noop))
       ("openDiff"
-       (cons 'open-diff
-             (list :old-path (herdr-claude-protocol--value 'old_file_path arguments)
-                   :new-path (herdr-claude-protocol--value 'new_file_path arguments)
-                   :contents (herdr-claude-protocol--value 'new_file_contents arguments)
-                   :tab-name (herdr-claude-protocol--value 'tab_name arguments))))
-      ("closeAllDiffTabs" (cons 'close-diffs nil))
-      ("executeCode"
-       (cons 'execute
-             (list :code (herdr-claude-protocol--value 'code arguments)))))))
+       (list
+        (cons "diff.open"
+              (delq nil
+                    (list
+                     (herdr-claude-protocol--wire-argument
+                      'old_file_path 'old_path arguments)
+                     (herdr-claude-protocol--wire-argument
+                      'new_file_path 'new_path arguments)
+                     (herdr-claude-protocol--wire-argument
+                      'new_file_contents 'contents arguments)
+                     (herdr-claude-protocol--wire-argument
+                      'tab_name 'name arguments))))))
+      ("closeAllDiffTabs" (list (cons "diff.close-all" nil))))))
 
-(defun herdr-claude-protocol--editor-result (result)
-  "Convert normalized editor RESULT to a Claude tool result."
+(defun herdr-claude-protocol--operation-result (operation result)
+  "Normalize RESULT from canonical OPERATION for Claude."
+  (cond
+   ((herdr-claude-editor-result-p result) result)
+   ((equal operation "diagnostic.list")
+    (make-herdr-claude-editor-result :kind 'diagnostics :value result))
+   ((equal operation "buffer.open")
+    (make-herdr-claude-editor-result :kind 'text :value "Opened file"))
+   ((stringp result)
+    (make-herdr-claude-editor-result :kind 'text :value result))
+   (t result)))
+
+(defun herdr-claude-protocol--tool-result (result)
+  "Convert normalized operation RESULT to a Claude tool result."
   (when (herdr-claude-editor-result-p result)
     (pcase (herdr-claude-editor-result-kind result)
       ('text
@@ -296,11 +334,16 @@ STATES selects a registry; BUFFER defaults to current."
        `((content . ,(vconcat
                       (mapcar
                        (lambda (diagnostic)
-                         `((filePath . ,(plist-get diagnostic :file))
-                           (message . ,(plist-get diagnostic :message))
-                           (line . ,(plist-get diagnostic :line))
-                           (column . ,(plist-get diagnostic :column))
-                           (severity . ,(plist-get diagnostic :severity))))
+                         `((filePath . ,(herdr-claude-protocol--value
+                                         'file diagnostic))
+                           (message . ,(herdr-claude-protocol--value
+                                        'message diagnostic))
+                           (line . ,(herdr-claude-protocol--value
+                                     'line diagnostic))
+                           (column . ,(herdr-claude-protocol--value
+                                       'column diagnostic))
+                           (severity . ,(herdr-claude-protocol--value
+                                         'severity diagnostic))))
                        (append (herdr-claude-editor-result-value result) nil)))))))))
 
 (defun herdr-claude-protocol--request-current-p (request)
@@ -315,7 +358,7 @@ STATES selects a registry; BUFFER defaults to current."
             (herdr-claude-protocol-state-client-generation state)))))
 
 (defun herdr-claude-protocol-resolve (request result)
-  "Resolve opaque REQUEST with normalized editor RESULT."
+  "Resolve opaque REQUEST with normalized Emacs RESULT."
   (when (herdr-claude-protocol--request-current-p request)
     (setf (herdr-claude-protocol-request-resolved-p request) t)
     (herdr-claude-protocol--send
@@ -323,7 +366,7 @@ STATES selects a registry; BUFFER defaults to current."
      (herdr-claude-protocol-request-client request)
      (herdr-claude-protocol--response
       (herdr-claude-protocol-request-id request)
-      (herdr-claude-protocol--editor-result result)))))
+      (herdr-claude-protocol--tool-result result)))))
 
 (defun herdr-claude-protocol-reject (request code message)
   "Reject opaque REQUEST with CODE and MESSAGE."
@@ -335,19 +378,45 @@ STATES selects a registry; BUFFER defaults to current."
      (herdr-claude-protocol--error
       (herdr-claude-protocol-request-id request) code message))))
 
-(defun herdr-claude-protocol--dispatch-editor (state name arguments request)
+(defun herdr-claude-protocol--dispatch-operation (state name arguments request)
   "Dispatch Claude tool NAME and ARGUMENTS for STATE using opaque REQUEST."
-  (if-let* ((normalized (herdr-claude-protocol--normalize-tool-call name arguments)))
-      (herdr-claude-editor-dispatch
-       (herdr-claude-protocol-request-owner request)
-       (herdr-claude-protocol--state-root state)
-       (car normalized) (cdr normalized)
-       (list :resolve (lambda (result)
-                        (herdr-claude-protocol-resolve request result))
-             :cancel (lambda (&optional _result)
-                       (herdr-claude-protocol-reject
-                        request -32800 "Request cancelled"))))
-    (cons herdr-claude-editor--invalid-params "Invalid params")))
+  (condition-case condition
+      (let ((calls (herdr-claude-protocol--normalize-tool-call name arguments))
+            result)
+        (cond
+         ((eq calls 'noop)
+          (make-herdr-claude-editor-result
+           :kind 'text :value "No buffer or diff specified"))
+         ((null calls)
+          (cons herdr-claude-protocol--invalid-params "Invalid params"))
+         (t
+          (dolist (call calls result)
+            (let ((operation (car call)))
+              (setq result
+                    (emacsctl-call
+                     operation (cdr call)
+                     (list
+                      :interface 'adapter :source 'claude-ide
+                      :owner (herdr-claude-protocol-request-owner request)
+                      :project-root (herdr-claude-protocol--state-root state)
+                      :frame (selected-frame) :window (selected-window)
+                      :resolve
+                      (lambda (value)
+                        (herdr-claude-protocol-resolve
+                         request
+                         (herdr-claude-protocol--operation-result
+                          operation value)))
+                      :cancel
+                      (lambda (&optional _value)
+                        (herdr-claude-protocol-reject
+                         request -32800 "Request cancelled")))))
+              (unless (eq result herdr-claude-editor-deferred)
+                (setq result
+                      (herdr-claude-protocol--operation-result operation result))))))))
+    ((emacsctl-invalid-arguments emacsctl-disabled-operation
+      emacsctl-operation-failed)
+     (cons herdr-claude-protocol--invalid-params
+           (or (cadr condition) "Invalid params")))))
 
 (defun herdr-claude-protocol--initialize-result ()
   "Return the MCP initialize response."
@@ -380,7 +449,7 @@ STATES selects a registry; BUFFER defaults to current."
            (signal (car err) (cdr err))))))))
 
 (defun herdr-claude-protocol--cancel-work (state)
-  "Cancel editor work owned by STATE's current client."
+  "Cancel Emacs work owned by STATE's current client."
   (condition-case nil
       (if-let* ((client (herdr-claude-protocol-state-current-client state))
                 (owner (herdr-claude-protocol-client-owner client)))
@@ -441,7 +510,7 @@ SESSION configure it."
                                               instance-id)
                        :state 'starting :client-generation 0
                        :tool-list (or tool-list #'herdr-claude-protocol--available-tools)
-                       :tool-call (or tool-call #'herdr-claude-protocol--dispatch-editor)
+                       :tool-call (or tool-call #'herdr-claude-protocol--dispatch-operation)
                        :raw-clients (make-hash-table :test #'eq)))
                (port (herdr-claude-protocol--start-server state))
                (root (expand-file-name project-root))
@@ -547,7 +616,7 @@ SESSION configure it."
                 (herdr-claude-protocol-client-generation client)
                 (herdr-claude-protocol-state-client-generation state)
                 (herdr-claude-protocol-client-owner client)
-                (make-symbol "herdr-claude-editor-owner"))
+                (make-symbol "herdr-claude-emacs-owner"))
           (when old (herdr-claude-protocol-client-close state old))
           (unless (eq (herdr-claude-protocol-state-state state) 'starting)
             (setf (herdr-claude-protocol-state-state state) 'connected))
@@ -599,13 +668,13 @@ SESSION configure it."
                                        state name arguments request)))
                         (cond
                          ((eq result herdr-claude-editor-deferred) nil)
-                         ((eq (car-safe result) herdr-claude-editor--invalid-params)
+                         ((eq (car-safe result) herdr-claude-protocol--invalid-params)
                           (setf (herdr-claude-protocol-request-resolved-p request) t)
                           (herdr-claude-protocol--error id -32602 (cdr result)))
                          (t
                           (setf (herdr-claude-protocol-request-resolved-p request) t)
                           (herdr-claude-protocol--response
-                           id (or (herdr-claude-protocol--editor-result result) result)))))
+                           id (or (herdr-claude-protocol--tool-result result) result)))))
                     (error (herdr-claude-protocol--error id -32603 "Internal error")))
                 (herdr-claude-protocol--error id -32602 "Unknown tool"))))
            (t (herdr-claude-protocol--error id -32601 "Method not found"))))
@@ -749,7 +818,7 @@ PROJECT-ROOT and DISCOVERY-DIRECTORY configure a newly prepared state."
 (defun herdr-claude-protocol--status-session (session)
   "Return Claude protocol status for SESSION."
   (when-let* ((state (gethash session herdr-claude-protocol--states)))
-    `((integration_label . "Claude editor")
+    `((integration_label . "Claude Emacs")
       (integration_status . ,(symbol-name (herdr-claude-protocol-state-state state)))
       (integration_endpoint . ,(herdr-claude-protocol-state-endpoint state)))))
 

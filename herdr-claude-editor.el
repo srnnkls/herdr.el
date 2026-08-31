@@ -1,28 +1,16 @@
-;;; herdr-claude-editor.el --- Claude editor operations for Herdr -*- lexical-binding: t; -*-
+;;; herdr-claude-editor.el --- Claude Emacs context and diffs -*- lexical-binding: t; -*-
 
 ;;; Commentary:
 
-;; Implements Claude file, diagnostic, diff, and evaluation operations.
+;; Implements Claude selection notifications and interactive Emacs diffs.
 
 ;;; Code:
 
 (require 'cl-lib)
-(require 'seq)
 (require 'ediff)
-(require 'flymake)
+(require 'emacsctl)
+(require 'seq)
 
-(declare-function flycheck-error-message "flycheck" (error))
-(declare-function flycheck-error-line "flycheck" (error))
-(declare-function flycheck-error-column "flycheck" (error))
-(declare-function flycheck-error-level "flycheck" (error))
-
-(defcustom herdr-claude-enable-elisp-tool nil
-  "Whether the evaluation tool may run Emacs Lisp."
-  :type 'boolean
-  :group 'herdr-claude)
-
-(defvar herdr-claude-editor--views (make-hash-table :test #'eq)
-  "Views indexed by opaque protocol owner.")
 (defvar herdr-claude-editor--diffs (make-hash-table :test #'eq)
   "Deferred diffs indexed by opaque protocol owner.")
 (defvar herdr-claude-editor--selection-timers (make-hash-table :test #'eq)
@@ -30,80 +18,21 @@
 (defvar herdr-claude-editor--selection-contexts (make-hash-table :test #'eq)
   "Last selection snapshots indexed by opaque protocol owner.")
 
-(cl-defstruct herdr-claude-editor--view
-  "A file view owned by one protocol owner."
-  buffer window owned-buffer-p)
-
 (cl-defstruct herdr-claude-editor--diff
-  "A deferred editor diff and its resources."
-  owner request tab-name proposed old old-owned-p completion control
+  "A deferred Emacs diff and its resources."
+  owner request name proposed old old-owned-p completion control
   control-completion hook-removed-p response-sent-p proposed-released-p old-released-p
   control-released-p)
 
 (cl-defstruct herdr-claude-editor-result
-  "A normalized editor operation result."
+  "A normalized Emacs operation result."
   kind value)
 
-(defconst herdr-claude-editor--invalid-params 'herdr-claude-editor--invalid-params)
 (defconst herdr-claude-editor-deferred 'herdr-claude-editor-deferred)
 
-(defun herdr-claude-editor--invalid (&optional message)
-  "Return an invalid-parameters result with optional MESSAGE."
-  (cons herdr-claude-editor--invalid-params (or message "Invalid params")))
-
-(defun herdr-claude-editor--path (value root)
-  "Return VALUE as a regular path below ROOT, or nil."
-  (when (stringp value)
-    (let ((path (expand-file-name value root)))
-      (when (and (file-in-directory-p path root)
-                 (not (file-symlink-p path)))
-        path))))
-
-(defun herdr-claude-editor--view-table (owner &optional create)
-  "Return OWNER's view table, creating it when CREATE is non-nil."
-  (or (gethash owner herdr-claude-editor--views)
-      (and create
-           (puthash owner (make-hash-table :test #'equal)
-                    herdr-claude-editor--views))))
-
-(defun herdr-claude-editor-view-member-p (owner file)
-  "Return non-nil when OWNER owns a view of FILE."
-  (when-let* ((views (herdr-claude-editor--view-table owner))
-              (view (gethash (expand-file-name file) views)))
-    view))
-
 (defun herdr-claude-editor--result (text)
-  "Return a successful editor result containing TEXT."
+  "Return a successful Emacs result containing TEXT."
   (make-herdr-claude-editor-result :kind 'text :value text))
-
-(defun herdr-claude-editor--selection (buffer start end start-text end-text)
-  "Select a region in BUFFER using START, END, START-TEXT, and END-TEXT."
-  (with-current-buffer buffer
-    (let (begin finish)
-      (goto-char (point-min))
-      (when start (forward-line (1- (max 1 start))))
-      (setq begin (point))
-      (when start-text
-        (unless (search-forward start-text (and start (line-end-position)) t)
-          (setq begin nil))
-        (when begin (setq begin (match-beginning 0))))
-      (goto-char (or begin (point-min)))
-      (cond
-       (end
-        (goto-char (point-min))
-        (forward-line (1- (max 1 end)))
-        (setq finish (line-end-position))
-        (when end-text
-          (when (search-forward end-text finish t)
-            (setq finish (match-end 0)))))
-       (end-text
-        (when (search-forward end-text nil t)
-          (setq finish (match-end 0))))
-       (start (setq finish (line-end-position)))
-       (t (setq finish (point-max))))
-      (when (and begin finish)
-        (goto-char finish)
-        (push-mark begin t t)))))
 
 (defun herdr-claude-editor-context-snapshot (&optional buffer)
   "Return BUFFER's normalized file and selection context."
@@ -154,7 +83,7 @@ CURRENT-P validates ownership before CALLBACK receives a normalized snapshot."
                 (if (and (funcall current-p) (buffer-live-p buffer))
                     (with-current-buffer buffer
                       (let ((file buffer-file-name))
-                        (if (and file (herdr-claude-editor--project-file-p file root))
+                        (if (and file (emacsctl-project-file-p file root))
                             (let ((snapshot (herdr-claude-editor-context-snapshot buffer)))
                               (unless (equal snapshot
                                              (gethash owner
@@ -165,177 +94,6 @@ CURRENT-P validates ownership before CALLBACK receives a normalized snapshot."
                           (remhash owner herdr-claude-editor--selection-contexts))))
                   (remhash owner herdr-claude-editor--selection-contexts))))))
      herdr-claude-editor--selection-timers)))
-
-(defun herdr-claude-editor--open-file (owner root arguments)
-  "Open the file requested by ARGUMENTS below ROOT for OWNER."
-  (let* ((start (plist-get arguments :start-line))
-         (end (plist-get arguments :end-line))
-         (start-text (plist-get arguments :start-text))
-         (end-text (plist-get arguments :end-text))
-         (file (herdr-claude-editor--path (plist-get arguments :path) root)))
-    (if (or (not file) (and start (not (integerp start)))
-            (and end (not (integerp end)))
-            (and start-text (not (stringp start-text)))
-            (and end-text (not (stringp end-text))))
-        (herdr-claude-editor--invalid)
-      (let* ((existing (get-file-buffer file))
-             (views (herdr-claude-editor--view-table owner t))
-             (previous (gethash file views))
-             (buffer (or existing (find-file-noselect file)))
-             (window (or (get-buffer-window buffer 0) (selected-window)))
-             (view (make-herdr-claude-editor--view
-                    :buffer buffer :window window
-                    :owned-buffer-p
-                    (or (null existing)
-                        (and previous
-                             (herdr-claude-editor--view-owned-buffer-p previous))))))
-        (set-window-buffer window buffer)
-        (puthash file view views)
-        (herdr-claude-editor--selection buffer start end start-text end-text)
-        (herdr-claude-editor--result "Opened file")))))
-
-(defun herdr-claude-editor--other-member-p (owner file)
-  "Return non-nil when another OWNER owns FILE."
-  (let (found)
-    (maphash (lambda (other views)
-               (when (and (not (eq other owner)) (gethash file views))
-                 (setq found t)))
-             herdr-claude-editor--views)
-    found))
-
-(defun herdr-claude-editor--release-view (owner file view)
-  "Release VIEW of FILE owned by OWNER."
-  (let ((buffer (herdr-claude-editor--view-buffer view))
-        (window (herdr-claude-editor--view-window view)))
-    (when (and (window-live-p window) (eq (window-buffer window) buffer))
-      (set-window-buffer window (other-buffer buffer t)))
-    (when (and (herdr-claude-editor--view-owned-buffer-p view)
-               (herdr-claude-editor--other-member-p owner file))
-      (maphash (lambda (other views)
-                 (when-let* (((not (eq other owner)))
-                             (other-view (gethash file views)))
-                   (setf (herdr-claude-editor--view-owned-buffer-p other-view) t)))
-               herdr-claude-editor--views))
-    (when (and (herdr-claude-editor--view-owned-buffer-p view)
-               (buffer-live-p buffer) (not (buffer-modified-p buffer))
-               (not (herdr-claude-editor--other-member-p owner file))
-               (null (get-buffer-window-list buffer nil 0)))
-      (kill-buffer buffer))
-    t))
-
-(defun herdr-claude-editor--release-views (owner)
-  "Release every view owned by OWNER."
-  (let ((views (herdr-claude-editor--view-table owner)))
-    (when views
-      (maphash (lambda (file view)
-                 (when (herdr-claude-editor--release-view owner file view)
-                   (remhash file views)))
-               (copy-hash-table views))
-      (when (= (hash-table-count views) 0)
-        (remhash owner herdr-claude-editor--views)))
-    (not (herdr-claude-editor--view-table owner))))
-
-(defun herdr-claude-editor--project-file-p (file root)
-  "Return non-nil when FILE is beneath ROOT."
-  (let ((file (expand-file-name file))
-        (root (expand-file-name root)))
-    (file-in-directory-p (if (file-exists-p file) (file-truename file) file)
-                         (if (file-exists-p root) (file-truename root) root))))
-
-(defun herdr-claude-editor--severity (severity)
-  "Return a normalized string for SEVERITY."
-  (cond
-   ((and severity (symbolp severity))
-    (if (keywordp severity)
-        (substring (symbol-name severity) 1)
-      (symbol-name severity)))
-   ((stringp severity) severity)
-   (t "info")))
-
-(defun herdr-claude-editor--position (buffer position)
-  "Return BUFFER's line and column at POSITION."
-  (with-current-buffer buffer
-    (save-excursion
-      (goto-char position)
-      (list (line-number-at-pos) (current-column)))))
-
-(defun herdr-claude-editor--diagnostic
-    (file message line column severity)
-  "Return FILE's MESSAGE at LINE and COLUMN with SEVERITY."
-  (list :file file :message message :line line :column column
-        :severity (herdr-claude-editor--severity severity)))
-
-(defun herdr-claude-editor--normalize-flymake (file diagnostic)
-  "Normalize Flymake DIAGNOSTIC for FILE."
-  (let* ((buffer (flymake-diagnostic-buffer diagnostic))
-         (position (herdr-claude-editor--position
-                    buffer (flymake-diagnostic-beg diagnostic))))
-    (herdr-claude-editor--diagnostic
-     file (flymake-diagnostic-text diagnostic) (car position) (cadr position)
-     (flymake-diagnostic-type diagnostic))))
-
-(defun herdr-claude-editor--normalize-flycheck (file diagnostic)
-  "Normalize Flycheck DIAGNOSTIC for FILE."
-  (herdr-claude-editor--diagnostic
-   file (flycheck-error-message diagnostic) (flycheck-error-line diagnostic)
-   (flycheck-error-column diagnostic) (flycheck-error-level diagnostic)))
-
-(defun herdr-claude-editor--normalize-diagnostic (file diagnostic provider)
-  "Normalize DIAGNOSTIC from PROVIDER for FILE."
-  (cond
-   ((eq provider 'flymake)
-    (herdr-claude-editor--normalize-flymake file diagnostic))
-   ((eq provider 'flycheck)
-    (herdr-claude-editor--normalize-flycheck file diagnostic))
-   (t
-    (when-let* ((message (or (plist-get diagnostic :message)
-                             (plist-get diagnostic :text))))
-      (herdr-claude-editor--diagnostic
-       file message (plist-get diagnostic :line) (plist-get diagnostic :column)
-       (or (plist-get diagnostic :severity) (plist-get diagnostic :level)))))))
-
-(defun herdr-claude-editor-collect-diagnostics (providers buffers root)
-  "Collect diagnostics from BUFFERS beneath ROOT using PROVIDERS."
-  (let (diagnostics)
-    (dolist (buffer buffers)
-      (when-let* ((file (buffer-file-name buffer))
-                  ((herdr-claude-editor--project-file-p file root)))
-        (dolist (provider providers)
-          (dolist (diagnostic (funcall (cdr provider) buffer))
-            (when-let* ((normalized
-                         (herdr-claude-editor--normalize-diagnostic
-                          file diagnostic (car provider))))
-              (push normalized diagnostics))))))
-    (nreverse diagnostics)))
-
-(defun herdr-claude-editor--flymake (buffer)
-  "Return Flymake diagnostics for BUFFER."
-  (with-current-buffer buffer
-    (if (fboundp 'flymake-diagnostics) (flymake-diagnostics) nil)))
-
-(defun herdr-claude-editor--flycheck (buffer)
-  "Return Flycheck diagnostics for BUFFER."
-  (with-current-buffer buffer
-    (if (and (fboundp 'flycheck-current-errors) (bound-and-true-p flycheck-mode))
-        (flycheck-current-errors) nil)))
-
-(defun herdr-claude-editor--diagnostics (root arguments)
-  "Return project diagnostics requested by ARGUMENTS below ROOT."
-  (let ((uri (plist-get arguments :uri)))
-    (if (and uri (not (stringp uri)))
-        (herdr-claude-editor--invalid)
-      (let ((buffers (seq-filter
-                      (lambda (buffer)
-                        (when-let* ((file (buffer-file-name buffer)))
-                          (herdr-claude-editor--project-file-p file root)))
-                      (buffer-list))))
-        (make-herdr-claude-editor-result
-         :kind 'diagnostics
-         :value (vconcat
-                 (herdr-claude-editor-collect-diagnostics
-                  `((flymake . ,#'herdr-claude-editor--flymake)
-                    (flycheck . ,#'herdr-claude-editor--flycheck))
-                  buffers root)))))))
 
 (defun herdr-claude-editor--owner-diffs (owner)
   "Return deferred diffs owned by OWNER."
@@ -450,21 +208,21 @@ reject the pending request."
       "Diff rejected"))
    killed))
 
-(defun herdr-claude-editor--find-diff (owner tab-name)
-  "Return OWNER's deferred diff named TAB-NAME."
+(defun herdr-claude-editor--find-diff (owner name)
+  "Return OWNER's deferred diff named NAME."
   (seq-find (lambda (diff)
               (and (herdr-claude-editor--diff-p diff)
-                   (equal tab-name (herdr-claude-editor--diff-tab-name diff))))
+                   (equal name (herdr-claude-editor--diff-name diff))))
             (herdr-claude-editor--owner-diffs owner)))
 
-(defun herdr-claude-editor-accept-diff (owner tab-name)
-  "Accept OWNER's deferred diff named TAB-NAME."
-  (when-let* ((diff (herdr-claude-editor--find-diff owner tab-name)))
+(defun herdr-claude-editor-accept-diff (owner name)
+  "Accept OWNER's deferred diff named NAME."
+  (when-let* ((diff (herdr-claude-editor--find-diff owner name)))
     (herdr-claude-editor--complete-diff diff t)))
 
-(defun herdr-claude-editor-reject-diff (owner tab-name)
-  "Reject OWNER's deferred diff named TAB-NAME."
-  (when-let* ((diff (herdr-claude-editor--find-diff owner tab-name)))
+(defun herdr-claude-editor-reject-diff (owner name)
+  "Reject OWNER's deferred diff named NAME."
+  (when-let* ((diff (herdr-claude-editor--find-diff owner name)))
     (herdr-claude-editor--complete-diff diff nil)))
 
 (defun herdr-claude-editor--cancel-diff (diff)
@@ -472,7 +230,7 @@ reject the pending request."
   (herdr-claude-editor--finish-diff diff nil nil t))
 
 (defun herdr-claude-editor-cancel (owner)
-  "Cancel work and release views owned by opaque OWNER."
+  "Cancel diffs, selections, and buffers owned by opaque OWNER."
   (herdr-claude-editor-cancel-selection owner)
   (let ((diffs-released t))
     (dolist (diff (copy-sequence (herdr-claude-editor--owner-diffs owner)))
@@ -481,7 +239,7 @@ reject the pending request."
         (setq diffs-released nil)))
     (and diffs-released
          (null (herdr-claude-editor--owner-diffs owner))
-         (herdr-claude-editor--release-views owner))))
+         (emacsctl-release-owner owner))))
 
 (defun herdr-claude-editor--bind-diff-control (diff control)
   "Associate DIFF with Ediff CONTROL and install completion handling."
@@ -511,17 +269,18 @@ reject the pending request."
 
 (defun herdr-claude-editor--open-diff (owner root arguments request)
   "Open ARGUMENTS as a deferred diff below ROOT for OWNER and REQUEST."
-  (let* ((old-path (herdr-claude-editor--path (plist-get arguments :old-path) root))
-         (new (herdr-claude-editor--path (plist-get arguments :new-path) root))
+  (let* ((old-path (emacsctl-project-path (plist-get arguments :old-path) root))
+         (new (emacsctl-project-path (plist-get arguments :new-path) root))
          (contents (plist-get arguments :contents))
-         (tab-name (plist-get arguments :tab-name)))
-    (if (not (and old-path new (stringp contents) (stringp tab-name) request))
-        (herdr-claude-editor--invalid)
+         (name (plist-get arguments :name)))
+    (if (not (and old-path new (stringp contents) (stringp name) request))
+        (signal 'emacsctl-operation-failed
+                '("Diff paths are outside the project"))
       (let* ((old-existing (get-file-buffer old-path))
              (old (or old-existing (find-file-noselect old-path)))
-             (proposed (generate-new-buffer (format " *herdr diff %s*" tab-name)))
+             (proposed (generate-new-buffer (format " *herdr diff %s*" name)))
              (diff (make-herdr-claude-editor--diff
-                    :owner owner :request request :tab-name tab-name
+                    :owner owner :request request :name name
                     :proposed proposed :old old :old-owned-p (null old-existing))))
         (with-current-buffer proposed (insert contents))
         (let ((completion (lambda () (herdr-claude-editor--complete-diff diff t t)))
@@ -544,60 +303,55 @@ reject the pending request."
                (error nil))
              (signal (car err) (cdr err)))))))))
 
-(defun herdr-claude-editor--close-diffs (owner &optional tab-name)
-  "Close OWNER diffs, optionally limited to TAB-NAME."
+(defun herdr-claude-editor--close-diffs (owner &optional name)
+  "Close OWNER diffs, optionally limited to NAME."
   (dolist (diff (copy-sequence (herdr-claude-editor--owner-diffs owner)))
     (when (and (herdr-claude-editor--diff-p diff)
-               (or (null tab-name)
-                   (equal tab-name (herdr-claude-editor--diff-tab-name diff))))
+               (or (null name)
+                   (equal name (herdr-claude-editor--diff-name diff))))
       (herdr-claude-editor--cancel-diff diff)))
-  (herdr-claude-editor--result "Closed diff tabs"))
+  (herdr-claude-editor--result "Closed diffs"))
 
-(defun herdr-claude-editor--execute (arguments)
-  "Evaluate Emacs Lisp supplied in ARGUMENTS."
-  (let ((code (plist-get arguments :code))
-        (position 0)
-        value)
-    (if (not (stringp code))
-        (herdr-claude-editor--invalid)
-      (condition-case err
-          (while t
-            (pcase-let ((`(,form . ,next) (read-from-string code position)))
-              (setq value (eval form t)
-                    position next)))
-        (end-of-file
-         (unless (string-match-p "\\`\\(?:[ \t\n\r]+\\|;[^\n]*\\)*\\'"
-                                 (substring code position))
-           (signal (car err) (cdr err)))))
-      (herdr-claude-editor--result (format "%s" value)))))
+(defun herdr-claude-editor--diff-open-operation (arguments context)
+  "Open a diff from ARGUMENTS using adapter CONTEXT."
+  (herdr-claude-editor--open-diff
+   (plist-get context :owner)
+   (plist-get context :project-root)
+   (list :old-path (alist-get 'old_path arguments)
+         :new-path (alist-get 'new_path arguments)
+         :contents (alist-get 'contents arguments)
+         :name (alist-get 'name arguments))
+   (list :resolve (plist-get context :resolve)
+         :cancel (plist-get context :cancel))))
 
-(defun herdr-claude-editor-dispatch (owner root operation arguments request)
-  "Run normalized OPERATION with ARGUMENTS below ROOT for OWNER and REQUEST."
-  (pcase operation
-    ('open-file (herdr-claude-editor--open-file owner root arguments))
-    ('diagnostics (herdr-claude-editor--diagnostics root arguments))
-    ('close-tab (herdr-claude-editor--close-tab owner root arguments))
-    ('open-diff (herdr-claude-editor--open-diff owner root arguments request))
-    ('close-diffs (herdr-claude-editor--close-diffs owner))
-    ('execute
-     (if herdr-claude-enable-elisp-tool
-         (herdr-claude-editor--execute arguments)
-       (herdr-claude-editor--invalid)))
-    (_ (herdr-claude-editor--invalid))))
+(defun herdr-claude-editor--diff-close-operation (arguments context)
+  "Close the diff in ARGUMENTS using adapter CONTEXT."
+  (herdr-claude-editor--close-diffs
+   (plist-get context :owner) (alist-get 'name arguments)))
 
-(defun herdr-claude-editor--close-tab (owner root arguments)
-  "Close the tab or diff described by ARGUMENTS below ROOT for OWNER."
-  (let* ((value (plist-get arguments :path))
-         (tab-name (plist-get arguments :tab-name))
-         (file (and value (herdr-claude-editor--path value root))))
-    (if (or (and value (not file)) (and tab-name (not (stringp tab-name))))
-        (herdr-claude-editor--invalid)
-      (when-let* ((views (and file (herdr-claude-editor--view-table owner)))
-                  (view (gethash file views)))
-        (when (herdr-claude-editor--release-view owner file view)
-          (remhash file views)))
-      (when tab-name (herdr-claude-editor--close-diffs owner tab-name))
-      (herdr-claude-editor--result "Closed tab"))))
+(defun herdr-claude-editor--diff-close-all-operation (_arguments context)
+  "Close all diffs owned by adapter CONTEXT."
+  (herdr-claude-editor--close-diffs (plist-get context :owner)))
+
+(emacsctl-register-operation
+ "diff.open" #'herdr-claude-editor--diff-open-operation
+ :description "Open an editable Emacs diff."
+ :effect 'write :interfaces '(adapter) :deferred t
+ :parameters '((:name "old_path" :type string :required t)
+               (:name "new_path" :type string :required t)
+               (:name "contents" :type string :required t)
+               (:name "name" :type string :required t)))
+
+(emacsctl-register-operation
+ "diff.close" #'herdr-claude-editor--diff-close-operation
+ :description "Close an adapter-owned Emacs diff."
+ :effect 'write :interfaces '(adapter)
+ :parameters '((:name "name" :type string :required t)))
+
+(emacsctl-register-operation
+ "diff.close-all" #'herdr-claude-editor--diff-close-all-operation
+ :description "Close all adapter-owned Emacs diffs."
+ :effect 'write :interfaces '(adapter) :parameters nil)
 
 (provide 'herdr-claude-editor)
 ;;; herdr-claude-editor.el ends here

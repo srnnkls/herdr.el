@@ -58,7 +58,6 @@
          (herdr-claude-protocol--outgoing-observers nil)
          (herdr-claude-protocol--defer-close nil)
          (herdr-claude-protocol--close-after-send nil)
-         (herdr-claude-enable-elisp-tool nil)
          (herdr-claude-protocol-tests--servers nil)
          (herdr-claude-protocol-tests--server-arguments nil)
          (herdr-claude-protocol-tests--closed-servers nil)
@@ -252,7 +251,7 @@
                 -32603)))))
 
 
-(ert-deftest herdr-claude-protocol-mcp-tool-call-converts-editor-results ()
+(ert-deftest herdr-claude-protocol-mcp-tool-call-converts-operation-results ()
   (herdr-claude-protocol-tests--with-runtime
    (let* ((seen nil)
           (state (make-herdr-claude-protocol-state

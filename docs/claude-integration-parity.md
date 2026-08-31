@@ -21,18 +21,18 @@ Committed protocol evidence lives under `testdata/claude/`:
 | owner-local cancellation | ERT: `herdr-claude-client-supersession-cancels-only-the-owning-client` | covered |
 | stale deferred completion | ERT: `herdr-claude-stale-deferred-completion-sends-nothing` | covered |
 | reconnect and incomplete cleanup | ERT: `herdr-claude-protocol-reconnect-deadline-is-current-client-scoped` | covered |
-| wire-to-editor normalization | ERT: `herdr-claude-normalizes-wire-input-before-editor-dispatch` | covered |
+| wire-to-operation normalization | ERT: `herdr-claude-normalizes-wire-input-before-operation-dispatch` | covered |
 | project context targeting | ERT: `herdr-claude-protocol-context-broadcast-and-selection-target-project` | covered |
 | at-mention targeting | ERT: `herdr-claude-protocol-at-mention-targets-session-or-composite` | covered |
 | selection debounce and deduplication | ERT: `herdr-claude-editor-selection-debounces-and-deduplicates-snapshots` | covered |
-| project path confinement | ERT: `herdr-claude-editor-confines-paths-to-the-project-root` | covered |
-| open and close shared views | ERT: `herdr-claude-editor-open-and-close-preserves-shared-views` | covered |
-| visited-buffer diagnostics | ERT: `herdr-claude-editor-diagnostics-use-only-visited-project-buffers` | covered |
-| diagnostic normalization | ERT: `herdr-claude-editor-normalizes-flymake-plain-and-flycheck-diagnostics` | covered |
-| editable diff accept and reject | ERT: `herdr-claude-editor-deferred-diffs-accept-edits-and-reject-distinctly` | covered |
-| diff rollback and cleanup | ERT: `herdr-claude-editor-rolls-back-a-failed-diff-start` | covered |
-| owner-local editor cleanup | ERT: `herdr-claude-editor-cancel-is-owner-local` | covered |
-| opt-in Elisp execution | ERT: `herdr-claude-editor-execute-requires-explicit-opt-in` | covered |
+| shared operation registry | ERT: `emacsctl-registers-replaces-discovers-and-validates-operations` | covered |
+| buffer/window terminology and project confinement | ERT: `emacsctl-base-operations-use-buffer-and-window-terminology` | covered |
+| editable diff accept and reject | ERT: `herdr-claude-editor-diffs-resolve-through-the-operation-registry` | covered |
+| owner-local Emacs cleanup | ERT: `herdr-claude-editor-cancel-is-owner-local-and-retryable` | covered |
+| opt-in Elisp evaluation | ERT: `emacsctl-elisp-eval-is-hidden-and-disabled-by-default` | covered |
+| versioned CLI dispatch and redacted failures | ERT: `emacsctl-dispatches-versioned-json-and-redacts-errors` | covered |
+| fixed Base64 launcher framing | ERT: `emacsctl-launcher-frames-json-without-elisp-interpolation` | covered |
+| live skill generation | ERT: `emacsctl-skill-reflects-the-live-operation-registry` | covered |
 | canonical transient routing | ERT: `herdr-transient-routes-workflows-without-spawning-processes` | covered |
 | generic integration status | ERT: `herdr-transient-status-formatting-is-agent-specific` | covered |
 | lazy transient loading | ERT: `herdr-agent-public-modules-load-canonical-transient-lazily` | covered |
@@ -41,4 +41,4 @@ Committed protocol evidence lives under `testdata/claude/`:
 
 The unused Streamable HTTP MCP listener and its xref, Imenu, project, and tree-sitter catalog are outside the Claude IDE contract and have been removed. Claude compatibility remains isolated in the loopback WebSocket protocol boundary.
 
-The deterministic suite covers lifecycle, wire behavior, resource ownership, transport security, editor operations, and lazy UI loading. `herdr-live-server-answers-ping` remains an explicit live-server check. CI covers Ubuntu, macOS, and Windows on Emacs 29.1 and 30.1, with a soft-failing Ubuntu snapshot job.
+The deterministic suite covers lifecycle, wire behavior, resource ownership, transport security, shared Emacs operations, and lazy UI loading. `herdr-live-server-answers-ping` remains an explicit live-server check. CI covers Ubuntu, macOS, and Windows on Emacs 29.1 and 30.1, with a soft-failing Ubuntu snapshot job.

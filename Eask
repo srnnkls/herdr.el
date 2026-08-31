@@ -25,10 +25,11 @@
 
 (load-paths ".")
 
-(files "herdr*.el" '(:exclude "herdr*-tests.el"))
+(files "herdr*.el" "emacsctl.el" "bin/emacsctl"
+       '(:exclude "herdr*-tests.el"))
 
 (defconst herdr-test-file-spec
-  '("herdr*-tests.el")
+  '("herdr*-tests.el" "emacsctl-tests.el")
   "File spec for ERT suites excluded from the package files.")
 
 (script "test"

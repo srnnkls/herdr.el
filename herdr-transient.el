@@ -9,7 +9,7 @@
 
 ;;; Commentary:
 
-;; One transient for Herdr sessions, agents, attachments, and Claude editor work.
+;; One transient for Herdr sessions, agents, attachments, and Claude Emacs work.
 
 ;;; Code:
 
@@ -124,7 +124,7 @@
 
 ;;;###autoload
 (transient-define-prefix herdr-transient-claude ()
-  "Manage Claude editor integration."
+  "Manage Claude Emacs integration."
   [["Lifecycle"
     ("a" "adopt" herdr-claude-adopt)
     ("c" "connect" herdr-claude-connect)

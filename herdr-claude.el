@@ -65,7 +65,7 @@
   (let ((target (cons (or (alist-get 'server_key agent) (herdr-server-key))
                       (alist-get 'terminal_id agent))))
     (unless (herdr-claude-protocol-send-at-mentioned target)
-      (user-error "Claude has no initialized editor connection for this file"))))
+      (user-error "Claude has no initialized Emacs connection for this file"))))
 
 (defun herdr-claude--adapter (session phase &optional context)
   "Apply Claude adapter PHASE to SESSION using optional CONTEXT."
