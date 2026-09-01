@@ -9,21 +9,13 @@
 
 ;;; Commentary:
 
-;; One transient for Herdr sessions, agents, attachments, and Claude Emacs work.
+;; One transient for Herdr sessions, agents, and attachments.
 
 ;;; Code:
 
 (require 'subr-x)
 (require 'transient)
 (require 'herdr-agent)
-
-(autoload 'herdr-claude-adopt "herdr-claude" nil t)
-(autoload 'herdr-claude-connect "herdr-claude" nil t)
-(autoload 'herdr-claude-at-mention "herdr-claude" nil t)
-(autoload 'herdr-claude-auto-adopt-mode "herdr-claude" nil t)
-(autoload 'herdr-claude-debug-open-log "herdr-claude-debug" nil t)
-(autoload 'herdr-claude-debug-enable "herdr-claude-debug" nil t)
-(autoload 'herdr-claude-debug-disable "herdr-claude-debug" nil t)
 
 (defun herdr-transient--kind ()
   "Read a registered agent harness kind."
@@ -97,45 +89,18 @@
 
 (defun herdr-transient--format-status (status)
   "Format agent STATUS for display."
-  (let* ((kind (alist-get 'agent status))
-         (harness (herdr-agent--harness kind t))
-         (integration (alist-get 'integration_status status)))
-    (string-join
-     (delq nil
-           (list (or (plist-get harness :label) kind)
-                 (format "Herdr: %s" (or (alist-get 'herdr_status status) "connected"))
-                 (format "Agent: %s" (or (alist-get 'agent_status status) "unknown"))
-                 (and integration
-                      (format "%s: %s"
-                              (or (alist-get 'integration_label status) "Integration")
-                              integration))
-                 (alist-get 'integration_endpoint status)))
-     " | ")))
+  (string-join
+   (list (or (alist-get 'agent status) "unknown")
+         (format "Herdr: %s"
+                 (or (alist-get 'herdr_status status) "connected"))
+         (format "Agent: %s"
+                 (or (alist-get 'agent_status status) "unknown")))
+   " | "))
 
 (defun herdr-transient--status (target)
   "Show TARGET's status."
   (interactive (list (herdr-transient--target)))
   (message "%s" (herdr-transient--format-status (herdr-agent-status target))))
-
-(defun herdr-transient--claude-auto-adopt ()
-  "Toggle automatic Claude adoption."
-  (interactive)
-  (herdr-claude-auto-adopt-mode 'toggle))
-
-;;;###autoload
-(transient-define-prefix herdr-transient-claude ()
-  "Manage Claude Emacs integration."
-  [["Lifecycle"
-    ("a" "adopt" herdr-claude-adopt)
-    ("c" "connect" herdr-claude-connect)
-    ("m" "auto-adopt" herdr-transient--claude-auto-adopt)]
-   ["Context"
-    ("s" "status" herdr-transient--status)
-    ("@" "at-mention" herdr-claude-at-mention)]
-   ["Debug"
-    ("p" "protocol log" herdr-claude-debug-open-log)
-    ("d" "enable logging" herdr-claude-debug-enable)
-    ("D" "disable logging" herdr-claude-debug-disable)]])
 
 ;;;###autoload
 (transient-define-prefix herdr-transient ()
@@ -160,8 +125,7 @@
     ("R" "route project" herdr-assign-project-session)]
    ["Status"
     ("i" "status" herdr-transient--status)
-    ("C" "customize" herdr-transient--customize)
-    ("I" "Claude" herdr-transient-claude)]])
+    ("C" "customize" herdr-transient--customize)]])
 
 (provide 'herdr-transient)
 ;;; herdr-transient.el ends here

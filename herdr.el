@@ -4,7 +4,7 @@
 
 ;; Author: Sören Nikolaus <soeren@code17.io>
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1") (websocket "1.12") (transient "0.9.0"))
+;; Package-Requires: ((emacs "29.1") (transient "0.9.0"))
 ;; Keywords: terminals, tools, processes
 ;; URL: https://github.com/srnnkls/herdr.el
 
@@ -567,12 +567,25 @@ Offers the panes of the session this directory routes to."
 ;;;; Attaching a whole session
 
 (defcustom herdr-workspace-open-function nil
-  "Function opening the editor workspace mirroring a herdr workspace.
+  "Function opening an editor workspace for a herdr workspace group.
 Called with the workspace alist and the directory its panes work in,
-before `herdr-attach-session' attaches that workspace's terminals.  Nil
-attaches everything wherever you are."
+before `herdr-attach-session' attaches that group's terminals.  Its
+return value is bound to `herdr-attach-session-workspace' while those
+terminals are attached.  Nil attaches everything wherever you are."
   :type '(choice (const :tag "Attach where you are" nil) function)
   :group 'herdr)
+
+(defcustom herdr-attach-session-workspace-policy 'mirror
+  "How full herdr sessions are grouped into editor workspaces.
+`mirror' preserves each herdr workspace as a separate group.  `merge'
+combines entries whose working directories have the same
+`herdr-workspace-label'."
+  :type '(choice (const :tag "Mirror herdr workspaces" mirror)
+                 (const :tag "Merge by editor workspace label" merge))
+  :group 'herdr)
+
+(defvar herdr-attach-session-workspace nil
+  "Editor workspace selected for the session group being attached.")
 
 (defun herdr-session-layout (&optional all)
   "Return the herdr session's workspaces paired with their entries.
@@ -599,14 +612,33 @@ in them are left out."
                       (cons workspace members)))
                   (herdr-workspaces)))))
 
+(defun herdr--session-attachment-layout (layout)
+  "Return LAYOUT grouped for full-session attachment."
+  (if (not (eq herdr-attach-session-workspace-policy 'merge))
+      layout
+    (let ((by-label (make-hash-table :test #'equal))
+          groups)
+      (dolist (group layout)
+        (dolist (entry (cdr group))
+          (let* ((directory (alist-get 'cwd entry))
+                 (label (and directory (herdr-workspace-label directory)))
+                 (existing (gethash label by-label)))
+            (if existing
+                (setcdr existing (nconc (cdr existing) (list entry)))
+              (let ((merged (cons (car group) (list entry))))
+                (puthash label merged by-label)
+                (push merged groups))))))
+      (nreverse groups))))
+
 ;;;###autoload
 (defun herdr-attach-session (&optional session all takeover)
-  "Attach the agents of a herdr SESSION, mirroring how it is laid out.
-Each herdr workspace opens an editor workspace of its own through
-`herdr-workspace-open-function', and every agent in it becomes a buffer
-there.  ALL attaches plain panes too.  Input ownership stays with
-herdr's own client unless TAKEOVER says otherwise, so the attached
-buffers start as a view of a session someone else is driving.
+  "Attach the agents of a herdr SESSION in editor workspace groups.
+`herdr-attach-session-workspace-policy' controls whether the groups
+mirror herdr workspaces or merge by editor workspace label.
+`herdr-workspace-open-function' opens each group, and every agent in it
+becomes a buffer there.  ALL attaches plain panes too.  Input ownership
+stays with herdr's own client unless TAKEOVER says otherwise, so the
+attached buffers start as a view of a session someone else is driving.
 Terminals Emacs already shows are left alone.  Returns the buffers it
 attached."
   (interactive (list (herdr-read-session "Attach herdr session: ")
@@ -617,12 +649,14 @@ attached."
       (user-error "No herdr server on %s" (herdr-socket-file)))
     (let ((herdr-attach-takeover takeover)
           (buffers nil))
-      (dolist (group (herdr-session-layout all))
+      (dolist (group (herdr--session-attachment-layout
+                      (herdr-session-layout all)))
         (let* ((workspace (car group))
-               (entries (cdr group)))
-          (when herdr-workspace-open-function
-            (funcall herdr-workspace-open-function workspace
-                     (alist-get 'cwd (car entries))))
+               (entries (cdr group))
+               (directory (alist-get 'cwd (car entries)))
+               (herdr-attach-session-workspace
+                (when herdr-workspace-open-function
+                  (funcall herdr-workspace-open-function workspace directory))))
           (dolist (entry entries)
             (unless (if-let* ((server-key (alist-get 'server_key entry)))
                         (herdr-terminal-buffer (alist-get 'terminal_id entry) server-key)

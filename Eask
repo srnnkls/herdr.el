@@ -15,7 +15,6 @@
 (source 'melpa)
 
 (depends-on "emacs" "29.1")
-(depends-on "websocket" "1.12")
 (depends-on "transient" "0.9.0")
 
 (development
@@ -25,11 +24,11 @@
 
 (load-paths ".")
 
-(files "herdr*.el" "emacsctl.el" "bin/emacsctl"
+(files "herdr*.el"
        '(:exclude "herdr*-tests.el"))
 
 (defconst herdr-test-file-spec
-  '("herdr*-tests.el" "emacsctl-tests.el")
+  '("herdr*-tests.el")
   "File spec for ERT suites excluded from the package files.")
 
 (script "test"

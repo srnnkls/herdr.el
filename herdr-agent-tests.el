@@ -29,11 +29,84 @@
       (ert-fail (format "missing Herdr-native action: %s" function)))))
 
 (defun herdr-agent-tests--with-adapter (kind adapter)
-  "Return isolated test harnesses with KIND using ADAPTER."
-  (let ((harnesses (copy-tree herdr-agent-harnesses)))
-    (setf (plist-get (cdr (assoc "claude" harnesses)) :adapter) nil
-          (plist-get (cdr (assoc kind harnesses)) :adapter) adapter)
-    harnesses))
+  "Return isolated harnesses after configuring KIND with ADAPTER."
+  (setq herdr-agent--adapters (and adapter (list (cons kind adapter))))
+  (copy-tree herdr-agent-harnesses))
+
+(ert-deftest herdr-agent-adapter-registration-is-owned-and-conflict-safe ()
+  (let ((herdr-agent--adapters nil)
+        (herdr-agent--sessions (make-hash-table :test #'equal)))
+    (should (equal (herdr-agent-register-adapter "claude" #'ignore) "claude"))
+    (should (equal (herdr-agent-register-adapter "claude" #'ignore) "claude"))
+    (should-error (herdr-agent-register-adapter "claude" #'identity)
+                  :type 'herdr-error)
+    (should-error (herdr-agent-register-adapter "unknown" #'ignore)
+                  :type 'herdr-error)
+    (let ((session (herdr-agent--make-session
+                    :key '("server" . "terminal") :kind "claude"
+                    :adapter #'ignore :state 'attached)))
+      (puthash (herdr-agent-session-key session) session herdr-agent--sessions)
+      (should-error (herdr-agent-unregister-adapter "claude" #'ignore)
+                    :type 'herdr-error)
+      (setf (herdr-agent-session-state session) 'stopped)
+      (should (herdr-agent-unregister-adapter "claude" #'ignore))
+      (should-not (herdr-agent-unregister-adapter "claude" #'ignore)))))
+
+(ert-deftest herdr-agent-session-captures-its-adapter-before-the-first-phase ()
+  (let ((herdr-agent--adapters nil)
+        phases)
+    (let ((adapter (lambda (_session phase &optional _context)
+                     (push phase phases))))
+      (herdr-agent-register-adapter "claude" adapter)
+      (let ((session (herdr-agent--make-session :kind "claude" :state 'starting)))
+        (herdr-agent--run-adapter session :prepare)
+        (setq herdr-agent--adapters nil)
+        (herdr-agent--run-adapter session :detach)
+        (should (eq (herdr-agent-session-adapter session) adapter))
+        (should (equal (nreverse phases) '(:prepare :detach)))))))
+
+(ert-deftest herdr-agent-unregistration-sees-captured-starting-sessions ()
+  (let ((herdr-agent--adapters nil)
+        (herdr-agent--adapter-sessions (make-hash-table :test #'eq :weakness 'key))
+        (herdr-agent--sessions (make-hash-table :test #'equal)))
+    (herdr-agent-register-adapter "claude" #'ignore)
+    (let ((session (herdr-agent--make-session :kind "claude" :state 'starting)))
+      (herdr-agent--run-adapter session :prepare)
+      (should-error (herdr-agent-unregister-adapter "claude" #'ignore)
+                    :type 'herdr-error)
+      (setf (herdr-agent-session-state session) 'stopped)
+      (should (herdr-agent-unregister-adapter "claude" #'ignore)))))
+
+(ert-deftest herdr-agent-public-bridge-operations-hide-server-internals ()
+  (let* ((session (herdr-agent--make-session
+                   :server "/tmp/herdr.sock" :terminal "terminal-1"
+                   :pane "pane-1" :kind "claude" :state 'attached))
+         calls events)
+    (cl-letf (((symbol-function 'herdr-agent-resolve-session)
+               (lambda (&optional _target) session))
+              ((symbol-function 'herdr-api-pane-send-text)
+               (lambda (pane text)
+                 (push (list herdr-socket-path pane text) calls)))
+              ((symbol-function 'herdr-api-agent-list)
+               (lambda ()
+                 (push herdr-socket-path calls)
+                 '((agents . [((terminal_id . "terminal-1"))])))))
+      (should (herdr-agent-send-text nil "/ide\n"))
+      (should (equal (herdr-agent-list "/tmp/other.sock")
+                     '(((terminal_id . "terminal-1")))))
+      (should (equal (nreverse calls)
+                     '(("/tmp/herdr.sock" "pane-1" "/ide\n")
+                       "/tmp/other.sock"))))
+    (let ((herdr-agent-event-functions
+           (list (lambda (server type data)
+                   (setq events (list server type data))))))
+      (cl-letf (((symbol-function 'herdr-agent--canonical-server-key) #'identity))
+        (herdr-agent--handle-event
+         "/tmp/herdr.sock" "pane.agent_detected"
+         '((agent . "claude") (pane_id . "pane-1"))))
+      (should (equal events
+                     '("/tmp/herdr.sock" "pane.agent_detected"
+                       ((agent . "claude") (pane_id . "pane-1"))))))))
 
 (defun herdr-agent-tests--pane (kind terminal-id pane-id workspace-id)
   `((agent . ,kind)
@@ -238,6 +311,62 @@
             (should (equal adapted '("claude")))))
       (mapc #'herdr-agent-tests--detach sessions)
       (mapc #'herdr-agent-tests--dispose-attachment attachments)
+      (dolist (process subscription-processes)
+        (when (process-live-p process)
+          (delete-process process)))
+      (remhash (herdr-agent--canonical-server-key server-key)
+               herdr-agent--subscriptions)
+      (delete-directory root t))))
+
+(ert-deftest herdr-agent-start-in-pane-waits-for-a-new-shell ()
+  (let* ((root (make-temp-file "herdr-agent-shell" t))
+         (server-key (file-truename (expand-file-name "herdr.sock" root)))
+         (attempts 0)
+         (get-attempts 0)
+         subscription-processes
+         session)
+    (unwind-protect
+        (cl-letf (((symbol-function 'herdr-api-agent-start)
+                   (lambda (_kind _name pane-id &rest _arguments)
+                     (cl-incf attempts)
+                     (if (= attempts 1)
+                         (signal 'herdr-api-error
+                                 '("agent_pane_busy"
+                                   "agent target pane is not an available shell"))
+                       (let ((agent (copy-tree
+                                     (herdr-agent-tests--agent
+                                      "codex" "term-codex" pane-id "work"))))
+                         (setf (alist-get 'interactive_ready agent) nil
+                               (alist-get 'agent_status agent) "unknown")
+                         `((agent . ,agent))))))
+                  ((symbol-function 'herdr-api-agent-get)
+                   (lambda (&rest _)
+                     (cl-incf get-attempts)
+                     (if (= get-attempts 1)
+                         (signal 'herdr-api-error
+                                 '("agent_not_found" "agent target not found"))
+                       (let ((agent (copy-tree
+                                     (herdr-agent-tests--agent
+                                      "codex" "term-codex" "codex:pane" "work"))))
+                         (setf (alist-get 'interactive_ready agent) nil)
+                         `((agent . ,agent))))))
+                  ((symbol-function 'herdr-subscribe)
+                   (lambda (&rest _)
+                     (let ((process
+                            (start-process "herdr-agent-subscription" nil "sleep" "30")))
+                       (push process subscription-processes)
+                       process)))
+                  ((symbol-function 'sleep-for) #'ignore))
+          (setq session
+                (herdr-agent-start-in-pane
+                 "codex" "review"
+                 (herdr-agent-tests--pane "codex" "pending-codex"
+                                          "codex:pane" "work")
+                 :server-key server-key :args '() :attach nil :timeout-ms 1000))
+          (should (= attempts 2))
+          (should (= get-attempts 2))
+          (should (eq (herdr-agent-session-state session) 'attached)))
+      (herdr-agent-tests--detach session)
       (dolist (process subscription-processes)
         (when (process-live-p process)
           (delete-process process)))
@@ -1271,12 +1400,13 @@
                                      (tab_id . "work:tab")
                                      (workspace_id . "work"))))))
                   ((symbol-function 'herdr-agent--run-adapter)
-                   (lambda (&rest arguments)
-                     (when (memq :prepare arguments)
-                       (push (herdr-agent-session-project
-                              (cl-find-if #'herdr-agent-session-p arguments))
-                             prepared-projects))
-                     nil))
+                   (lambda (session phase &optional context)
+                     (pcase phase
+                       (:prepare
+                        (push (herdr-agent-session-project session)
+                              prepared-projects)
+                        nil)
+                       (:arguments (cons "--adapter" context)))))
                   ((symbol-function 'herdr-api-agent-start)
                    (lambda (kind name pane-id &rest arguments)
                      (push (list kind name pane-id arguments) starts)
@@ -1308,8 +1438,10 @@
                               (lambda (action)
                                 (list kind
                                       (list :args
-                                            (herdr-agent-tests--harness-arguments
-                                             harness action reference))))
+                                            (cons
+                                             "--adapter"
+                                             (herdr-agent-tests--harness-arguments
+                                              harness action reference)))))
                               '(start continue resume))))
               (setq starts nil)
               (should-error
@@ -1848,9 +1980,8 @@
                    "(unless (= 1 (length (cl-remove-if-not "
                    "(lambda (entry) (equal (car entry) \"claude\")) herdr-agent-harnesses))) "
                    "(error \"Claude harness registration is not singular\")) "
-                   "(when (or (featurep 'herdr-claude) "
-                   "(featurep 'herdr-claude-protocol) (featurep 'websocket)) "
-                   "(error \"Generic transient eagerly loaded Claude\")))")
+                   "(when (or (featurep 'limen) (featurep 'websocket)) "
+                   "(error \"Generic transient eagerly loaded an integration\")))")
                   package-root root root))))
       (setq output (with-current-buffer buffer (buffer-string)))
       (when (buffer-live-p buffer)
@@ -1882,27 +2013,29 @@
           (push (file-relative-name file root) offenders))))
     (should-not offenders)))
 
-(ert-deftest herdr-agent-reused-session-runs-current-harness-adoption ()
+(ert-deftest herdr-agent-reused-session-runs-current-registered-adapter ()
   (let* ((agent '((agent . "claude") (cwd . "/tmp")
                   (server_key . "/tmp/herdr-reused.sock")
                   (terminal_id . "term-reused") (agent_status . "idle")))
+         (herdr-agent--adapters nil)
          (herdr-agent-harnesses
           (herdr-agent-tests--with-adapter "claude" nil))
-         (session (herdr-agent-adopt
-                   agent :server-key "/tmp/herdr-reused.sock" :attach nil))
-         calls)
-    (setf (plist-get (cdr (assoc "claude" herdr-agent-harnesses)) :adapter)
+         calls
+         (adapter
           (lambda (candidate phase &optional context)
             (when (eq phase :adopted)
               (push (list candidate context) calls))))
+         (session (herdr-agent-adopt
+                   agent :server-key "/tmp/herdr-reused.sock" :attach nil)))
+    (herdr-agent-register-adapter "claude" adapter)
     (unwind-protect
         (progn
           (should (eq (herdr-agent-adopt
                        agent :server-key "/tmp/herdr-reused.sock" :attach nil)
                       session))
           (should (equal calls (list (list session agent)))))
-      (setf (plist-get (cdr (assoc "claude" herdr-agent-harnesses)) :adapter) nil)
-      (herdr-agent-detach session))))
+      (herdr-agent-detach session)
+      (herdr-agent-unregister-adapter "claude" adapter))))
 
 (ert-deftest herdr-agent-start-preflights-names-on-the-resolved-project-server ()
   (herdr-agent-tests--require-functions

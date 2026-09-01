@@ -3,11 +3,9 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'herdr-transient)
-(require 'herdr-claude-debug)
 
 (ert-deftest herdr-transient-routes-workflows-without-spawning-processes ()
-  (dolist (entry-point '(herdr-transient herdr-transient-claude))
-    (should (commandp entry-point)))
+  (should (commandp 'herdr-transient))
   (let ((target '("server-a" . "term-7"))
         calls)
     (cl-letf (((symbol-function 'herdr-agent-start)
@@ -33,8 +31,6 @@
                (lambda (&rest _) (push '(stop-all) calls)))
               ((symbol-function 'customize-group)
                (lambda (group &rest _) (push (list 'customize group) calls)))
-              ((symbol-function 'herdr-claude-auto-adopt-mode)
-               (lambda (argument) (push (list 'auto-adopt argument) calls)))
               ((symbol-function 'start-process)
                (lambda (&rest _) (ert-fail "Transient action spawned a process")))
               ((symbol-function 'call-process)
@@ -43,14 +39,13 @@
       (herdr-transient--continue "pi" "review")
       (herdr-transient--resume "codex" "review" "resume-7")
       (herdr-transient--switch target)
-      (herdr-transient--prompt target "(+ 1 1)")
+      (herdr-transient--prompt target "review this")
       (herdr-transient--rename target "audit")
       (herdr-transient--escape target)
       (herdr-transient--newline target)
       (herdr-transient--stop target)
       (herdr-transient--stop-all)
-      (herdr-transient--customize)
-      (herdr-transient--claude-auto-adopt))
+      (herdr-transient--customize))
     (should
      (equal
       (nreverse calls)
@@ -58,76 +53,20 @@
         (continue "pi" "review")
         (resume "codex" "review" "resume-7")
         (switch ,target)
-        (prompt ,target "(+ 1 1)")
+        (prompt ,target "review this")
         (rename ,target "audit")
         (escape ,target)
         (newline ,target)
         (stop ,target)
         (stop-all)
-        (customize herdr)
-        (auto-adopt toggle))))))
+        (customize herdr))))))
 
 (ert-deftest herdr-transient-status-formatting-is-agent-specific ()
-  (dolist (expectation
-           '(((agent . "claude")
-              (herdr_status . "connected")
-              (agent_status . "idle")
-              (integration_label . "Claude Emacs")
-              (integration_status . "connected")
-              (integration_endpoint . "ws://127.0.0.1:17171"))
-             ((agent . "pi")
-              (herdr_status . "connected")
-              (agent_status . "waiting"))
-             ((agent . "codex")
-              (herdr_status . "disconnected")
-              (agent_status . "stopped"))))
-    (let ((view (herdr-transient--format-status expectation)))
-      (should (string-match-p
-               (regexp-quote (plist-get (herdr-agent--harness
-                                         (alist-get 'agent expectation))
-                                        :label))
-               view))
-      (should (string-match-p
-               (format "Herdr: %s" (alist-get 'herdr_status expectation)) view))
-      (should (string-match-p
-               (format "Agent: %s" (alist-get 'agent_status expectation)) view))
-      (if (equal (alist-get 'agent expectation) "claude")
-          (progn
-            (should (string-match-p "Claude Emacs: connected" view))
-            (should (string-match-p "ws://127.0.0.1:17171" view)))
-        (should-not (string-match-p "Claude Emacs" view))))))
-
-
-(ert-deftest herdr-claude-raw-logging-keeps-context-and-cleans-up ()
-  (let* ((original (default-value 'herdr-claude-protocol-logging))
-         (session (herdr-agent--make-session
-                   :key '("server-a" . "term-7") :kind "claude"))
-         (client (make-herdr-claude-protocol-client :generation 3))
-         (state (make-herdr-claude-protocol-state :session session))
-         log-buffer)
-    (unwind-protect
-        (progn
-          (herdr-claude-debug-enable)
-          (run-hook-with-args 'herdr-claude-protocol--incoming-observers
-                              state client "private incoming")
-          (run-hook-with-args 'herdr-claude-protocol--outgoing-observers
-                              state client "private outgoing")
-          (setq log-buffer (herdr-claude-debug-log-buffer))
-          (with-current-buffer log-buffer
-            (let ((contents (buffer-string)))
-              (should (string-match-p "incoming session=(\\\"server-a\\\" \\. \\\"term-7\\\") generation=3 private incoming"
-                                      contents))
-              (should (string-match-p "outgoing .* private outgoing" contents))))
-          (herdr-claude-debug-disable)
-          (should-not (buffer-live-p log-buffer))
-          (should-not herdr-claude-debug--log-buffer)
-          (should-not (memq #'herdr-claude-debug--incoming
-                            herdr-claude-protocol--incoming-observers))
-          (should-not (memq #'herdr-claude-debug--outgoing
-                            herdr-claude-protocol--outgoing-observers)))
-      (customize-set-variable 'herdr-claude-protocol-logging original)
-      (when (buffer-live-p log-buffer)
-        (kill-buffer log-buffer)))))
+  (let ((view (herdr-transient--format-status
+               '((agent . "claude")
+                 (herdr_status . "connected")
+                 (agent_status . "idle")))))
+    (should (equal view "claude | Herdr: connected | Agent: idle"))))
 
 (provide 'herdr-transient-tests)
 ;;; herdr-transient-tests.el ends here

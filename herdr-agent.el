@@ -11,18 +11,15 @@
 (require 'cl-lib)
 (require 'herdr)
 
-(autoload 'herdr-claude--adapter "herdr-claude")
-
 (cl-defstruct (herdr-agent-session
                (:constructor herdr-agent--make-session))
   key server terminal kind name requested-name agent-session project route workspace tab pane
-  buffer attachment-process state ownership cleanup)
+  buffer attachment-process state ownership cleanup adapter adapter-state)
 
 (defvar herdr-agent-harnesses
   '(("claude" :label "Claude Code"
      :arguments ((start) (continue "--continue")
-                           (resume "--resume" :reference))
-     :adapter herdr-claude--adapter)
+                           (resume "--resume" :reference)))
     ("codex" :label "Codex"
      :arguments ((start) (continue "resume" "--last")
                   (resume "resume" :reference)))
@@ -33,16 +30,22 @@
 
 (defun herdr-agent-register-harness (kind &rest properties)
   "Register KIND with descriptor PROPERTIES.
-PROPERTIES accepts an `:arguments' action alist and optional phase-aware
-`:adapter' function."
+PROPERTIES must contain an `:arguments' action alist."
   (unless (and (stringp kind) (plist-member properties :arguments))
     (signal 'wrong-type-argument (list 'herdr-agent-harness kind properties)))
   (setq herdr-agent-harnesses
         (cons (cons kind properties)
               (cl-remove kind herdr-agent-harnesses :key #'car :test #'equal)))
   kind)
+
 (defvar herdr-agent--sessions (make-hash-table :test #'equal)
   "Primary agent sessions keyed by server and terminal.")
+(defvar herdr-agent--adapters nil
+  "Registered adapters keyed by Herdr agent kind.")
+(defvar herdr-agent--adapter-sessions
+  (make-hash-table :test #'eq :weakness 'key)
+  "Sessions that have captured an adapter.")
+
 (defvar herdr-agent--buffers (make-hash-table :test #'eq)
   "Agent keys keyed by terminal buffers.")
 (defvar herdr-agent--projects (make-hash-table :test #'equal)
@@ -51,6 +54,9 @@ PROPERTIES accepts an `:arguments' action alist and optional phase-aware
   "Terminal IDs keyed by server and pane.")
 (defvar herdr-agent--subscriptions (make-hash-table :test #'equal)
   "Lifecycle subscription processes keyed by server.")
+
+(defvar herdr-agent-event-functions nil
+  "Functions called with server key, event type, and event data.")
 
 (defmacro herdr-agent--with-server (server-key &rest body)
   "Evaluate BODY against SERVER-KEY."
@@ -72,6 +78,54 @@ PROPERTIES accepts an `:arguments' action alist and optional phase-aware
   (or (cdr (assoc kind herdr-agent-harnesses))
       (unless noerror
         (signal 'herdr-error (list (format "unsupported agent kind %s" kind))))))
+
+(defun herdr-agent-set-adapter-state (session state)
+  "Set opaque adapter STATE on Herdr SESSION and return STATE."
+  (unless (herdr-agent-session-p session)
+    (signal 'wrong-type-argument (list 'herdr-agent-session-p session)))
+  (setf (herdr-agent-session-adapter-state session) state))
+
+(defun herdr-agent-register-adapter (kind adapter)
+  "Register ADAPTER for KIND and return KIND.
+Registering the same ADAPTER again is idempotent."
+  (unless (herdr-agent--harness kind t)
+    (signal 'herdr-error (list (format "unsupported agent kind %s" kind))))
+  (unless (functionp adapter)
+    (signal 'wrong-type-argument (list 'functionp adapter)))
+  (if-let* ((entry (assoc kind herdr-agent--adapters)))
+      (unless (eq (cdr entry) adapter)
+        (signal 'herdr-error
+                (list (format "adapter already registered for agent kind %s" kind))))
+    (push (cons kind adapter) herdr-agent--adapters))
+  kind)
+
+(defun herdr-agent--adapter-in-use-p (adapter)
+  "Return non-nil when a non-stopped session has captured ADAPTER."
+  (let (in-use)
+    (maphash (lambda (session _value)
+               (when (and (not (eq (herdr-agent-session-state session) 'stopped))
+                          (eq (herdr-agent-session-adapter session) adapter))
+                 (setq in-use t)))
+             herdr-agent--adapter-sessions)
+    (maphash (lambda (_key session)
+               (when (and (not (eq (herdr-agent-session-state session) 'stopped))
+                          (eq (herdr-agent-session-adapter session) adapter))
+                 (setq in-use t)))
+             herdr-agent--sessions)
+    in-use))
+
+(defun herdr-agent-unregister-adapter (kind adapter)
+  "Unregister ADAPTER for KIND.
+Return nil when KIND has no registered adapter."
+  (when-let* ((entry (assoc kind herdr-agent--adapters)))
+    (unless (eq (cdr entry) adapter)
+      (signal 'herdr-error
+              (list (format "different adapter registered for agent kind %s" kind))))
+    (when (herdr-agent--adapter-in-use-p adapter)
+      (signal 'herdr-error
+              (list (format "adapter is in use for agent kind %s" kind))))
+    (setq herdr-agent--adapters (delq entry herdr-agent--adapters))
+    t))
 
 (defun herdr-agent--kind (agent)
   "Return AGENT's supported kind."
@@ -167,10 +221,14 @@ PROPERTIES accepts an `:arguments' action alist and optional phase-aware
 
 (defun herdr-agent--run-adapter (session phase &optional context)
   "Run SESSION's adapter PHASE with optional CONTEXT."
-  (when-let* ((harness (herdr-agent--harness
-                        (herdr-agent-session-kind session) t))
-              (adapter (plist-get harness :adapter)))
-    (funcall adapter session phase context)))
+  (let ((adapter
+         (or (herdr-agent-session-adapter session)
+             (cdr (assoc (herdr-agent-session-kind session)
+                         herdr-agent--adapters)))))
+    (when adapter
+      (setf (herdr-agent-session-adapter session) adapter)
+      (puthash session t herdr-agent--adapter-sessions)
+      (funcall adapter session phase context))))
 
 (defun herdr-agent--buffer-died ()
   "Clean the session whose attachment buffer is being killed."
@@ -374,24 +432,53 @@ PROPERTIES accepts an `:arguments' action alist and optional phase-aware
            (signal (car err) (cdr err)))
        (signal (car err) (cdr err))))))
 
+(defun herdr-agent--interactive-ready-p (agent)
+  "Return non-nil when AGENT can accept interactive input."
+  (or (alist-get 'interactive_ready agent)
+      (and (alist-get 'agent agent)
+           (equal (alist-get 'agent_status agent) "idle"))))
+
 (defun herdr-agent--ready-agent (agent server-key timeout-ms)
   "Return AGENT after it becomes interactive-ready on SERVER-KEY within TIMEOUT-MS."
   (let ((terminal (alist-get 'terminal_id agent))
         (deadline (+ (float-time) (/ timeout-ms 1000.0))))
     (unless terminal
       (signal 'herdr-error (list "agent.start did not return a terminal_id")))
-    (while (not (alist-get 'interactive_ready agent))
+    (while (not (herdr-agent--interactive-ready-p agent))
       (when (>= (float-time) deadline)
         (signal 'herdr-error (list "agent did not become interactive-ready")))
       (setq agent
-            (alist-get 'agent
-                       (herdr-api-agent-get
-                        (herdr-agent--request-target server-key terminal agent))))
-      (unless agent
-        (signal 'herdr-error (list "agent.get did not return an agent")))
-      (unless (alist-get 'interactive_ready agent)
+            (condition-case err
+                (or (alist-get 'agent
+                               (herdr-api-agent-get
+                                (herdr-agent--request-target
+                                 server-key terminal agent)))
+                    (signal 'herdr-error
+                            (list "agent.get did not return an agent")))
+              (herdr-api-error
+               (if (equal (cadr err) "agent_not_found")
+                   agent
+                 (signal (car err) (cdr err))))))
+      (unless (herdr-agent--interactive-ready-p agent)
         (sleep-for 0.1)))
     agent))
+
+(defun herdr-agent--start-agent (kind name pane-id args timeout-ms)
+  "Start KIND named NAME in PANE-ID with ARGS within TIMEOUT-MS."
+  (let ((deadline (+ (float-time) (/ (or timeout-ms 30000) 1000.0))))
+    (catch 'started
+      (while t
+        (condition-case err
+            (throw 'started
+                   (if timeout-ms
+                       (herdr-api-agent-start kind name pane-id
+                                              :args args :timeout-ms timeout-ms)
+                     (herdr-api-agent-start kind name pane-id :args args)))
+          (herdr-api-error
+           (unless (and (equal (cadr err) "agent_pane_busy")
+                        (< (float-time) deadline))
+             (signal (car err) (cdr err)))
+           (sleep-for 0.1)))))))
 
 (cl-defun herdr-agent-start-in-pane
     (kind name pane &key server-key args (attach t) session timeout-ms)
@@ -409,10 +496,7 @@ ARGS, ATTACH, SESSION, and TIMEOUT-MS control startup."
     (herdr-agent--subscribe-before-start server-key)
     (condition-case err
         (let* ((result (herdr-agent--with-server server-key
-                         (if timeout-ms
-                             (herdr-api-agent-start kind name pane-id
-                                                    :args args :timeout-ms timeout-ms)
-                           (herdr-api-agent-start kind name pane-id :args args))))
+                         (herdr-agent--start-agent kind name pane-id args timeout-ms)))
                (agent (alist-get 'agent result)))
           (unless agent (signal 'herdr-error (list "agent.start did not return an agent")))
           (herdr-agent--apply-agent
@@ -511,6 +595,8 @@ ATTACH controls terminal attachment; TIMEOUT-MS limits startup."
                         :project (herdr-agent--project project-root) :state 'starting)))
           (condition-case err
               (let* ((env (herdr-agent--run-adapter session :prepare))
+                     (args (or (herdr-agent--run-adapter session :arguments args)
+                               args))
                      (workspace (or workspace (herdr-workspace-label project-root)))
                      (existing (herdr-workspace-id workspace))
                      (created
@@ -621,7 +707,8 @@ ATTACH controls terminal attachment; TIMEOUT-MS limits startup."
      (when (alist-get 'released data)
        (herdr-agent--release-pane server-key (alist-get 'pane_id data))))
     ((or "pane.exited" "pane.closed")
-     (herdr-agent--release-pane server-key (alist-get 'pane_id data)))))
+     (herdr-agent--release-pane server-key (alist-get 'pane_id data))))
+  (run-hook-with-args 'herdr-agent-event-functions server-key type data))
 
 (defun herdr-agent-subscribe (server-key)
   "Subscribe SERVER-KEY to generic agent lifecycle events."
@@ -798,10 +885,17 @@ attachment; TIMEOUT-MS limits startup."
        ((herdr-agent--project-target)))
       (user-error "No recent agent for this project")))
 
-(defun herdr-agent-list ()
-  "Return the agents reported by herdr."
-  (herdr-agent--with-server (herdr-server-key)
-    (alist-get 'agents (herdr-api-agent-list))))
+(defun herdr-agent-resolve-session (&optional target)
+  "Return the live session identified by TARGET."
+  (pcase-let ((`(,server-key . ,terminal)
+               (herdr-agent--public-target target)))
+    (or (herdr-agent-find server-key terminal)
+        (user-error "Unknown agent: %s" terminal))))
+
+(defun herdr-agent-list (&optional server-key)
+  "Return the agents reported by herdr on SERVER-KEY."
+  (herdr-agent--with-server (or server-key (herdr-server-key))
+    (append (alist-get 'agents (herdr-api-agent-list)) nil)))
 
 (defun herdr-agent-switch (target)
   "Focus TARGET in herdr and show its terminal buffer."
@@ -857,6 +951,12 @@ attachment; TIMEOUT-MS limits startup."
       (dolist (agent (herdr-agent-list))
         (when-let* ((pane-id (alist-get 'pane_id agent)))
           (herdr-api-pane-close pane-id))))))
+
+(defun herdr-agent-send-text (target text)
+  "Send TEXT directly to TARGET's pane."
+  (let ((session (herdr-agent-resolve-session target)))
+    (herdr-agent--with-server (herdr-agent-session-server session)
+      (herdr-api-pane-send-text (herdr-agent-session-pane session) text))))
 
 (defun herdr-agent-prompt (target text)
   "Send TEXT to TARGET through herdr's agent API."

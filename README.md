@@ -1,10 +1,10 @@
 # herdr.el
 
-`herdr.el` is an Emacs 29.1+ client for [Herdr](https://herdr.dev), the persistent terminal workspace manager. Herdr owns agent processes, terminals, tabs, and workspaces. Emacs owns attached terminal buffers and, for Claude, a loopback Emacs endpoint with buffer, diagnostic, context, and diff operations.
+`herdr.el` is an Emacs 29.1+ client for [Herdr](https://herdr.dev), the persistent terminal workspace manager. Herdr owns agent processes, terminals, tabs, and workspaces; Emacs attaches terminal buffers to that state.
 
 ## Install
 
-Install `websocket` 1.12+ and `transient` 0.9.0+ from a configured package archive. Terminal attachment also requires one of Ghostel, vterm, or Eat.
+Install `transient` 0.9.0+ from a configured package archive. Terminal attachment also requires one of Ghostel, vterm, or Eat.
 
 ```elisp
 (use-package herdr
@@ -29,13 +29,28 @@ Set `herdr-terminal-backend` when automatic backend selection is unsuitable. The
 | continue | Continue the harness's latest session in a new tab. |
 | resume | Resume a named harness session reference in a new tab. |
 | adopt | Attach an already-running Herdr agent without starting another CLI. |
-| detach | Release the Emacs terminal and integration state; keep the Herdr pane and agent alive. |
+| detach | Release Emacs state while keeping the Herdr pane and agent alive. |
 | stop | Close one agent's Herdr pane. |
 | stop all | Close every reported agent pane on the selected server. |
 
 Use `herdr-agent-start`, `herdr-agent-continue`, and `herdr-agent-resume` from Lisp. `herdr-agent-stop` takes a composite `(server-key . terminal-id)` target. Existing work is available through `herdr-attach-agent`, `herdr-attach-pane`, `herdr-attach-session`, and `herdr-jump`.
 
-A harness is one registry entry: its display label, native start/continue/resume arguments, and an optional phase-aware adapter.
+`herdr-attach-session-workspace-policy` defaults to `mirror`, which preserves Herdr workspace groups. Set it to `merge` to accumulate entries with the same `herdr-workspace-label` in one editor workspace.
+
+Vanilla Emacs can use built-in tab-bar workspaces:
+
+```elisp
+(setq herdr-attach-session-workspace-policy 'merge
+      herdr-workspace-open-function
+      (lambda (_workspace directory)
+        (let ((name (herdr-workspace-label directory)))
+          (tab-bar-switch-to-tab name)
+          name)))
+```
+
+`tab-bar-switch-to-tab` selects an existing tab by name or creates it when missing.
+
+A harness descriptor owns its display label and native start, continue, and resume arguments:
 
 ```elisp
 (herdr-agent-register-harness
@@ -46,11 +61,37 @@ A harness is one registry entry: its display label, native start/continue/resume
               (resume "--resume" :reference)))
 ```
 
-The adapter contract is `(session phase &optional context)`. Generic harnesses need no adapter. The Herdr server must support the registered kind.
+The Herdr server must support the registered kind.
+
+## Adapter contract
+
+Optional integrations inject one adapter per registered harness kind:
+
+```elisp
+(herdr-agent-register-adapter KIND ADAPTER)
+(herdr-agent-unregister-adapter KIND ADAPTER)
+```
+
+`ADAPTER` receives `(session phase context)` through this lifecycle:
+
+```elisp
+(adapter session :prepare nil)
+(adapter session :arguments complete-argv)
+(adapter session :adopted agent)
+(adapter session :attached nil)
+(adapter session :status nil)
+(adapter session :detach nil)
+```
+
+`:prepare` may return pane environment entries. `:arguments` may transform the complete native argument list. `:status` may return an alist. `:detach` must release only adapter-owned state and remain safe to retry.
+
+A session captures its adapter before the first phase and keeps that exact function through cleanup. Registration is idempotent for the same function; conflicts signal. Unregistration requires the same function and refuses while a live session has captured it. Adapter data belongs in the session's opaque state through `herdr-agent-set-adapter-state`; Herdr does not inspect it.
+
+Host access for adapters stays within the public `herdr-agent-resolve-session`, `herdr-agent-list`, `herdr-agent-send-text`, `herdr-agent-prompt`, `herdr-agent-adopt`, and `herdr-agent-session-*` interfaces. `herdr-agent-event-functions` observes lifecycle events after Herdr updates its indexes.
 
 ## Transient
 
-`C-c h` opens the canonical Herdr menu:
+`M-x herdr-transient` opens the canonical Herdr menu:
 
 ```text
 Session:  s start       c continue      r resume
@@ -58,51 +99,18 @@ Agent:    j switch      p prompt        n rename
           e escape      RET return      k stop       K stop all
 Attach:   a agent       P pane          A session
           J jump        R route project
-Status:   i status      C customize     I Claude
+Status:   i status      C customize
 ```
 
-`C-c h I` opens Claude actions for adoption, explicit connection, auto-adoption, at-mention, status, and protocol logging. Opening either menu starts no process or transport and does not load the Claude protocol stack.
+Opening the menu starts no process.
 
-## emacsctl
+## Agent-facing Emacs integration
 
-`emacsctl` is an Emacs interface for agents. Claude, Codex, Pi, and other local harnesses can compose its operations through their existing shell access:
+[Limen](https://github.com/srnnkls/limen) optionally injects editor operations, context, diffs, and native Claude Code, Codex, and Pi transports through the adapter contract. Herdr runs all three harnesses without Limen.
 
-```text
-emacsctl operations
-emacsctl call buffer.list
-emacsctl call buffer.open '{"path":"src/example.el","line":20}'
-emacsctl skill
-```
+## Ownership
 
-`call` also accepts `-` and reads one JSON object from standard input. Normal output is one compact versioned JSON object; `skill` prints Markdown generated from the installed command contract and live operation registry.
-
-The base registry exposes buffer listing/opening, window listing, and visited-buffer Flymake diagnostics. Additional Emacs configuration can register coarse operations without changing Herdr:
-
-```elisp
-(emacsctl-register-operation
- "workspace.list" #'+my-workspace-list
- :description "List Emacs workspaces."
- :effect 'read
- :parameters nil)
-```
-
-`elisp.eval` is absent and rejected unless `emacsctl-enable-elisp-eval` is non-nil. This gate limits accidental use and command discovery; it is not a sandbox. A same-user process with shell and Emacs-server access can already run arbitrary code through `emacsclient -e` or another local runtime. Actual isolation requires separate OS users, processes, or server-socket permissions.
-
-## Claude Emacs integration
-
-Every adopted Claude session gets its own loopback WebSocket MCP endpoint and discovery lockfile under `~/.claude/ide`, or `$CLAUDE_CONFIG_DIR/ide` when configured. The generic agent lifecycle invokes the Claude adapter; there is no second attach route.
-
-`herdr-claude-connect-on-adopt` controls when Herdr sends `/ide`: `idle` connects an idle agent, `t` always requests connection, and nil requires `M-x herdr-claude-connect`. `M-x herdr-claude-auto-adopt-mode` adopts matching agents according to `herdr-claude-auto-adopt-predicate`.
-
-`M-x herdr-claude-at-mention` sends the current file or active region to the initialized Claude connection for that project. The endpoint also provides selection updates, visited-buffer diagnostics, buffer opening/release, and editable Ediff-backed diffs.
-
-Claude’s fixed compatibility catalog contains `openFile`, `getDiagnostics`, `close_tab`, `openDiff`, and `closeAllDiffTabs`. Those external names stay at the wire boundary; internal operations use `buffer.*`, `diagnostic.*`, and `diff.*`. Newly registered `emacsctl` operations never appear in MCP automatically. Raw payload logging is disabled by default; enable `herdr-claude-protocol-logging` only while debugging and inspect it with `M-x herdr-claude-debug-open-log`.
-
-## Ownership and security
-
-Herdr remains authoritative for process lifetime and terminal input. Emacs owns terminal buffers, Claude endpoints, project buffers, diagnostics, and diffs. Killing an Emacs buffer or detaching a session never stops the Herdr agent; use `herdr-agent-stop` to end it.
-
-Claude endpoints bind only to loopback. Discovery files are mode `0600`, operation paths stay inside the caller’s project root, and raw logging is opt-in. `emacsctl` sends Base64-framed JSON through a fixed local `emacsclient` expression so caller data never becomes Elisp source.
+Herdr remains authoritative for process lifetime and terminal input. Killing an Emacs buffer or detaching a session never stops the Herdr agent; use `herdr-agent-stop` to end it.
 
 ## Platforms
 
@@ -110,7 +118,7 @@ Claude endpoints bind only to loopback. Discovery files are mode `0600`, operati
 | --- | --- | --- |
 | Ubuntu | 29.1, 30.1 | Supported |
 | macOS | 29.1, 30.1 | Supported |
-| Windows | 29.1, 30.1 | Supported; the `emacsctl` launcher uses Git Bash. |
+| Windows | 29.1, 30.1 | Supported |
 
 CI also runs an experimental, soft-failing Ubuntu snapshot job.
 
@@ -118,11 +126,8 @@ CI also runs an experimental, soft-failing Ubuntu snapshot job.
 
 - `no terminal backend`: install Ghostel, vterm, or Eat, or set `herdr-terminal-backend`.
 - `No herdr server`: start Herdr, or allow `herdr-auto-start-server` for the selected session.
-- Claude does not connect: run `M-x herdr-claude-connect` and confirm the agent is idle.
-- Claude has no Emacs context: confirm the connection initialized and the current file belongs to the adopted project.
 - A terminal is read-only: enable `herdr-attach-takeover` when attaching to transfer input ownership.
-- A diff remains: reject or accept it, or detach the Claude integration; the Herdr pane remains alive.
 
-## License and attribution
+## License
 
-herdr.el is GPL-3.0-or-later; see [LICENSE](LICENSE). Earlier versions included material adapted from [manzaltu/claude-code-ide.el](https://github.com/manzaltu/claude-code-ide.el), also GPL-3.0-or-later. That external bridge is absent from the runtime implementation.
+herdr.el is GPL-3.0-or-later; see [LICENSE](LICENSE).
