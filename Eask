@@ -2,9 +2,10 @@
 
 (package "herdr"
          "0.1.0"
-         "Control herdr terminal workspaces from Emacs")
+         "Control persistent herdr terminal workspaces")
 
 (website-url "https://github.com/srnnkls/herdr.el")
+(license "GPL-3.0-or-later")
 
 (keywords "terminals" "tools" "processes")
 
@@ -25,6 +26,7 @@
 (load-paths ".")
 
 (files "herdr*.el"
+       "LICENSE"
        '(:exclude "herdr*-tests.el"))
 
 (defconst herdr-test-file-spec

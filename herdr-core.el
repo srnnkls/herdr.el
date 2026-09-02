@@ -4,7 +4,6 @@
 
 ;; Author: Sören Nikolaus <soeren@code17.io>
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: terminals, tools, processes
 ;; URL: https://github.com/srnnkls/herdr.el
 
@@ -19,7 +18,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 
-(declare-function projectile-project-root "projectile" (&optional dir))
+(declare-function projectile-project-root "ext:projectile" (&optional dir))
 (declare-function project-current "project" (&optional maybe-prompt directory))
 (declare-function project-root "project" (project))
 

@@ -1,4 +1,4 @@
-;;; herdr.el --- Control herdr terminal workspaces from Emacs -*- lexical-binding: t; -*-
+;;; herdr.el --- Control persistent herdr terminal workspaces -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Sören Nikolaus
 
@@ -35,10 +35,10 @@
 (require 'herdr-core)
 (require 'herdr-api)
 
-(declare-function ghostel-exec "ghostel" (buffer program &optional args identity))
-(declare-function eat-mode "eat" ())
-(declare-function eat-exec "eat" (buffer name command startfile switches))
-(declare-function vterm "vterm" (&optional buffer-name))
+(declare-function ghostel-exec "ext:ghostel" (buffer program &optional args identity))
+(declare-function eat-mode "ext:eat" ())
+(declare-function eat-exec "ext:eat" (buffer name command startfile switches))
+(declare-function vterm "ext:vterm" (&optional buffer-name))
 (defvar vterm-shell)
 (defvar vterm-buffer-name)
 (defvar eat-term-name)
@@ -138,6 +138,26 @@ name of the one owning the directory, so the two line up."
 (defun herdr-workspace-label (directory)
   "Return the herdr workspace label DIRECTORY's sessions belong in."
   (funcall herdr-workspace-label-function directory))
+
+(defun herdr-default-current-workspace-label ()
+  "Return the workspace label for the current buffer's project."
+  (let* ((directory (or (and buffer-file-name
+                             (file-name-directory buffer-file-name))
+                        default-directory))
+         (project (condition-case nil
+                      (funcall herdr-project-root-function directory)
+                    (file-error nil))))
+    (herdr-workspace-label (or project directory))))
+
+(defcustom herdr-current-workspace-label-function
+  #'herdr-default-current-workspace-label
+  "Function returning the current editor workspace label."
+  :type 'function
+  :group 'herdr)
+
+(defun herdr-current-workspace-label ()
+  "Return the current editor workspace label."
+  (funcall herdr-current-workspace-label-function))
 
 (defun herdr-workspace-id (label)
   "Return the id of the herdr workspace labelled LABEL, or nil."
@@ -504,14 +524,41 @@ Entries that already have an Emacs buffer win over bare ones."
           (puthash key entry seen)))))
     (mapcar (lambda (key) (gethash key seen)) (nreverse order))))
 
+(defvar herdr--recent-session-targets nil
+  "Session targets ordered from most to least recently used.")
+
+(defun herdr--entry-target (entry)
+  "Return ENTRY's composite server and terminal target, or nil."
+  (when-let* ((server-key (alist-get 'server_key entry))
+              (terminal-id (alist-get 'terminal_id entry)))
+    (cons server-key terminal-id)))
+
+(defun herdr--record-session-target (target)
+  "Move composite session TARGET to the front of the recent list."
+  (when target
+    (setq herdr--recent-session-targets
+          (cons target (delete target herdr--recent-session-targets))))
+  target)
+
+(defun herdr--prune-session-targets (entries)
+  "Drop recent session targets that are absent from ENTRIES."
+  (let ((targets (delq nil (mapcar #'herdr--entry-target entries))))
+    (setq herdr--recent-session-targets
+          (cl-remove-if-not (lambda (target) (member target targets))
+                            herdr--recent-session-targets))))
+
 (defun herdr-visit (entry)
   "Show ENTRY and return its buffer.
 An entry that nothing shows yet is attached first, on the server it
 came from."
-  (if-let* ((buffer (herdr--entry-buffer entry)))
-      (progn (pop-to-buffer buffer) buffer)
-    (herdr-with-session (alist-get 'session entry)
-      (herdr-attach-entry entry))))
+  (let ((buffer
+         (if-let* ((buffer (herdr--entry-buffer entry)))
+             (progn (pop-to-buffer buffer) buffer)
+           (herdr-with-session (alist-get 'session entry)
+             (herdr-attach-entry entry)))))
+    (when (and buffer (alist-get 'agent entry))
+      (herdr--record-session-target (herdr--entry-target entry)))
+    buffer))
 
 ;;;; Commands
 

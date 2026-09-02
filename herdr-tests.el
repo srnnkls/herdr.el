@@ -349,6 +349,14 @@ alist.  Returns the socket path."
     (should (equal (herdr-workspace-label "/src/app/") "app"))
     (should (equal (herdr-workspace-label "/src/app/.worktrees/feat-x") "feat-x"))))
 
+(ert-deftest herdr-current-workspace-label-defaults-to-the-project-root ()
+  (let ((buffer-file-name "/src/app/lib/example.el")
+        (herdr-project-root-function
+         (lambda (directory)
+           (and (string-prefix-p "/src/app/" directory) "/src/app/")))
+        (herdr-workspace-label-function #'herdr-default-workspace-label))
+    (should (equal (herdr-default-current-workspace-label) "app"))))
+
 (ert-deftest herdr-display-buffer-uses-a-side-window ()
   (let ((buffer (get-buffer-create "*herdr: probe*"))
         (herdr-use-side-window t)
@@ -437,13 +445,20 @@ alist.  Returns the socket path."
 
 (ert-deftest herdr-visit-shows-a-live-buffer-instead-of-attaching ()
   (let ((buffer (get-buffer-create "*herdr: visit*"))
+        (herdr--recent-session-targets nil)
         (popped nil))
     (unwind-protect
         (cl-letf (((symbol-function 'pop-to-buffer) (lambda (b &rest _) (setq popped b)))
                   ((symbol-function 'herdr-attach-entry)
                    (lambda (&rest _) (error "Should not attach an attached session"))))
-          (should (eq (herdr-visit `((buffer . ,buffer))) buffer))
-          (should (eq popped buffer)))
+          (should (eq (herdr-visit `((buffer . ,buffer)
+                                     (agent . "claude")
+                                     (server_key . "/servers/a.sock")
+                                     (terminal_id . "shared")))
+                      buffer))
+          (should (eq popped buffer))
+          (should (equal herdr--recent-session-targets
+                         '(("/servers/a.sock" . "shared")))))
       (kill-buffer buffer))))
 
 (ert-deftest herdr-visit-attaches-a-session-without-a-buffer ()

@@ -52,6 +52,8 @@ done
 clean_bytecode
 
 for suite in "$root"/*-tests.el; do
+  emacs_with_packages --eval '(setq byte-compile-error-on-warn t)' \
+    -f batch-byte-compile "$suite"
   case "$suite" in
     "$root/herdr-tests.el")
       emacs_with_packages -l "$suite" \

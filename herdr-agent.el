@@ -19,13 +19,13 @@
 (defvar herdr-agent-harnesses
   '(("claude" :label "Claude Code"
      :arguments ((start) (continue "--continue")
-                           (resume "--resume" :reference)))
+                 (resume "--resume" :reference)))
     ("codex" :label "Codex"
      :arguments ((start) (continue "resume" "--last")
-                  (resume "resume" :reference)))
+                 (resume "resume" :reference)))
     ("pi" :label "Pi"
      :arguments ((start) (continue "--continue")
-                       (resume "--session" :reference))))
+                 (resume "--session" :reference))))
   "Harness descriptors keyed by Herdr agent kind.")
 
 (defun herdr-agent-register-harness (kind &rest properties)
@@ -84,6 +84,10 @@ PROPERTIES must contain an `:arguments' action alist."
   (unless (herdr-agent-session-p session)
     (signal 'wrong-type-argument (list 'herdr-agent-session-p session)))
   (setf (herdr-agent-session-adapter-state session) state))
+
+(defun herdr-agent-adapter (kind)
+  "Return the adapter registered for agent KIND, or nil."
+  (cdr (assoc kind herdr-agent--adapters)))
 
 (defun herdr-agent-register-adapter (kind adapter)
   "Register ADAPTER for KIND and return KIND.
@@ -422,7 +426,7 @@ Return nil when KIND has no registered adapter."
                  (herdr-agent--refresh-session session agent server-key))
                (catch 'done
                  (dolist (target (delq nil (list (alist-get 'pane_id agent)
-                                                  (alist-get 'name agent))))
+                                                 (alist-get 'name agent))))
                    (condition-case retry-error
                        (throw 'done (setq result (funcall function target)))
                      (herdr-api-error
@@ -591,8 +595,8 @@ ATTACH controls terminal attachment; TIMEOUT-MS limits startup."
         (herdr-agent--subscribe-before-start server-key)
         (let* ((name (herdr-agent--available-name name server-key))
                (session (herdr-agent--make-session
-                        :server server-key :kind kind :name name :requested-name name
-                        :project (herdr-agent--project project-root) :state 'starting)))
+                         :server server-key :kind kind :name name :requested-name name
+                         :project (herdr-agent--project project-root) :state 'starting)))
           (condition-case err
               (let* ((env (herdr-agent--run-adapter session :prepare))
                      (args (or (herdr-agent--run-adapter session :arguments args)
@@ -663,7 +667,7 @@ ATTACH controls terminal attachment; TIMEOUT-MS limits startup."
              (alist-get 'terminal_id entry))
     (herdr-agent-session-buffer
      (herdr-agent-adopt entry :server-key (or (alist-get 'server_key entry)
-                                               (herdr-server-key))))))
+                                              (herdr-server-key))))))
 
 (defun herdr-agent--pane (data)
   "Return pane data carried by DATA."
@@ -900,15 +904,17 @@ attachment; TIMEOUT-MS limits startup."
 (defun herdr-agent-switch (target)
   "Focus TARGET in herdr and show its terminal buffer."
   (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
-    (herdr-agent--with-server server-key
-      (herdr-agent--call-with-request-target
-       server-key terminal
-       (lambda (request-target)
-         (herdr-api-agent-focus request-target)
-         (if-let* ((buffer (herdr-terminal-buffer terminal server-key)))
-             (herdr-display-buffer buffer)
-           (when-let* ((agent (alist-get 'agent (herdr-api-agent-get request-target))))
-             (herdr-attach-entry (cons (cons 'server_key server-key) agent)))))))))
+    (prog1
+        (herdr-agent--with-server server-key
+          (herdr-agent--call-with-request-target
+           server-key terminal
+           (lambda (request-target)
+             (herdr-api-agent-focus request-target)
+             (if-let* ((buffer (herdr-terminal-buffer terminal server-key)))
+                 (herdr-display-buffer buffer)
+               (when-let* ((agent (alist-get 'agent (herdr-api-agent-get request-target))))
+                 (herdr-attach-entry (cons (cons 'server_key server-key) agent)))))))
+      (herdr--record-session-target (cons server-key terminal)))))
 
 (defun herdr-agent-rename (target name)
   "Rename TARGET to NAME."
@@ -961,11 +967,144 @@ attachment; TIMEOUT-MS limits startup."
 (defun herdr-agent-prompt (target text)
   "Send TEXT to TARGET through herdr's agent API."
   (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
-    (herdr-agent--with-server server-key
-      (herdr-agent--call-with-request-target
-       server-key terminal
-       (lambda (request-target)
-         (herdr-api-agent-prompt request-target text))))))
+    (prog1
+        (herdr-agent--with-server server-key
+          (herdr-agent--call-with-request-target
+           server-key terminal
+           (lambda (request-target)
+             (herdr-api-agent-prompt request-target text))))
+      (herdr--record-session-target (cons server-key terminal)))))
+
+(defvar herdr-send-context-functions nil
+  "Functions returning context text for a selected agent entry.
+Each function receives the entry and may return a string, or nil to let
+another provider handle it.  `herdr-default-send-context' is the fallback.")
+
+(defun herdr-default-send-context (_entry)
+  "Return the active region or current line as agent context."
+  (let* ((bounds (if (use-region-p)
+                     (cons (region-beginning) (region-end))
+                   (cons (line-beginning-position) (line-end-position))))
+         (beginning (car bounds))
+         (end (cdr bounds))
+         (last-position (if (> end beginning) (1- end) beginning))
+         start-line end-line)
+    (save-restriction
+      (widen)
+      (setq start-line (line-number-at-pos beginning)
+            end-line (line-number-at-pos last-position)))
+    (format "Emacs context:\n\n%s:%s\n\n%s"
+            (if buffer-file-name
+                (expand-file-name buffer-file-name)
+              (buffer-name))
+            (if (= start-line end-line)
+                start-line
+              (format "%d-%d" start-line end-line))
+            (buffer-substring-no-properties beginning end))))
+
+(defun herdr-agent--send-context (entry)
+  "Return context for agent ENTRY from the configured providers."
+  (or (run-hook-with-args-until-success 'herdr-send-context-functions entry)
+      (herdr-default-send-context entry)))
+
+(defun herdr-agent--send-candidates ()
+  "Return every running agent session eligible to receive context."
+  (cl-remove-if-not
+   (lambda (entry)
+     (and (alist-get 'agent entry)
+          (alist-get 'terminal_id entry)
+          (herdr--entry-target entry)))
+   (herdr-sessions)))
+
+(defun herdr-agent--entry-project (entry)
+  "Return the project root for agent ENTRY, or nil."
+  (when-let* ((directory (alist-get 'cwd entry)))
+    (condition-case nil
+        (funcall herdr-project-root-function directory)
+      (file-error nil))))
+
+(defun herdr-agent--send-scope-entries (entries scope)
+  "Filter agent ENTRIES for send SCOPE."
+  (pcase scope
+    ('all entries)
+    ('project
+     (let* ((directory (or (and buffer-file-name
+                                (file-name-directory buffer-file-name))
+                           default-directory))
+            (project (or (funcall herdr-project-root-function directory)
+                         (user-error "Current buffer is not in a project"))))
+       (cl-remove-if-not
+        (lambda (entry)
+          (when-let* ((entry-project (herdr-agent--entry-project entry)))
+            (herdr--same-directory-p project entry-project)))
+        entries)))
+    ('workspace
+     (let ((workspace (or (herdr-current-workspace-label)
+                          (user-error "No current editor workspace"))))
+       (cl-remove-if-not
+        (lambda (entry)
+          (when-let* ((directory (alist-get 'cwd entry)))
+            (equal workspace (herdr-workspace-label directory))))
+        entries)))
+    (_ (error "Unknown send scope: %S" scope))))
+
+(defun herdr-agent--last-send-entry (entries scope)
+  "Return the most recently used member of ENTRIES for SCOPE."
+  (or (cl-loop for target in herdr--recent-session-targets
+               thereis (cl-find target entries :key #'herdr--entry-target
+                                :test #'equal))
+      (user-error "No recent herdr agent in the current %s"
+                  (pcase scope
+                    ('all "session set")
+                    ('project "project")
+                    ('workspace "workspace")))))
+
+(defun herdr-agent--send-session (scope last)
+  "Send context to an agent in SCOPE, selecting by LAST when non-nil."
+  (let* ((all (herdr-agent--send-candidates))
+         (_ (herdr--prune-session-targets all))
+         (entries (herdr-agent--send-scope-entries all scope))
+         (entry (if last
+                    (herdr-agent--last-send-entry entries scope)
+                  (herdr-read-entry "Send to agent session: " entries)))
+         (target (herdr--entry-target entry)))
+    (herdr-agent-prompt target (herdr-agent--send-context entry))))
+
+;;;###autoload
+(defun herdr-send-session ()
+  "Send context at point to an agent selected from every session."
+  (interactive)
+  (herdr-agent--send-session 'all nil))
+
+;;;###autoload
+(defun herdr-send-last-session ()
+  "Send context at point to the last-used agent across all sessions."
+  (interactive)
+  (herdr-agent--send-session 'all t))
+
+;;;###autoload
+(defun herdr-send-project-session ()
+  "Send context at point to a selected agent in the current project."
+  (interactive)
+  (herdr-agent--send-session 'project nil))
+
+;;;###autoload
+(defun herdr-send-last-project-session ()
+  "Send context at point to the last-used agent in the current project."
+  (interactive)
+  (herdr-agent--send-session 'project t))
+
+;;;###autoload
+(defun herdr-send-workspace-session ()
+  "Send context at point to a selected agent in the current workspace."
+  (interactive)
+  (herdr-agent--send-session 'workspace nil))
+
+;;;###autoload
+(defun herdr-send-last-workspace-session ()
+  "Send context at point to the last-used agent in the current workspace."
+  (interactive)
+  (herdr-agent--send-session 'workspace t))
 
 (defun herdr-agent-escape (target)
   "Send escape to TARGET through herdr's agent API."

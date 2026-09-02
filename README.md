@@ -50,6 +50,22 @@ Vanilla Emacs can use built-in tab-bar workspaces:
 
 `tab-bar-switch-to-tab` selects an existing tab by name or creates it when missing.
 
+### Sending context
+
+These commands send the active region, or the current line when no region is active, through the agent prompt API. The default message includes the file or buffer name and line range.
+
+| Scope | Select with completion | Use the last active agent |
+| --- | --- | --- |
+| All sessions | `herdr-send-session` | `herdr-send-last-session` |
+| Current project | `herdr-send-project-session` | `herdr-send-last-project-session` |
+| Current editor workspace | `herdr-send-workspace-session` | `herdr-send-last-workspace-session` |
+
+Selection commands always open completion, including for one candidate. Last-active commands use Emacs's global Herdr agent MRU and never open completion.
+
+Project scope compares roots returned by `herdr-project-root-function`; linked worktrees therefore remain separate projects. Workspace scope compares `herdr-current-workspace-label` with each session directory's `herdr-workspace-label`, so an editor integration may deliberately group worktrees.
+
+Functions in `herdr-send-context-functions` receive the selected session entry. The first non-nil string replaces the default region-or-line message, which lets optional editor integrations provide richer context without becoming a Herdr dependency.
+
 A harness descriptor owns its display label and native start, continue, and resume arguments:
 
 ```elisp
@@ -68,6 +84,7 @@ The Herdr server must support the registered kind.
 Optional integrations inject one adapter per registered harness kind:
 
 ```elisp
+(herdr-agent-adapter KIND)
 (herdr-agent-register-adapter KIND ADAPTER)
 (herdr-agent-unregister-adapter KIND ADAPTER)
 ```
@@ -85,7 +102,7 @@ Optional integrations inject one adapter per registered harness kind:
 
 `:prepare` may return pane environment entries. `:arguments` may transform the complete native argument list. `:status` may return an alist. `:detach` must release only adapter-owned state and remain safe to retry.
 
-A session captures its adapter before the first phase and keeps that exact function through cleanup. Registration is idempotent for the same function; conflicts signal. Unregistration requires the same function and refuses while a live session has captured it. Adapter data belongs in the session's opaque state through `herdr-agent-set-adapter-state`; Herdr does not inspect it.
+A session captures its adapter before the first phase and keeps that exact function through cleanup. `herdr-agent-adapter` reads the current registration. Registration is idempotent for the same function; conflicts signal. Unregistration requires the same function and refuses while a live session has captured it. Adapter data belongs in the session's opaque state through `herdr-agent-set-adapter-state`; Herdr does not inspect it.
 
 Host access for adapters stays within the public `herdr-agent-resolve-session`, `herdr-agent-list`, `herdr-agent-send-text`, `herdr-agent-prompt`, `herdr-agent-adopt`, and `herdr-agent-session-*` interfaces. `herdr-agent-event-functions` observes lifecycle events after Herdr updates its indexes.
 
@@ -116,9 +133,9 @@ Herdr remains authoritative for process lifetime and terminal input. Killing an 
 
 | Platform | Emacs | Status |
 | --- | --- | --- |
-| Ubuntu | 29.1, 30.1 | Supported |
-| macOS | 29.1, 30.1 | Supported |
-| Windows | 29.1, 30.1 | Supported |
+| Ubuntu | 29.1, 30.1, 31.1 | Supported |
+| macOS | 29.1, 30.1, 31.1 | Supported |
+| Windows | 29.1, 30.1, 31.1 | Supported |
 
 CI also runs an experimental, soft-failing Ubuntu snapshot job.
 
