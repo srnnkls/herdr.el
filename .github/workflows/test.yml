@@ -41,7 +41,7 @@ jobs:
         run: eask compile
 
       - name: Compile tests
-        run: eask compile herdr-tests.el herdr-agent-tests.el herdr-transient-tests.el --clean
+        run: eask compile herdr-tests.el herdr-agent-tests.el herdr-transient-tests.el herdr-status-tests.el --clean
 
       - name: Test
         run: eask run script test

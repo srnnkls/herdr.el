@@ -116,10 +116,102 @@ Agent:    j switch      p prompt        n rename
           e escape      RET return      k stop       K stop all
 Attach:   a agent       P pane          A session
           J jump        R route project
-Status:   i status      C customize
+Status:   i dashboard   I one line     C customize
 ```
 
-Opening the menu starts no process.
+Opening the menu starts no process. Every agent command reads its target
+from the status dashboard when the menu is opened there, and prompts
+otherwise — so `?` in the dashboard is the menu scoped to the row at
+point.
+
+## Status dashboard
+
+`M-x herdr-status` opens a Magit-style dashboard over every herdr server
+`herdr-all-sessions` finds — the configured ones plus any session whose
+socket is on disk, so a server started with `herdr --session NAME` shows
+up without being assigned to a project first. It claims the selected
+window the way `magit-status` does; `herdr-status-display-action` is the
+`display-buffer` action it uses, bound so popup rules cannot divert it.
+Sections collapse with `TAB` and `S-TAB`, and `M-1` through `M-4` set the
+level for the whole buffer.  `herdr-status-left-fringe-width` widens the
+fringe the collapse arrows are drawn in, so they clear the headings.
+
+| Section | Contents |
+| --- | --- |
+| `Servers` | One entry per known session: reachability, socket, herdr version, protocol, and object counts |
+| `Recent` | Agents in most-recently-used order, omitted when none |
+| `Agents` | The filterable list, headed by the visible-of-total count and the active filters |
+| `Panes` | Panes running no agent, grouped under their workspace |
+
+An agent row opens with `herdr-status-attached-glyph` when Emacs has a
+buffer for it, then its state, name, harness, pane id, server,
+workspace, and working directory:
+
+```text
+▌ ● busy    api-review   claude   %1   shared   herdr.el   ~/projects/herdr.el
+  ● idle    docs         codex    %2   shared   herdr.el   ~/projects/herdr.el
+```
+
+Pane rows carry the same marker. The server column appears once a second
+session is in play, the way the completion annotations do.
+
+The directory is `herdr-entry-directory`: herdr's `foreground_cwd` when it
+has one, falling back to the `cwd` the pane opened in. An agent that moves
+itself into a worktree moves only the former, and workspace routing,
+project scope, and the attached buffer's `default-directory` all follow it.
+A directory an agent only visits inside a single shell command is invisible
+to herdr, since no process ever changes directory.
+
+Expanding a row shows the terminal, pane, workspace, and tab identity
+herdr reports — including `terminal_title_stripped`, the name the harness
+gave the session — then a preview of what the agent last said, then
+whatever fields the harness adapter contributes through its `:status`
+phase.
+
+The preview is the tail of the agent's recent output with the harness's
+own chrome removed: `herdr-status-preview-ignore-regexps` drops rules,
+the prompt, and the status bar, and the last
+`herdr-status-preview-lines` lines of what survives are shown. Setting
+that to 0 turns the preview off and asks herdr for nothing.
+
+A refresh fetches one snapshot per server and no per-agent request. The
+preview and the adapter fields each cost one request per agent, both
+issued when a row is first expanded and reused until the next refresh. Herdr lifecycle events
+redraw a live dashboard on a short idle delay, which
+`herdr-status-auto-refresh` turns off.
+
+| Key | Action |
+| --- | --- |
+| `?` | `herdr-transient`, acting on the agent at point |
+| `RET` / `o` | Show the agent or pane, attaching it when nothing does yet; on a server, attach that whole session |
+| `s` | Focus the agent in herdr |
+| `P` | Send a prompt |
+| `R` | Rename |
+| `k` | Stop, after confirmation |
+| `D` | Detach from Emacs, leaving the herdr pane alone |
+| `f` | Filter menu |
+| `g` | Refresh |
+
+`herdr-status-entry-at-point` returns the agent or pane row under point,
+or nil elsewhere, so an editor integration can add a binding that attaches
+into a workspace of its own choosing.
+
+Filters compose conjunctively and survive a refresh. `herdr-status-filter`
+offers harness kind, agent state, current project, current editor
+workspace, and attached-only. Every one of them is an entry in
+`herdr-status-predicates`, which is also where a custom filter goes:
+
+```elisp
+(add-to-list 'herdr-status-predicates
+             (cons 'nameless
+                   (lambda ()
+                     (lambda (entry) (null (alist-get 'name entry))))))
+```
+
+Each element maps a symbol to a function of no arguments. That function
+may prompt and returns a predicate of one session entry, or nil to add no
+filter. `herdr-status-add-filter` completes over the registry, so a
+custom predicate is available under `f x` without further wiring.
 
 ## Agent-facing Emacs integration
 

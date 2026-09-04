@@ -27,7 +27,7 @@ clean_bytecode
                            (\"melpa\" . \"https://melpa.org/packages/\"))
         package-archive-priorities '((\"gnu\" . 10) (\"melpa\" . 5)))
   (package-initialize)
-  (dolist (dependency '((transient . (0 9 0))))
+  (dolist (dependency '((transient . (0 13 0)) (magit-section . (4 0 0))))
     (let ((name (car dependency))
           (minimum-version (cdr dependency)))
       (unless (package-installed-p name minimum-version)

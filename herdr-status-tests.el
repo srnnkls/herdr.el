@@ -1,0 +1,491 @@
+;;; herdr-status-tests.el --- Tests for herdr-status.el -*- lexical-binding: t; -*-
+
+;;; Commentary:
+
+;; Run with:
+;;   emacs -Q --batch -L . -l herdr-status-tests.el -f ert-run-tests-batch-and-exit
+;;
+;; The dashboard is rendered against stubbed snapshots, so no herdr server
+;; is needed and no request leaves Emacs.
+
+;;; Code:
+
+(require 'ert)
+(require 'cl-lib)
+(require 'herdr-status)
+(require 'herdr-transient)
+
+(defvar herdr-status-tests--agent-status-calls 0
+  "How often the stubbed `herdr-agent-status' was called.")
+
+(defvar herdr-status-tests--read-calls 0
+  "How often the stubbed `herdr-api-agent-read' was called.")
+
+(defvar herdr-status-tests--pane-text
+  (string-join
+   '("⏺ The rebase landed clean."
+     ""
+     "✻ Worked for 12s"
+     "※ recap: batch two is green; next is the completing-read layer."
+     "──────────────────────────────────────────"
+     "❯"
+     "──────────────────────────────────────────"
+     "  Opus 5 (1M context) | feat-x | 118366/200000 (59%)"
+     "  -- INSERT -- ⏵⏵ auto mode on")
+   "\n")
+  "Pane text the stubbed read returns, chrome and all.")
+
+(defun herdr-status-tests--entries ()
+  "Return the agent entries the fake servers report."
+  (list '((kind . "herdr") (session . "alpha")
+          (server_key . "/tmp/alpha.sock")
+          (agent . "claude") (agent_status . "working")
+          (name . "api-review") (terminal_title_stripped . "api-review")
+          (terminal_id . "t1") (pane_id . "%1")
+          (workspace_id . "w1") (tab_id . "tab1") (cwd . "/tmp/proj/"))
+        '((kind . "herdr") (session . "alpha")
+          (server_key . "/tmp/alpha.sock")
+          (agent . "codex") (agent_status . "idle")
+          (name . "docs") (terminal_id . "t2") (pane_id . "%2")
+          (workspace_id . "w1") (tab_id . "tab1") (cwd . "/tmp/proj/"))
+        '((kind . "herdr") (session . "beta")
+          (server_key . "/tmp/beta.sock")
+          (agent . "claude") (agent_status . "orbiting")
+          (name . "beta-work") (terminal_id . "t3") (pane_id . "%3")
+          (workspace_id . "w9") (tab_id . "tab9") (cwd . "/tmp/other/"))))
+
+(defun herdr-status-tests--snapshot (session)
+  "Return the fake snapshot SESSION's server answers with."
+  (if (equal session "alpha")
+      '((version . "1.2.3")
+        (protocol . 21)
+        (workspaces . (((workspace_id . "w1") (label . "herdr.el"))))
+        (tabs . (((tab_id . "tab1") (label . "main"))))
+        (panes . (((pane_id . "%1") (workspace_id . "w1"))
+                  ((pane_id . "%2") (workspace_id . "w1"))
+                  ((pane_id . "%9") (workspace_id . "w1") (label . "shell")))))
+    '((version . "1.2.3")
+      (protocol . 21)
+      (workspaces . (((workspace_id . "w9") (label . "other"))))
+      (tabs . (((tab_id . "tab9") (label . "side"))))
+      (panes . (((pane_id . "%3") (workspace_id . "w9")))))))
+
+(defun herdr-status-tests--expand-section (section)
+  "Expand SECTION and everything below it."
+  (magit-section-show section)
+  (dolist (child (copy-sequence (oref section children)))
+    (herdr-status-tests--expand-section child)))
+
+(defun herdr-status-tests--expand ()
+  "Expand every section of the current dashboard buffer."
+  (let ((inhibit-read-only t))
+    (herdr-status-tests--expand-section magit-root-section)))
+
+(defmacro herdr-status-tests--with-dashboard (&rest body)
+  "Render a dashboard over the fake servers and run BODY inside it."
+  (declare (indent 0) (debug (body)))
+  `(let ((herdr--recent-session-targets nil)
+         (herdr-status-tests--agent-status-calls 0)
+         (herdr-status-tests--read-calls 0)
+         (buffer (generate-new-buffer " *herdr-status-test*")))
+     (unwind-protect
+         (cl-letf (((symbol-function 'herdr-all-sessions)
+                    (lambda () (list "alpha" "beta")))
+                   ((symbol-function 'herdr-server-key)
+                    (lambda () (format "/tmp/%s.sock" herdr-session)))
+                   ((symbol-function 'herdr-available-p) (lambda () t))
+                   ((symbol-function 'herdr-snapshot)
+                    (lambda () (herdr-status-tests--snapshot herdr-session)))
+                   ((symbol-function 'herdr-sessions)
+                    #'herdr-status-tests--entries)
+                   ((symbol-function 'herdr--entry-buffer) (lambda (_) nil))
+                   ((symbol-function 'herdr-agent-status)
+                    (lambda (_target)
+                      (cl-incf herdr-status-tests--agent-status-calls)
+                      '((provider . "limen") (availability . "connected"))))
+                   ((symbol-function 'herdr-api-agent-read)
+                    (lambda (_source pane &rest _)
+                      (cl-incf herdr-status-tests--read-calls)
+                      `((type . "pane_read")
+                        (read . ((pane_id . ,pane)
+                                 (text . ,herdr-status-tests--pane-text)))))))
+           (with-current-buffer buffer
+             (herdr-status-mode)
+             (herdr-status-refresh)
+             ,@body))
+       (kill-buffer buffer))))
+
+(defun herdr-status-tests--visible-text ()
+  "Return only the dashboard text no section hides."
+  (let ((pos (point-min))
+        (parts nil))
+    (while (< pos (point-max))
+      (let ((next (next-single-char-property-change pos 'invisible)))
+        (unless (get-char-property pos 'invisible)
+          (push (buffer-substring-no-properties pos (min next (point-max)))
+                parts))
+        (setq pos next)))
+    (apply #'concat (nreverse parts))))
+
+(defun herdr-status-tests--section-text (heading)
+  "Return the dashboard text from HEADING up to the next blank line."
+  (save-excursion
+    (goto-char (point-min))
+    (search-forward heading)
+    (buffer-substring-no-properties
+     (line-beginning-position)
+     (or (save-excursion (re-search-forward "^\n" nil t)) (point-max)))))
+
+(ert-deftest herdr-status-is-an-interactive-command ()
+  (should (commandp 'herdr-status))
+  (should (commandp 'herdr-status-refresh))
+  (should (commandp 'herdr-status-filter)))
+
+(ert-deftest herdr-status-renders-agent-state-ahead-of-the-name ()
+  (herdr-status-tests--with-dashboard
+    (goto-char (point-min))
+    (should (re-search-forward "^ +● working +api-review +claude +%1" nil t))))
+
+(ert-deftest herdr-status-rows-carry-pane-and-workspace-metadata ()
+  (herdr-status-tests--with-dashboard
+    (let ((agents (herdr-status-tests--section-text "Agents (")))
+      (should (string-match-p "%1" agents))
+      (should (string-match-p "herdr.el" agents))
+      (should (string-match-p "/tmp/proj/" agents)))))
+
+(ert-deftest herdr-status-expanded-agents-show-terminal-and-adapter-fields ()
+  (herdr-status-tests--with-dashboard
+    (herdr-status-tests--expand)
+    (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+      (should (string-match-p "terminal_id +t1" text))
+      (should (string-match-p "tab +main" text))
+      (should (string-match-p "provider +limen" text)))))
+
+(ert-deftest herdr-status-lists-every-known-server ()
+  (herdr-status-tests--with-dashboard
+    (let ((servers (herdr-status-tests--section-text "Servers (")))
+      (should (string-match-p "Servers (2)" servers))
+      (should (string-match-p "/tmp/alpha.sock" servers))
+      (should (string-match-p "/tmp/beta.sock" servers)))))
+
+(ert-deftest herdr-status-panes-section-excludes-panes-running-an-agent ()
+  (herdr-status-tests--with-dashboard
+    (let ((panes (herdr-status-tests--section-text "Panes (")))
+      (should (string-match-p "Panes (1)" panes))
+      (should (string-match-p "%9" panes))
+      (should-not (string-match-p "%1" panes)))))
+
+(ert-deftest herdr-status-recent-section-follows-the-mru-order ()
+  (herdr-status-tests--with-dashboard
+    (setq herdr--recent-session-targets
+          '(("/tmp/beta.sock" . "t3") ("/tmp/alpha.sock" . "t1")))
+    (herdr-status-refresh)
+    (let ((recent (herdr-status-tests--section-text "Recent (")))
+      (should (string-match-p "Recent (2)" recent))
+      (should (< (string-match "beta-work" recent)
+                 (string-match "api-review" recent))))))
+
+(ert-deftest herdr-status-filters-compose-conjunctively ()
+  (herdr-status-tests--with-dashboard
+    (setq herdr-status--filters
+          (list (cons 'agent-kind
+                      (lambda (entry) (equal (alist-get 'agent entry) "claude")))
+                (cons 'agent-state
+                      (lambda (entry)
+                        (equal (alist-get 'agent_status entry) "working")))))
+    (herdr-status-refresh)
+    (let ((agents (herdr-status-tests--section-text "Agents (")))
+      (should (string-match-p "Agents (1/3)" agents))
+      (should (string-match-p "api-review" agents))
+      (should-not (string-match-p "beta-work" agents))
+      (should-not (string-match-p "docs" agents)))))
+
+(ert-deftest herdr-status-registers-custom-predicates-by-name ()
+  (herdr-status-tests--with-dashboard
+    (let ((herdr-status-predicates
+           (cons (cons 'only-codex
+                       (lambda ()
+                         (lambda (entry)
+                           (equal (alist-get 'agent entry) "codex"))))
+                 herdr-status-predicates)))
+      (herdr-status-add-filter 'only-codex)
+      (should (equal (mapcar #'car herdr-status--filters) '(only-codex)))
+      (let ((agents (herdr-status-tests--section-text "Agents (")))
+        (should (string-match-p "Agents (1/3)" agents))
+        (should (string-match-p "docs" agents))))))
+
+(ert-deftest herdr-status-filters-survive-a-refresh ()
+  (herdr-status-tests--with-dashboard
+    (setq herdr-status--filters
+          (list (cons 'attached (lambda (_entry) nil))))
+    (herdr-status-refresh)
+    (herdr-status-refresh)
+    (should (equal (mapcar #'car herdr-status--filters) '(attached)))
+    (should (string-match-p "Agents (0/3)"
+                            (herdr-status-tests--section-text "Agents (")))))
+
+(ert-deftest herdr-status-clearing-filters-restores-every-agent ()
+  (herdr-status-tests--with-dashboard
+    (setq herdr-status--filters
+          (list (cons 'attached (lambda (_entry) nil))))
+    (herdr-status-refresh)
+    (herdr-status-clear-filters)
+    (should (null herdr-status--filters))
+    (should (string-match-p "Agents (3/3)"
+                            (herdr-status-tests--section-text "Agents (")))))
+
+(ert-deftest herdr-status-refresh-issues-no-per-agent-requests ()
+  (herdr-status-tests--with-dashboard
+    (should (= herdr-status-tests--agent-status-calls 0))))
+
+(ert-deftest herdr-status-adapter-detail-is-fetched-once-per-refresh ()
+  (herdr-status-tests--with-dashboard
+    (herdr-status-tests--expand)
+    (let ((expanded herdr-status-tests--agent-status-calls))
+      (should (= expanded 3))
+      (herdr-status-tests--expand)
+      (should (= herdr-status-tests--agent-status-calls expanded)))))
+
+(ert-deftest herdr-status-renders-an-unreachable-server-without-signalling ()
+  (let ((herdr--recent-session-targets nil)
+        (buffer (generate-new-buffer " *herdr-status-test*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'herdr-all-sessions) (lambda () '("gone")))
+                  ((symbol-function 'herdr-server-key) (lambda () "/tmp/gone.sock"))
+                  ((symbol-function 'herdr-available-p) (lambda () nil))
+                  ((symbol-function 'herdr-sessions) (lambda () nil)))
+          (with-current-buffer buffer
+            (herdr-status-mode)
+            (herdr-status-refresh)
+            (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+              (should (string-match-p "/tmp/gone.sock" text))
+              (should (string-match-p "Agents (0/0)" text)))))
+      (kill-buffer buffer))))
+
+(ert-deftest herdr-status-state-face-falls-back-to-unknown ()
+  (should (eq (herdr-status--state-face "working") 'herdr-status-state-working))
+  (should (eq (herdr-status--state-face "orbiting")
+              'herdr-status-state-unknown)))
+
+(ert-deftest herdr-status-commands-reject-a-section-without-an-agent ()
+  (herdr-status-tests--with-dashboard
+    (goto-char (point-min))
+    (should-error (herdr-status--entry-at-point) :type 'user-error)
+    (goto-char (point-min))
+    (should (re-search-forward "^ +● working" nil t))
+    (should (equal (alist-get 'terminal_id (herdr-status--entry-at-point))
+                   "t1"))))
+
+(ert-deftest herdr-status-hands-the-transient-the-agent-at-point ()
+  (herdr-status-tests--with-dashboard
+    (goto-char (point-min))
+    (should-not (herdr-status-target-at-point))
+    (should (re-search-forward "^ +● working" nil t))
+    (should (equal (herdr-status-target-at-point) '("/tmp/alpha.sock" . "t1")))
+    (should (equal (herdr-transient--target) '("/tmp/alpha.sock" . "t1")))))
+
+(ert-deftest herdr-status-opens-with-every-instance-collapsed ()
+  (herdr-status-tests--with-dashboard
+    (let ((text (herdr-status-tests--visible-text)))
+      (should (string-match-p "Servers (2)" text))
+      (should (string-match-p "/tmp/alpha.sock" text))
+      (should (string-match-p "Panes (1)" text))
+      (should (string-match-p "%9" text))
+      (should (string-match-p "● working +api-review" text))
+      (should-not (string-match-p "reachable" text))
+      (should-not (string-match-p "protocol" text))
+      (should-not (string-match-p "terminal_id" text)))))
+
+(ert-deftest herdr-status-expanding-an-instance-reveals-its-body ()
+  (herdr-status-tests--with-dashboard
+    (herdr-status-tests--expand)
+    (let ((text (herdr-status-tests--visible-text)))
+      (should (string-match-p "reachable +yes" text))
+      (should (string-match-p "terminal_id +t1" text)))))
+
+(ert-deftest herdr-status-preview-shows-what-the-agent-last-said ()
+  (herdr-status-tests--with-dashboard
+    (herdr-status-tests--expand)
+    (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+      (should (string-match-p "preview +⏺ The rebase landed clean\\." text))
+      (should (string-match-p "✻ Worked for 12s" text))
+      (should (string-match-p "※ recap: batch two is green" text))
+      (should-not (string-match-p "❯" text))
+      (should-not (string-match-p "auto mode on" text))
+      (should-not (string-match-p "118366/200000" text)))))
+
+(ert-deftest herdr-status-preview-is-fetched-once-per-refresh ()
+  (herdr-status-tests--with-dashboard
+    (should (= herdr-status-tests--read-calls 0))
+    (herdr-status-tests--expand)
+    (should (= herdr-status-tests--read-calls 3))
+    (herdr-status-tests--expand)
+    (should (= herdr-status-tests--read-calls 3))))
+
+(ert-deftest herdr-status-preview-can-be-turned-off ()
+  (let ((herdr-status-preview-lines 0))
+    (herdr-status-tests--with-dashboard
+      (herdr-status-tests--expand)
+      (should (= herdr-status-tests--read-calls 0))
+      (should-not (string-match-p
+                   "preview"
+                   (buffer-substring-no-properties (point-min) (point-max)))))))
+
+(ert-deftest herdr-status-shows-the-name-the-harness-assigned ()
+  (herdr-status-tests--with-dashboard
+    (herdr-status-tests--expand)
+    (should (string-match-p "terminal_title_stripped +api-review"
+                            (buffer-substring-no-properties
+                             (point-min) (point-max))))))
+
+(ert-deftest herdr-status-lists-a-server-only-disk-knows-about ()
+  (let ((herdr-session 'shared)
+        (herdr-project-sessions nil)
+        (herdr-session-alist nil))
+    (cl-letf (((symbol-function 'herdr-available-sessions)
+               (lambda () '(shared "cmw")))
+              ((symbol-function 'herdr-server-key)
+               (lambda () (format "/tmp/%s.sock" (or (herdr-session-name) "shared"))))
+              ((symbol-function 'herdr-available-p) (lambda () nil)))
+      (should (equal (mapcar (lambda (record) (alist-get 'key record))
+                             (herdr-status--collect-servers))
+                     '("/tmp/shared.sock" "/tmp/cmw.sock"))))))
+
+(ert-deftest herdr-status-claims-the-selected-window ()
+  (let ((herdr-status-buffer-name " *herdr-status-display-test*")
+        (display-buffer-alist
+         '((".*" (display-buffer-in-side-window) (side . right)))))
+    (cl-letf (((symbol-function 'herdr-status-refresh) #'ignore))
+      (unwind-protect
+          (save-window-excursion
+            (let ((origin (selected-window)))
+              (herdr-status)
+              (should (eq (selected-window) origin))
+              (should (equal (buffer-name (window-buffer origin))
+                             herdr-status-buffer-name))))
+        (when-let* ((buffer (get-buffer herdr-status-buffer-name)))
+          (kill-buffer buffer))))))
+
+(defun herdr-status-tests--indicator-at-point ()
+  "Return the visibility indicator overlay on the current line, if any."
+  (cl-some (lambda (overlay) (overlay-get overlay 'magit-vis-indicator))
+           (overlays-in (line-beginning-position) (line-end-position))))
+
+(ert-deftest herdr-status-draws-collapse-indicators-on-the-first-render ()
+  (let ((magit-section-visibility-indicators
+         '((magit-fringe-bitmap> . magit-fringe-bitmapv) ("…" . t))))
+    (herdr-status-tests--with-dashboard
+      (herdr-status-refresh)
+      (goto-char (point-min))
+      (should (search-forward "/tmp/alpha.sock" nil t))
+      (should (herdr-status-tests--indicator-at-point))
+      (goto-char (point-min))
+      (should (re-search-forward "^ +● working" nil t))
+      (should (herdr-status-tests--indicator-at-point)))))
+
+(ert-deftest herdr-status-keeps-its-own-fringe-width ()
+  (with-temp-buffer
+    (herdr-status-mode)
+    (should (memq #'herdr-status--widen-fringe
+                  (buffer-local-value 'window-configuration-change-hook
+                                      (current-buffer))))))
+
+(ert-deftest herdr-status-marks-the-entries-emacs-has-a-buffer-for ()
+  (herdr-status-tests--with-dashboard
+    (cl-letf (((symbol-function 'herdr--entry-buffer)
+               (lambda (entry)
+                 (when (member (alist-get 'pane_id entry) '("%1" "%9"))
+                   (current-buffer)))))
+      (herdr-status-refresh))
+    (goto-char (point-min))
+    (should (re-search-forward "^▌ ● working +api-review" nil t))
+    (goto-char (point-min))
+    (should (re-search-forward "^ +● idle +docs" nil t))
+    (goto-char (point-min))
+    (should (re-search-forward "^▌ +%9" nil t))))
+
+(ert-deftest herdr-status-rows-name-the-server-they-run-on ()
+  (herdr-status-tests--with-dashboard
+    (goto-char (point-min))
+    (should (re-search-forward "^ +● working +api-review +claude +%1 +alpha" nil t))
+    (goto-char (point-min))
+    (should (re-search-forward "^ +● orbiting +beta-work +claude +%3 +beta" nil t))))
+
+(ert-deftest herdr-status-omits-the-server-column-for-a-lone-server ()
+  (let ((herdr--recent-session-targets nil)
+        (buffer (generate-new-buffer " *herdr-status-test*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'herdr-all-sessions) (lambda () '("alpha")))
+                  ((symbol-function 'herdr-server-key)
+                   (lambda () "/tmp/alpha.sock"))
+                  ((symbol-function 'herdr-available-p) (lambda () t))
+                  ((symbol-function 'herdr-snapshot)
+                   (lambda () (herdr-status-tests--snapshot "alpha")))
+                  ((symbol-function 'herdr-sessions)
+                   (lambda () (list (car (herdr-status-tests--entries))))))
+          (with-current-buffer buffer
+            (herdr-status-mode)
+            (herdr-status-refresh)
+            (goto-char (point-min))
+            (should (re-search-forward
+                     "^ +● working +api-review +claude +%1 +herdr\\.el" nil t))))
+      (kill-buffer buffer))))
+
+(ert-deftest herdr-status-visits-the-pane-at-point ()
+  (herdr-status-tests--with-dashboard
+    (let ((visited nil))
+      (cl-letf (((symbol-function 'herdr-visit)
+                 (lambda (entry) (setq visited entry))))
+        (goto-char (point-min))
+        (should (re-search-forward "^ +%9" nil t))
+        (herdr-status-visit)
+        (should (equal (alist-get 'pane_id visited) "%9"))
+        (should (equal (alist-get 'server_key visited) "/tmp/alpha.sock"))))))
+
+(ert-deftest herdr-status-visiting-a-server-attaches-its-whole-session ()
+  (herdr-status-tests--with-dashboard
+    (let ((attached 'none))
+      (cl-letf (((symbol-function 'herdr-attach-session)
+                 (lambda (session) (setq attached session) nil))
+                ((symbol-function 'herdr-status-refresh) #'ignore))
+        (goto-char (point-min))
+        (should (re-search-forward "^beta +/tmp/beta\\.sock" nil t))
+        (herdr-status-visit)
+        (should (equal attached "beta"))))))
+
+(ert-deftest herdr-status-target-is-nil-outside-the-dashboard ()
+  (with-temp-buffer
+    (should-not (herdr-status-target-at-point))))
+
+(ert-deftest herdr-status-hands-out-the-entry-at-point ()
+  (herdr-status-tests--with-dashboard
+    (goto-char (point-min))
+    (should-not (herdr-status-entry-at-point))
+    (should (re-search-forward "^ +● working" nil t))
+    (should (equal (alist-get 'cwd (herdr-status-entry-at-point))
+                   "/tmp/proj/"))
+    (goto-char (point-min))
+    (should (re-search-forward "^ +%9" nil t))
+    (should (equal (alist-get 'pane_id (herdr-status-entry-at-point)) "%9"))))
+
+(ert-deftest herdr-status-rows-show-where-the-agent-is-running ()
+  (herdr-status-tests--with-dashboard
+    (cl-letf (((symbol-function 'herdr-status-tests--entries)
+               (lambda ()
+                 (list '((kind . "herdr") (session . "alpha")
+                         (server_key . "/tmp/alpha.sock")
+                         (agent . "claude") (agent_status . "working")
+                         (name . "api-review") (terminal_id . "t1")
+                         (pane_id . "%1") (workspace_id . "w1")
+                         (tab_id . "tab1") (cwd . "/tmp/proj/")
+                         (foreground_cwd . "/tmp/proj/.worktrees/feat-x"))))))
+      (herdr-status-refresh))
+    (let ((agents (herdr-status-tests--section-text "Agents (")))
+      (should (string-match-p "/tmp/proj/\\.worktrees/feat-x" agents)))))
+
+(ert-deftest herdr-status-entry-is-nil-outside-the-dashboard ()
+  (with-temp-buffer
+    (should-not (herdr-status-entry-at-point))))
+
+(provide 'herdr-status-tests)
+;;; herdr-status-tests.el ends here

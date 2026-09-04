@@ -330,7 +330,7 @@ Return nil when KIND has no registered adapter."
           (herdr-agent-session-kind session) (herdr-agent--kind agent)
           (herdr-agent-session-name session) (or (alist-get 'name agent) terminal)
           (herdr-agent-session-agent-session session) (alist-get 'agent_session agent)
-          (herdr-agent-session-project session) (herdr-agent--project (alist-get 'cwd agent))
+          (herdr-agent-session-project session) (herdr-agent--project (herdr-entry-directory agent))
           (herdr-agent-session-route session) (alist-get 'session agent)
           (herdr-agent-session-workspace session) (alist-get 'workspace_id agent)
           (herdr-agent-session-tab session) (alist-get 'tab_id agent)
@@ -837,7 +837,7 @@ attachment; TIMEOUT-MS limits startup."
 (defun herdr-agent--in-project-p (agent project)
   "Return non-nil when AGENT belongs to PROJECT."
   (or (null project)
-      (when-let* ((cwd (alist-get 'cwd agent)))
+      (when-let* ((cwd (herdr-entry-directory agent)))
         (string-prefix-p (file-name-as-directory (herdr-agent--project project))
                          (file-name-as-directory (herdr-agent--project cwd))))))
 
@@ -1018,7 +1018,7 @@ another provider handle it.  `herdr-default-send-context' is the fallback.")
 
 (defun herdr-agent--entry-project (entry)
   "Return the project root for agent ENTRY, or nil."
-  (when-let* ((directory (alist-get 'cwd entry)))
+  (when-let* ((directory (herdr-entry-directory entry)))
     (condition-case nil
         (funcall herdr-project-root-function directory)
       (file-error nil))))
@@ -1043,7 +1043,7 @@ another provider handle it.  `herdr-default-send-context' is the fallback.")
                           (user-error "No current editor workspace"))))
        (cl-remove-if-not
         (lambda (entry)
-          (when-let* ((directory (alist-get 'cwd entry)))
+          (when-let* ((directory (herdr-entry-directory entry)))
             (equal workspace (herdr-workspace-label directory))))
         entries)))
     (_ (error "Unknown send scope: %S" scope))))

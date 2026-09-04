@@ -4,7 +4,7 @@
 
 ;; Author: Sören Nikolaus <soeren@code17.io>
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1") (transient "0.9.0"))
+;; Package-Requires: ((emacs "29.1") (transient "0.13.0") (magit-section "4.0.0"))
 ;; Keywords: terminals, tools, processes
 ;; URL: https://github.com/srnnkls/herdr.el
 
@@ -394,6 +394,17 @@ non-nil.  Returns the buffer."
       (alist-get 'agent entry)
       (alist-get 'pane_id entry)))
 
+(defun herdr-entry-directory (entry)
+  "Return the directory pane or agent ENTRY is working in.
+Herdr reports both where the pane was opened and where its foreground
+process actually sits, and an agent that moves itself — into a worktree,
+say — only moves the latter."
+  (let ((foreground (alist-get 'foreground_cwd entry))
+        (start (alist-get 'cwd entry)))
+    (cond ((and (stringp foreground) (not (string-empty-p foreground)))
+           foreground)
+          ((and (stringp start) (not (string-empty-p start))) start))))
+
 (defvar herdr-entry-annotation-functions nil
   "Functions adding annotation fields to a session entry.
 Each is called with the entry and returns a string to append to the
@@ -425,7 +436,7 @@ completion annotation, or nil.")
    (delq nil (append (list (herdr--entry-session-label entry)
                            (alist-get 'agent entry)
                            (alist-get 'agent_status entry)
-                           (when-let* ((cwd (alist-get 'cwd entry)))
+                           (when-let* ((cwd (herdr-entry-directory entry)))
                              (abbreviate-file-name cwd)))
                      (mapcar (lambda (fn) (funcall fn entry))
                              herdr-entry-annotation-functions)))
@@ -487,7 +498,7 @@ Entries are alists; `kind' names the group they appear under and
           (herdr-agents)))
 
 (defun herdr--session-entries ()
-  "Return the entries of every session in `herdr-known-sessions'.
+  "Return the entries of every session in `herdr-all-sessions'.
 Sessions whose server does not answer are skipped rather than started."
   (apply #'append
          (mapcar
@@ -506,7 +517,7 @@ Sessions whose server does not answer are skipped rather than started."
                                 (setf (alist-get 'server_key entry) (herdr-server-key)))
                               entry))
                           entries)))))
-          (herdr-known-sessions))))
+          (herdr-all-sessions))))
 
 (defun herdr-sessions ()
   "Return every running session, one entry per terminal.
@@ -579,14 +590,14 @@ Gives `herdr-attach-functions' the first chance to claim ENTRY."
           (or (run-hook-with-args-until-success 'herdr-attach-functions entry)
               (herdr-attach-terminal (alist-get 'terminal_id entry)
                                      :label (herdr--entry-label entry)
-                                     :directory (alist-get 'cwd entry)
+                                     :directory (herdr-entry-directory entry)
                                      :takeover herdr-attach-takeover
                                      :display t)))
       (herdr-with-session (alist-get 'session entry)
         (or (run-hook-with-args-until-success 'herdr-attach-functions entry)
             (herdr-attach-terminal (alist-get 'terminal_id entry)
                                    :label (herdr--entry-label entry)
-                                   :directory (alist-get 'cwd entry)
+                                   :directory (herdr-entry-directory entry)
                                    :takeover herdr-attach-takeover
                                    :display t))))))
 
@@ -667,7 +678,7 @@ in them are left out."
           groups)
       (dolist (group layout)
         (dolist (entry (cdr group))
-          (let* ((directory (alist-get 'cwd entry))
+          (let* ((directory (herdr-entry-directory entry))
                  (label (and directory (herdr-workspace-label directory)))
                  (existing (gethash label by-label)))
             (if existing
@@ -700,7 +711,7 @@ attached."
                       (herdr-session-layout all)))
         (let* ((workspace (car group))
                (entries (cdr group))
-               (directory (alist-get 'cwd (car entries)))
+               (directory (herdr-entry-directory (car entries)))
                (herdr-attach-session-workspace
                 (when herdr-workspace-open-function
                   (funcall herdr-workspace-open-function workspace directory))))
@@ -740,6 +751,20 @@ attached."
                (file-exists-p (expand-file-name (format "%s/herdr.sock" name) sessions)))
              (directory-files sessions nil "\\`[^.]"))))))
 
+(defun herdr-all-sessions ()
+  "Return every session Emacs may talk to, configured or merely running.
+`herdr-known-sessions' contributes the configured ones and
+`herdr-available-sessions' those a socket on disk reveals.  Designators
+naming the same session appear once."
+  (let ((seen (make-hash-table :test #'equal))
+        (sessions nil))
+    (dolist (session (append (herdr-known-sessions) (herdr-available-sessions))
+                     (nreverse sessions))
+      (let ((name (or (herdr-session-name session) "")))
+        (unless (gethash name seen)
+          (puthash name t seen)
+          (push session sessions))))))
+
 (defun herdr-read-session (prompt &optional default)
   "Read a herdr session designator with PROMPT, offering DEFAULT."
   (let* ((known (mapcar (lambda (session)
@@ -747,7 +772,7 @@ attached."
                             ((or 'nil 'shared) "shared")
                             ('emacs "emacs")
                             (name name)))
-                        (append (herdr-known-sessions) (herdr-available-sessions))))
+                        (herdr-all-sessions)))
          (default (pcase default
                     ((or 'nil 'shared) "shared")
                     ('emacs "emacs")

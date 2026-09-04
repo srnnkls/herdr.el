@@ -16,6 +16,7 @@
 (require 'subr-x)
 (require 'transient)
 (require 'herdr-agent)
+(require 'herdr-status)
 
 (defun herdr-transient--kind ()
   "Read a registered agent harness kind."
@@ -43,9 +44,10 @@
   (herdr-agent-resume kind name reference))
 
 (defun herdr-transient--target ()
-  "Read a composite agent target."
-  (let ((entry (herdr-read-entry "Agent target: " (herdr-sessions))))
-    (cons (alist-get 'server_key entry) (alist-get 'terminal_id entry))))
+  "Return the agent at point in the dashboard, or read one."
+  (or (herdr-status-target-at-point)
+      (let ((entry (herdr-read-entry "Agent target: " (herdr-sessions))))
+        (cons (alist-get 'server_key entry) (alist-get 'terminal_id entry)))))
 
 (defun herdr-transient--switch (target)
   "Switch to TARGET."
@@ -124,7 +126,8 @@
     ("J" "jump" herdr-jump)
     ("R" "route project" herdr-assign-project-session)]
    ["Status"
-    ("i" "status" herdr-transient--status)
+    ("i" "dashboard" herdr-status)
+    ("I" "one line" herdr-transient--status)
     ("C" "customize" herdr-transient--customize)]])
 
 (provide 'herdr-transient)

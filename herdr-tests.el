@@ -344,6 +344,16 @@ alist.  Returns the socket path."
                        ("t3" . "other"))))
       (should-not herdr-attach-session-workspace))))
 
+(ert-deftest herdr-entry-directory-follows-the-running-process ()
+  (should (equal (herdr-entry-directory
+                  '((cwd . "/src/app") (foreground_cwd . "/src/app/.worktrees/x")))
+                 "/src/app/.worktrees/x"))
+  (should (equal (herdr-entry-directory '((cwd . "/src/app"))) "/src/app"))
+  (should (equal (herdr-entry-directory
+                  '((cwd . "/src/app") (foreground_cwd . "")))
+                 "/src/app"))
+  (should-not (herdr-entry-directory '((pane_id . "%1")))))
+
 (ert-deftest herdr-workspace-label-defaults-to-the-directory-name ()
   (let ((herdr-workspace-label-function #'herdr-default-workspace-label))
     (should (equal (herdr-workspace-label "/src/app/") "app"))
@@ -437,10 +447,11 @@ alist.  Returns the socket path."
                (other '((kind . "herdr") (terminal_id . "term_other") (agent . "codex")))
                (herdr-session-functions
                 (list (lambda () (list bare other)) (lambda () (list rich)))))
-          (let ((sessions (herdr-sessions)))
-            (should (= (length sessions) 2))
-            (should (equal (herdr--entry-label (car sessions)) "rich"))
-            (should (equal (alist-get 'terminal_id (cadr sessions)) "term_other"))))
+          (cl-letf (((symbol-function 'herdr-all-sessions) (lambda () '(shared))))
+            (let ((sessions (herdr-sessions)))
+              (should (= (length sessions) 2))
+              (should (equal (herdr--entry-label (car sessions)) "rich"))
+              (should (equal (alist-get 'terminal_id (cadr sessions)) "term_other")))))
       (kill-buffer buffer))))
 
 (ert-deftest herdr-visit-shows-a-live-buffer-instead-of-attaching ()
@@ -608,6 +619,23 @@ alist.  Returns the socket path."
         (herdr-project-sessions '(("/a" . "work")))
         (herdr-session-alist '(("/b" . "private") ("/c" . "work"))))
     (should (equal (herdr-known-sessions) '(shared "work" "private")))))
+
+(ert-deftest herdr-all-sessions-adds-the-servers-only-disk-knows ()
+  (let ((herdr-session 'shared)
+        (herdr-project-sessions nil)
+        (herdr-session-alist '(("/b" . "work"))))
+    (cl-letf (((symbol-function 'herdr-available-sessions)
+               (lambda () '(shared "work" "cmw"))))
+      (should (equal (herdr-all-sessions) '(shared "work" "cmw"))))))
+
+(ert-deftest herdr-all-sessions-treats-emacs-and-its-name-as-one ()
+  (let ((herdr-session 'emacs)
+        (herdr-emacs-session-name "emacs")
+        (herdr-project-sessions nil)
+        (herdr-session-alist nil))
+    (cl-letf (((symbol-function 'herdr-available-sessions)
+               (lambda () '(shared "emacs"))))
+      (should (equal (herdr-all-sessions) '(emacs shared))))))
 
 (ert-deftest herdr-socket-file-follows-the-session-choice ()
   (let ((process-environment (cons "XDG_CONFIG_HOME=/xdg" process-environment))
