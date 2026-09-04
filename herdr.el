@@ -354,6 +354,29 @@ replacing one another."
   "Canonical server key of the herdr terminal this buffer shows.")
 (put 'herdr-terminal-server-key 'permanent-local t)
 
+(defcustom herdr-report-focus-loss nil
+  "Whether attached terminals report Emacs focus loss to their process.
+Herdr's own client also reports focus for the pane, but only speaks
+again when its focus changes, so a focus-out from Emacs leaves the
+process believing nobody is looking.  Nil drops the focus-out: Emacs
+reports focus-in only, and the process otherwise follows herdr."
+  :type 'boolean
+  :group 'herdr)
+
+(defvar ghostel--focus-state)
+
+(defun herdr--ghostel-focus-event (function term gained)
+  "Call FUNCTION with TERM and GAINED unless it reports focus loss to herdr.
+Resets `ghostel--focus-state' for a dropped focus-out so the next
+focus-in still goes through."
+  (if (or gained herdr-report-focus-loss (not herdr-terminal-id))
+      (funcall function term gained)
+    (setq ghostel--focus-state nil)
+    nil))
+
+(with-eval-after-load 'ghostel
+  (advice-add 'ghostel--focus-event :around #'herdr--ghostel-focus-event))
+
 (defvar herdr-buffer-functions nil
   "Functions called with each buffer that starts showing a herdr terminal.
 Runs for plain attachments and for the buffers other integrations build

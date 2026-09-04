@@ -376,6 +376,37 @@
                herdr-agent--subscriptions)
       (delete-directory root t))))
 
+(ert-deftest herdr-agent-adoption-attaches-off-screen-when-asked ()
+  (let* ((herdr-agent-harnesses (herdr-agent-tests--with-adapter "claude" nil))
+         (root (make-temp-file "herdr-agent-adoption-display" t))
+         (server-key (expand-file-name "herdr.sock" root))
+         (attachment nil)
+         (displays nil)
+         session)
+    (unwind-protect
+        (cl-letf (((symbol-function 'herdr-attach-terminal)
+                   (cl-function
+                    (lambda (terminal-id &key display &allow-other-keys)
+                      (push display displays)
+                      (setq attachment (herdr-agent-tests--attachment terminal-id terminal-id))
+                      (car attachment)))))
+          (setq session
+                (herdr-agent-adopt '((agent . "claude") (terminal_id . "term-quiet")
+                                     (cwd . "/tmp"))
+                                   :server-key server-key :display nil))
+          (should (eq (herdr-agent-session-state session) 'attached))
+          (should (equal displays '(nil)))
+          (herdr-agent-tests--detach session)
+          (herdr-agent-tests--dispose-attachment attachment)
+          (setq session
+                (herdr-agent-adopt '((agent . "claude") (terminal_id . "term-shown")
+                                     (cwd . "/tmp"))
+                                   :server-key server-key))
+          (should (equal displays '(t nil))))
+      (herdr-agent-tests--detach session)
+      (herdr-agent-tests--dispose-attachment attachment)
+      (delete-directory root t))))
+
 (ert-deftest herdr-agent-adoption-reuses-three-kinds-and-cleans-a-failed-attachment ()
   (let* ((herdr-agent-harnesses
           (herdr-agent-tests--with-adapter "claude" nil))

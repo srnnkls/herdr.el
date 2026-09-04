@@ -266,15 +266,16 @@ Return nil when KIND has no registered adapter."
            (unless (eq (herdr-agent-session-state session) 'starting)
              (herdr-agent-detach session))))))))
 
-(defun herdr-agent--attach (session)
-  "Attach SESSION's terminal and record its Emacs resources."
+(defun herdr-agent--attach (session &optional display)
+  "Attach SESSION's terminal and record its Emacs resources.
+DISPLAY shows the buffer once attached."
   (let ((buffer
          (herdr-agent--with-server (herdr-agent-session-server session)
            (herdr-attach-terminal
             (herdr-agent-session-terminal session)
             :label (herdr-agent-session-name session)
             :directory (herdr-agent-session-project session)
-            :takeover herdr-attach-takeover :display t))))
+            :takeover herdr-attach-takeover :display display))))
     (herdr-agent-claim-attachment session buffer (get-buffer-process buffer))))
 
 (defun herdr-agent-claim-attachment (session buffer process)
@@ -350,8 +351,10 @@ Return nil when KIND has no registered adapter."
   "Subscribe SERVER-KEY before creating startup resources."
   (herdr-agent-subscribe server-key))
 
-(cl-defun herdr-agent-adopt (agent &key server-key (attach t))
-  "Adopt AGENT on SERVER-KEY, optionally deferring ATTACH."
+(cl-defun herdr-agent-adopt (agent &key server-key (attach t) (display t))
+  "Adopt AGENT on SERVER-KEY, optionally deferring ATTACH.
+DISPLAY shows the attached buffer; nil keeps adoption driven by
+events from replacing whatever terminal is on screen."
   (let* ((server-key (herdr-agent--canonical-server-key
                       (or server-key (alist-get 'server_key agent) (herdr-server-key))))
          (terminal (alist-get 'terminal_id agent)))
@@ -377,7 +380,7 @@ Return nil when KIND has no registered adapter."
           (condition-case err
               (progn
                 (herdr-agent--run-adapter session :adopted agent)
-                (when attach (herdr-agent--attach session))
+                (when attach (herdr-agent--attach session display))
                 (when attach
                   (setf (herdr-agent-session-state session) 'attached
                         (herdr-agent-session-ownership session) nil))
@@ -510,7 +513,7 @@ ARGS, ATTACH, SESSION, and TIMEOUT-MS control startup."
            server-key)
           (unless attach
             (herdr-agent--register session))
-          (when attach (herdr-agent--attach session))
+          (when attach (herdr-agent--attach session t))
           (unless attach
             (herdr-agent--run-adapter session :attached))
           (setf (herdr-agent-session-state session) 'attached

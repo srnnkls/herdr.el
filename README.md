@@ -236,6 +236,7 @@ CI also runs an experimental, soft-failing Ubuntu snapshot job.
 - `no terminal backend`: install Ghostel, vterm, or Eat, or set `herdr-terminal-backend`.
 - `No herdr server`: start Herdr, or allow `herdr-auto-start-server` for the selected session.
 - A terminal is read-only: enable `herdr-attach-takeover` when attaching to transfer input ownership.
+- An agent stays "unfocused" in Herdr after its Emacs buffer left the screen: keep `herdr-report-focus-loss` nil so only Herdr reports focus loss.
 
 ## License
 
