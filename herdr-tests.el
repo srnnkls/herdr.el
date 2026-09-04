@@ -242,6 +242,30 @@ alist.  Returns the socket path."
                        '("workspace.list" "workspace.create" "tab.rename"))))
     (herdr-tests--teardown)))
 
+(ert-deftest herdr-default-buffer-name-leads-with-project-and-branch ()
+  (let* ((root (make-temp-file "herdr-name" t))
+         (repo (expand-file-name "app" root))
+         (worktree (expand-file-name "app-wt" root))
+         (name (file-name-nondirectory root)))
+    (make-directory repo)
+    (unwind-protect
+        (let ((default-directory repo))
+          (should (equal (herdr-default-buffer-name "claude") "*herdr: claude*"))
+          (should (equal (herdr-default-buffer-name "claude" root)
+                         (format "*herdr: %s claude*" name)))
+          (should (zerop (call-process "git" nil nil nil "init" "-q" "-b" "topic/x")))
+          (should (equal (herdr-directory-branch repo) "topic/x"))
+          (should (equal (herdr-default-buffer-name "claude" (file-name-as-directory repo))
+                         "*herdr: app@topic/x claude*"))
+          (should (zerop (call-process "git" nil nil nil "-c" "user.name=t"
+                                       "-c" "user.email=t@t" "commit" "-q"
+                                       "--allow-empty" "-m" "init")))
+          (should (zerop (call-process "git" nil nil nil "worktree" "add" "-q"
+                                       "-b" "feat/y" worktree)))
+          (should (equal (herdr-default-buffer-name "claude" worktree)
+                         "*herdr: app@feat/y claude*")))
+      (delete-directory root t))))
+
 (ert-deftest herdr-buffer-names-make-room-for-repeated-labels ()
   (let ((first (get-buffer-create "*herdr: 1*"))
         (second nil))

@@ -17,7 +17,7 @@ Install `transient` 0.9.0+ from a configured package archive. Terminal attachmen
   :bind (("C-c h" . herdr-transient)))
 ```
 
-Set `herdr-terminal-backend` when automatic backend selection is unsuitable. The package installs no global keybinding itself.
+Attached buffers are named after the project and git branch the terminal works in, as in `*herdr: app@main claude*`, with linked worktrees named after their main checkout; set `herdr-buffer-name-function` to name them differently. Set `herdr-terminal-backend` when automatic backend selection is unsuitable. The package installs no global keybinding itself.
 
 ## Agent workflows
 

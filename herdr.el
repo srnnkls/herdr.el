@@ -61,7 +61,9 @@ another client holds it."
   :group 'herdr)
 
 (defcustom herdr-buffer-name-function #'herdr-default-buffer-name
-  "Function mapping an attached terminal's label to an Emacs buffer name."
+  "Function naming the Emacs buffer of an attached terminal.
+Called with the terminal's label and the directory it works in, which
+may be nil."
   :type 'function
   :group 'herdr)
 
@@ -256,9 +258,42 @@ TAKEOVER claims input ownership from any other attached client."
          (eat-exec buffer (buffer-name buffer) program nil args)))
      buffer)))
 
-(defun herdr-default-buffer-name (label)
-  "Return the Emacs buffer name for an attached terminal named LABEL."
-  (format "*herdr: %s*" label))
+(defun herdr--git-line (directory &rest arguments)
+  "Return the single line git prints for ARGUMENTS in DIRECTORY, or nil."
+  (when (and directory (file-directory-p directory))
+    (let ((default-directory (file-name-as-directory directory)))
+      (with-temp-buffer
+        (when (eq 0 (ignore-errors (apply #'process-file "git" nil t nil arguments)))
+          (let ((line (string-trim (buffer-string))))
+            (unless (string-empty-p line) line)))))))
+
+(defun herdr-directory-branch (directory)
+  "Return the git branch checked out in DIRECTORY, or its commit when detached."
+  (or (herdr--git-line directory "symbolic-ref" "--quiet" "--short" "HEAD")
+      (herdr--git-line directory "rev-parse" "--short" "HEAD")))
+
+(defun herdr-directory-project (directory)
+  "Return the name of the project DIRECTORY belongs to.
+Inside a git repository that is the main checkout's directory name, so
+a linked worktree is named after the project rather than after itself.
+Elsewhere it is the `herdr-workspace-label' of DIRECTORY."
+  (if-let* ((common (herdr--git-line directory "rev-parse" "--git-common-dir")))
+      (file-name-nondirectory
+       (directory-file-name
+        (file-name-directory
+         (directory-file-name
+          (expand-file-name common (file-name-as-directory directory))))))
+    (herdr-workspace-label directory)))
+
+(defun herdr-default-buffer-name (label &optional directory)
+  "Return the buffer name for a terminal named LABEL working in DIRECTORY.
+The name leads with the project and its git branch, so the terminal
+reads as *herdr: app@main LABEL*."
+  (let ((place (when directory
+                 (concat (herdr-directory-project directory)
+                         (when-let* ((branch (herdr-directory-branch directory)))
+                           (concat "@" branch))))))
+    (format "*herdr: %s*" (string-join (delq nil (list place label)) " "))))
 
 ;;;; Windows
 
@@ -348,12 +383,13 @@ sees the buffer."
                          (get-buffer-process buffer)))
                   (buffer-list)))))
 
-(defun herdr--free-buffer-name (label terminal-id &optional server-key)
+(defun herdr--free-buffer-name (label terminal-id &optional server-key directory)
   "Return a buffer name for LABEL that no other terminal answers to.
-SERVER-KEY identifies the server terminal identity belongs to.
-Tab labels repeat across herdr workspaces, so a taken name gets a
-counter.  Signals when TERMINAL-ID is the one already there."
-  (let ((name (funcall herdr-buffer-name-function label))
+SERVER-KEY identifies the server terminal identity belongs to and
+DIRECTORY is where the terminal works.  Tab labels repeat across herdr
+workspaces, so a taken name gets a counter.  Signals when TERMINAL-ID
+is the one already there."
+  (let ((name (funcall herdr-buffer-name-function label directory))
         (server-key (or server-key (herdr-server-key)))
         (counter 1))
     (while (when-let* ((buffer (get-buffer name))
@@ -363,7 +399,8 @@ counter.  Signals when TERMINAL-ID is the one already there."
                                server-key))
                (user-error "Buffer %s is already attached" name))
              (setq name (funcall herdr-buffer-name-function
-                                 (format "%s<%d>" label (cl-incf counter))))))
+                                 (format "%s<%d>" label (cl-incf counter))
+                                 directory))))
     name))
 
 (cl-defun herdr-attach-terminal (terminal-id &key label directory takeover display)
@@ -372,7 +409,7 @@ LABEL names the buffer, DIRECTORY sets its `default-directory',
 TAKEOVER claims input ownership, and DISPLAY shows the buffer when
 non-nil.  Returns the buffer."
   (let ((name (herdr--free-buffer-name (or label terminal-id) terminal-id
-                                       (herdr-server-key))))
+                                       (herdr-server-key) directory)))
     (when-let* ((existing (get-buffer name)))
       (kill-buffer existing))
     (let ((buffer (get-buffer-create name))
