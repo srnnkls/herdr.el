@@ -112,8 +112,10 @@
   :group 'herdr-status)
 
 (defface herdr-status-kind-glyph
-  '((t :height 1.3))
-  "Face lending the vendor marks their size, over their own colour."
+  '((t :height 1.0))
+  "Face lending the vendor marks their size, over their own colour.
+A line is as tall as the tallest glyph on it, and nothing shrinks it
+again, so a mark scaled past 1.0 spreads the whole list."
   :group 'herdr-status)
 
 (defcustom herdr-status-kind-marks
