@@ -351,7 +351,7 @@
   (herdr-status-tests--with-dashboard
     (let ((text (herdr-status-tests--visible-text)))
       (should (string-match-p "Servers 2" text))
-      (should (string-match-p "/tmp/alpha.sock" text))
+      (should-not (string-match-p "/tmp/alpha.sock" text))
       (should (string-match-p "Panes 1" text))
       (should-not (string-match-p "%9" text))
       (should (string-match-p "● api-review" text))
@@ -664,7 +664,7 @@
     (herdr-status-tests--with-dashboard
       (herdr-status-refresh)
       (goto-char (point-min))
-      (should (search-forward "/tmp/alpha.sock" nil t))
+      (should (search-forward "Servers 2" nil t))
       (should (herdr-status-tests--indicator-at-point))
       (goto-char (point-min))
       (should (re-search-forward "^ +○ docs" nil t))

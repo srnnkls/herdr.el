@@ -901,7 +901,7 @@ only by the heading's own total."
 
 (defun herdr-status--insert-servers ()
   "Insert one collapsible entry per known herdr server."
-  (magit-insert-section (herdr-status-servers)
+  (magit-insert-section (herdr-status-servers nil t)
     (magit-insert-heading
       (concat (propertize (format "Servers %d" (length herdr-status--servers))
                           'font-lock-face 'magit-section-heading)
@@ -925,8 +925,7 @@ only by the heading's own total."
             (dolist (field '(workspaces tabs panes agents))
               (herdr-status--insert-field
                (symbol-name field)
-               (number-to-string (length (alist-get field snapshot)))))))))
-    (insert "\n")))
+               (number-to-string (length (alist-get field snapshot)))))))))))
 
 (defun herdr-status--insert-recent (widths tabs workspaces)
   "Insert the recently used agents, most recent first.
@@ -943,8 +942,7 @@ WIDTHS, TABS, and WORKSPACES are passed through to each row."
       (magit-insert-section (herdr-status-recent)
         (magit-insert-heading (format "Recent %d" (length entries)))
         (dolist (entry entries)
-          (herdr-status--insert-agent entry widths tabs workspaces))
-        (insert "\n")))))
+          (herdr-status--insert-agent entry widths tabs workspaces))))))
 
 (defun herdr-status--insert-agents (widths tabs workspaces)
   "Insert the filtered agent list.
@@ -963,8 +961,7 @@ WIDTHS, TABS, and WORKSPACES are passed through to each row."
       (if (null visible)
           (insert "  No agent matches.\n")
         (dolist (entry visible)
-          (herdr-status--insert-agent entry widths tabs workspaces)))
-      (insert "\n"))))
+          (herdr-status--insert-agent entry widths tabs workspaces))))))
 
 (defun herdr-status--insert-panes (workspaces)
   "Insert the panes running no agent, labelled through WORKSPACES."
@@ -992,8 +989,7 @@ WIDTHS, TABS, and WORKSPACES are passed through to each row."
                  pane nil
                  (lambda (indent)
                    (herdr-status--insert-alist
-                    pane '(server_key session) indent)))))))
-        (insert "\n")))))
+                    pane '(server_key session) indent)))))))))))
 
 ;;;; Mode
 
