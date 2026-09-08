@@ -88,7 +88,8 @@
   :group 'herdr-status)
 
 (defface herdr-status-state-done
-  '((t :inherit font-lock-comment-face))
+  '((((class color) (min-colors 88)) :foreground "#5b9dd9")
+    (t :inherit link))
   "Face for an agent that finished."
   :group 'herdr-status)
 
@@ -111,7 +112,7 @@
   :group 'herdr-status)
 
 (defface herdr-status-kind-glyph
-  '((t :height 1.2))
+  '((t :height 1.3))
   "Face lending the vendor marks their size, over their own colour."
   :group 'herdr-status)
 
@@ -144,10 +145,10 @@ that show no other mark of it."
   :type 'string
   :group 'herdr-status)
 
-(defcustom herdr-status-state-glyphs nil
+(defcustom herdr-status-state-glyphs '(("idle" . "○"))
   "Glyphs replacing `herdr-status-state-glyph', keyed by agent state.
-Every state is drawn with the same bullet by default, in its own colour,
-so a state without an entry here still says what it is."
+An agent waiting for work is drawn hollow; a state without an entry here
+takes the solid bullet in its own colour."
   :type '(alist :key-type string :value-type string)
   :group 'herdr-status)
 
