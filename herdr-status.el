@@ -38,7 +38,7 @@
   :group 'herdr-status)
 
 (defface herdr-status-label-quiet
-  '((t :inherit shadow))
+  '((t :inherit default))
   "Face for the name of an entry Emacs has no buffer for."
   :group 'herdr-status)
 
@@ -798,16 +798,14 @@ itself is drawn apart from the words around it."
 
 (defun herdr-status--air-above (start)
   "Lift the line beginning at START off the one above it.
-The space rides on that line's own newline, so hiding the line hides the
-space with it."
-  (when (> herdr-status-preview-spacing 0)
-    (when-let* ((end (save-excursion
-                       (goto-char start)
-                       (and (search-forward "\n" nil t) (point)))))
-      (put-text-property (1- end) end 'line-height
-                         (list (+ (default-line-height)
-                                  herdr-status-preview-spacing)
-                               0)))))
+The space is a glyph on that line rather than a property of the newline
+above it, so a hidden line takes the space away with it."
+  (when (and (> herdr-status-preview-spacing 0) (< start (point-max)))
+    (put-text-property
+     start (1+ start) 'display
+     `(space :width 1
+             :height (,(+ (default-line-height) herdr-status-preview-spacing))
+             :ascent 100))))
 
 (defun herdr-status--insert-body (entry rule details)
   "Insert ENTRY's preview behind RULE, then its DETAILS when asked for.

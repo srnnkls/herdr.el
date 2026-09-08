@@ -467,12 +467,14 @@
     (goto-char (point-min))
     (should (re-search-forward "^ +● api-review" nil t))
     (forward-line 1)
-    (should (equal (get-text-property (line-end-position) 'line-height)
-                   (list (+ (default-line-height) herdr-status-preview-spacing)
-                         0)))
-    (should-not (invisible-p (line-end-position)))
+    (should (equal (get-text-property (line-beginning-position) 'display)
+                   `(space :width 1
+                           :height (,(+ (default-line-height)
+                                        herdr-status-preview-spacing))
+                           :ascent 100)))
+    (should-not (invisible-p (line-beginning-position)))
     (magit-section-hide (magit-section-at (line-beginning-position 0)))
-    (should (invisible-p (line-end-position)))))
+    (should (invisible-p (line-beginning-position)))))
 
 (ert-deftest herdr-status-quiets-only-the-lines-the-harness-wrote ()
   (herdr-status-tests--with-dashboard
