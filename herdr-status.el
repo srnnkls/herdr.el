@@ -154,13 +154,6 @@ takes the solid bullet in its own colour."
   :type '(alist :key-type string :value-type string)
   :group 'herdr-status)
 
-(defcustom herdr-status-preview-spacing 3
-  "Height in pixels of the blank line above a preview.
-Zero leaves it out, so an expanded row opens straight into what its
-terminal showed.  Terminal frames measure in whole lines and give it one."
-  :type 'natnum
-  :group 'herdr-status)
-
 (defcustom herdr-status-show-details nil
   "Whether an expanded agent shows its metadata under its preview.
 `herdr-status-toggle-details' turns it on and off for one dashboard."
@@ -775,17 +768,15 @@ draw time and loaded where it is installed."
 A RULE marks the lines as an agent's own words, drawn in that harness's
 colour; without one the lines are set in by its width instead, which is
 what a plain pane's scrollback gets.  A line the harness prints about
-itself is drawn apart from the words around it.  The air above the
-preview is a line of its own, so a folded row does not keep it."
+itself is drawn apart from the words around it."
   (when-let* ((lines (herdr-status--preview entry)))
-    (when (> herdr-status-preview-spacing 0)
-      (insert (propertize "\n" 'line-height herdr-status-preview-spacing)))
     (let ((prefix (if rule
                       (concat " "
                               (propertize rule 'font-lock-face
                                           (herdr-status--kind-face entry))
                               " ")
-                    (make-string (+ 2 (string-width herdr-status-preview-rule))
+                    (make-string (+ 2 (string-width
+                                       herdr-status-preview-rule))
                                  ?\s))))
       (dolist (line (herdr-status--render-preview lines))
         (insert prefix

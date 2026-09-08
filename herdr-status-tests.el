@@ -442,21 +442,6 @@
                    "\n"))
                  '("⏺ The suite is green; nothing left to fix."))))
 
-(ert-deftest herdr-status-airs-an-expanded-row-and-folds-the-air-away ()
-  (let ((herdr-status-preview-spacing 2))
-    (herdr-status-tests--with-dashboard
-      (goto-char (point-min))
-      (should (re-search-forward "^ +● api-review" nil t))
-      (forward-line 1)
-      (should (equal (get-text-property (point) 'line-height) 2))
-      (should-not (invisible-p (point)))
-      (magit-section-hide (magit-section-at (line-beginning-position 0)))
-      (should (invisible-p (point)))
-      (goto-char (point-min))
-      (should (re-search-forward "^ +○ docs" nil t))
-      (forward-line 1)
-      (should-not (equal (get-text-property (point) 'line-height) 2)))))
-
 (ert-deftest herdr-status-counts-the-agents-someone-is-waiting-on ()
   (cl-letf (((symbol-function 'herdr-status-tests--entries)
              (let ((entries (herdr-status-tests--entries)))
