@@ -154,6 +154,14 @@ takes the solid bullet in its own colour."
   :type '(alist :key-type string :value-type string)
   :group 'herdr-status)
 
+(defcustom herdr-status-preview-spacing 2
+  "Pixels of air above a preview.
+The space is asked of the preview's own first line, so a folded row
+keeps none of it.  Terminal frames measure in whole lines and draw none
+of it either way."
+  :type 'natnum
+  :group 'herdr-status)
+
 (defcustom herdr-status-show-details nil
   "Whether an expanded agent shows its metadata under its preview.
 `herdr-status-toggle-details' turns it on and off for one dashboard."
@@ -770,7 +778,8 @@ colour; without one the lines are set in by its width instead, which is
 what a plain pane's scrollback gets.  A line the harness prints about
 itself is drawn apart from the words around it."
   (when-let* ((lines (herdr-status--preview entry)))
-    (let ((prefix (if rule
+    (let ((first (point))
+          (prefix (if rule
                       (concat " "
                               (propertize rule 'font-lock-face
                                           (herdr-status--kind-face entry))
@@ -784,7 +793,21 @@ itself is drawn apart from the words around it."
                     (propertize line 'font-lock-face
                                 'herdr-status-preview-status)
                   line)
-                "\n")))))
+                "\n"))
+      (herdr-status--air-above first))))
+
+(defun herdr-status--air-above (start)
+  "Lift the line beginning at START off the one above it.
+The space rides on that line's own newline, so hiding the line hides the
+space with it."
+  (when (> herdr-status-preview-spacing 0)
+    (when-let* ((end (save-excursion
+                       (goto-char start)
+                       (and (search-forward "\n" nil t) (point)))))
+      (put-text-property (1- end) end 'line-height
+                         (list (+ (default-line-height)
+                                  herdr-status-preview-spacing)
+                               0)))))
 
 (defun herdr-status--insert-body (entry rule details)
   "Insert ENTRY's preview behind RULE, then its DETAILS when asked for.

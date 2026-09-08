@@ -462,6 +462,18 @@
     (goto-char (point-min))
     (should (re-search-forward "Servers 2  · beta unreachable" nil t))))
 
+(ert-deftest herdr-status-airs-the-preview-and-folds-the-air-away ()
+  (herdr-status-tests--with-dashboard
+    (goto-char (point-min))
+    (should (re-search-forward "^ +● api-review" nil t))
+    (forward-line 1)
+    (should (equal (get-text-property (line-end-position) 'line-height)
+                   (list (+ (default-line-height) herdr-status-preview-spacing)
+                         0)))
+    (should-not (invisible-p (line-end-position)))
+    (magit-section-hide (magit-section-at (line-beginning-position 0)))
+    (should (invisible-p (line-end-position)))))
+
 (ert-deftest herdr-status-quiets-only-the-lines-the-harness-wrote ()
   (herdr-status-tests--with-dashboard
     (goto-char (point-min))
