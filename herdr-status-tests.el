@@ -546,7 +546,7 @@
   (herdr-status-tests--with-dashboard
     (herdr-status-tests--expand)
     (let ((panes (herdr-status-tests--tail "Panes ")))
-      (should (string-match-p "^ +%9" panes))
+      (should (string-match-p "^ +shell .*%9 · herdr.el" panes))
       (should (string-match-p "^   ⏺ The rebase landed clean\\." panes))
       (should-not (string-match-p "┃" panes))
       (should-not (string-match-p "workspace_id" panes)))))
@@ -695,7 +695,7 @@
     (should (eq (get-text-property (- (point) 2) 'font-lock-face)
                 'herdr-status-label-quiet))
     (goto-char (point-min))
-    (should (re-search-forward "^▎ +%9" nil t))))
+    (should (re-search-forward "^▎ +shell" nil t))))
 
 (ert-deftest herdr-status-rows-name-the-server-they-run-on ()
   (herdr-status-tests--with-dashboard
@@ -730,7 +730,7 @@
       (cl-letf (((symbol-function 'herdr-visit)
                  (lambda (entry) (setq visited entry))))
         (goto-char (point-min))
-        (should (re-search-forward "^ +%9" nil t))
+        (should (re-search-forward "^ +shell" nil t))
         (herdr-status-visit)
         (should (equal (alist-get 'pane_id visited) "%9"))
         (should (equal (alist-get 'server_key visited) "/tmp/alpha.sock"))))))
@@ -758,7 +758,7 @@
     (should (equal (alist-get 'cwd (herdr-status-entry-at-point))
                    "/tmp/proj/"))
     (goto-char (point-min))
-    (should (re-search-forward "^ +%9" nil t))
+    (should (re-search-forward "^ +shell" nil t))
     (should (equal (alist-get 'pane_id (herdr-status-entry-at-point)) "%9"))))
 
 (ert-deftest herdr-status-rows-show-where-the-agent-is-running ()

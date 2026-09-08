@@ -523,11 +523,14 @@ A state left out of the list sorts after the ones in it, by name."
   (equal (herdr-status--state entry) "working"))
 
 (defun herdr-status--state-column (entry)
-  "Return the glyph standing for ENTRY's state, in that state's face."
+  "Return the glyph standing for ENTRY's state, in that state's face.
+A pane running no agent has no state to report and is left blank there."
   (let ((state (herdr-status--state entry)))
-    (propertize (or (cdr (assoc state herdr-status-state-glyphs))
-                    herdr-status-state-glyph)
-                'font-lock-face (herdr-status--state-face state))))
+    (if (not (alist-get 'agent entry))
+        (make-string (string-width herdr-status-state-glyph) ?\s)
+      (propertize (or (cdr (assoc state herdr-status-state-glyphs))
+                      herdr-status-state-glyph)
+                  'font-lock-face (herdr-status--state-face state)))))
 
 (defun herdr-status--label-column (entry width)
   "Return ENTRY's name padded to WIDTH, lit where Emacs holds its buffer."
@@ -961,33 +964,24 @@ WIDTHS, TABS, and WORKSPACES are passed through to each row."
         (dolist (entry visible)
           (herdr-status--insert-agent entry widths tabs workspaces))))))
 
-(defun herdr-status--insert-panes (workspaces)
-  "Insert the panes running no agent, labelled through WORKSPACES."
+(defun herdr-status--insert-panes (widths workspaces)
+  "Insert the panes running no agent, labelled through WORKSPACES.
+WIDTHS holds the same column widths the agents are drawn on, so a pane
+lines up with them."
   (let ((panes (herdr-status--orphan-panes herdr-status--servers
                                            herdr-status--entries)))
     (when panes
       (magit-insert-section (herdr-status-panes nil t)
         (magit-insert-heading (format "Panes %d" (length panes)))
         (dolist (pane panes)
-          (let* ((id (or (alist-get 'pane_id pane) "?"))
-                 (label (herdr--entry-label pane))
-                 (label (unless (equal label id) label)))
-            (magit-insert-section (herdr-status-pane pane t)
-              (magit-insert-heading
-                (string-join
-                 (delq nil (list (concat (herdr-status--attached-column pane)
-                                         " "
-                                         (herdr-status--pad id 10))
-                                 label
-                                 (herdr-status--workspace-label pane
-                                                                workspaces)))
-                 "  "))
-              (magit-insert-section-body
-                (herdr-status--insert-body
-                 pane nil
-                 (lambda (indent)
-                   (herdr-status--insert-alist
-                    pane '(server_key session) indent)))))))))))
+          (magit-insert-section (herdr-status-pane pane t)
+            (magit-insert-heading (herdr-status--row pane widths workspaces))
+            (magit-insert-section-body
+              (herdr-status--insert-body
+               pane nil
+               (lambda (indent)
+                 (herdr-status--insert-alist
+                  pane '(server_key session) indent))))))))))
 
 ;;;; Mode
 
@@ -1068,12 +1062,14 @@ runs out of stack.")
           (workspaces (herdr-status--snapshot-index
                        'workspaces 'workspace_id herdr-status--servers))
           (widths (herdr-status--widths
-                   (herdr-status--agents herdr-status--entries))))
+                   (append (herdr-status--agents herdr-status--entries)
+                           (herdr-status--orphan-panes herdr-status--servers
+                                                       herdr-status--entries)))))
       (erase-buffer)
       (magit-insert-section (herdr-status-root)
         (herdr-status--insert-recent widths tabs workspaces)
         (herdr-status--insert-agents widths tabs workspaces)
-        (herdr-status--insert-panes workspaces)
+        (herdr-status--insert-panes widths workspaces)
         (herdr-status--insert-servers))
       (let ((magit-section-cache-visibility nil))
         (magit-section-show magit-root-section)))
