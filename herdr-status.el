@@ -836,88 +836,6 @@ WIDTHS aligns the columns, and TABS and WORKSPACES resolve its labels."
          (herdr-status--insert-details entry tabs workspaces indent)
          (herdr-status--insert-adapter entry indent))))))
 
-(defconst herdr-status--overview-width 6
-  "Width of the key column in the block above the lists.")
-
-(defun herdr-status--insert-overview-field (name value)
-  "Insert the overview line pairing NAME with VALUE, unless VALUE is empty."
-  (when (and value (not (equal value "")))
-    (insert (propertize (herdr-status--pad name herdr-status--overview-width)
-                        'font-lock-face 'herdr-status-detail-key)
-            " " value "\n")))
-
-(defun herdr-status--focused-entry (server)
-  "Return whatever occupies the pane SERVER reports as focused."
-  (when-let* ((snapshot (alist-get 'snapshot server))
-              (key (alist-get 'key server))
-              (pane (alist-get 'focused_pane_id snapshot)))
-    (or (cl-find-if (lambda (entry)
-                      (and (equal (alist-get 'pane_id entry) pane)
-                           (equal (herdr-status--entry-server entry) key)))
-                    herdr-status--entries)
-        (when-let* ((record (cl-find pane (alist-get 'panes snapshot)
-                                     :key (lambda (record)
-                                            (alist-get 'pane_id record))
-                                     :test #'equal)))
-          (cons (cons 'server_key key) record)))))
-
-(defun herdr-status--focus-line (server workspaces)
-  "Return what SERVER is pointed at, located through WORKSPACES."
-  (if-let* ((entry (herdr-status--focused-entry server)))
-      (string-join
-       (delq nil
-             (list (when (alist-get 'agent entry)
-                     (string-trim-right (herdr-status--kind-column entry 0)))
-                   (propertize (herdr--entry-label entry)
-                               'font-lock-face 'herdr-status-label)
-                   (herdr-status--location-column entry workspaces)
-                   (when-let* ((directory (herdr-status--directory entry)))
-                     (propertize directory 'font-lock-face 'herdr-status-path))))
-       "  ")
-    (propertize "no pane focused" 'font-lock-face 'herdr-status-meta)))
-
-(defun herdr-status--version-line (servers)
-  "Return the version and protocol the SERVERS answer with."
-  (let ((versions (delete-dups
-                   (delq nil (mapcar (lambda (server)
-                                       (alist-get 'version
-                                                  (alist-get 'snapshot server)))
-                                     servers))))
-        (protocols (delete-dups
-                    (delq nil (mapcar (lambda (server)
-                                        (alist-get 'protocol
-                                                   (alist-get 'snapshot server)))
-                                      servers)))))
-    (when versions
-      (propertize (concat (string-join versions ", ")
-                          (when protocols
-                            (format "  · protocol %s"
-                                    (string-join (mapcar #'number-to-string
-                                                         protocols)
-                                                 ", "))))
-                  'font-lock-face 'herdr-status-meta))))
-
-(defun herdr-status--insert-overview (workspaces)
-  "Insert what herdr is pointed at now, above the lists.
-WORKSPACES resolves the label of the focused pane's workspace."
-  (when-let* ((live (seq-filter (lambda (server) (alist-get 'snapshot server))
-                                herdr-status--servers)))
-    (magit-insert-section (herdr-status-overview)
-      (let ((width (herdr-status--width live #'herdr-status--session-name 6)))
-        (dolist (server live)
-          (herdr-status--insert-overview-field
-           "Focus"
-           (concat (when (cdr herdr-status--servers)
-                     (propertize
-                      (herdr-status--pad (herdr-status--session-name server)
-                                         width)
-                      'font-lock-face 'herdr-status-meta))
-                   " "
-                   (herdr-status--focus-line server workspaces)))))
-      (herdr-status--insert-overview-field
-       "Herdr" (herdr-status--version-line live))
-      (insert "\n"))))
-
 (defcustom herdr-status-counted-states '("working" "blocked")
   "The states the agents heading counts, in the order it says them.
 An agent in one of these is waiting on someone: the rest are counted
@@ -1143,7 +1061,6 @@ runs out of stack.")
                    (herdr-status--agents herdr-status--entries))))
       (erase-buffer)
       (magit-insert-section (herdr-status-root)
-        (herdr-status--insert-overview workspaces)
         (herdr-status--insert-recent widths tabs workspaces)
         (herdr-status--insert-agents widths tabs workspaces)
         (herdr-status--insert-panes workspaces)

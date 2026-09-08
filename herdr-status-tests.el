@@ -356,7 +356,7 @@
       (should-not (string-match-p "%9" text))
       (should (string-match-p "● api-review" text))
       (should-not (string-match-p "reachable" text))
-      (should-not (string-match-p "^ +protocol" text))
+      (should-not (string-match-p "protocol" text))
       (should-not (string-match-p "terminal_id" text)))))
 
 (ert-deftest herdr-status-expanding-an-instance-reveals-its-body ()
@@ -456,36 +456,6 @@
       (should (re-search-forward "^ +○ docs" nil t))
       (forward-line 1)
       (should-not (equal (get-text-property (point) 'line-height) 2)))))
-
-(ert-deftest herdr-status-opens-with-what-each-server-is-pointed-at ()
-  (herdr-status-tests--with-dashboard
-    (let ((text (buffer-substring-no-properties
-                 (point-min) (or (save-excursion
-                                   (goto-char (point-min))
-                                   (re-search-forward "^\n" nil t))
-                                 (point-max)))))
-      (should (string-match-p "Focus  alpha .*api-review" text))
-      (should (string-match-p "Focus  beta .*beta-work" text))
-      (should (string-match-p "%1 · herdr.el" text))
-      (should (string-match-p "Herdr  1.2.3  · protocol 21" text))
-      (should (< (string-match "Focus" text)
-                 (string-match "Herdr" text))))))
-
-(ert-deftest herdr-status-names-the-focused-pane-that-runs-no-agent ()
-  (cl-letf (((symbol-function 'herdr-status-tests--snapshot)
-             (lambda (session)
-               (if (equal session "alpha")
-                   '((version . "1.2.3") (protocol . 21)
-                     (focused_pane_id . "%9")
-                     (workspaces . (((workspace_id . "w1")
-                                     (label . "herdr.el"))))
-                     (tabs . (((tab_id . "tab1") (label . "main"))))
-                     (panes . (((pane_id . "%9") (workspace_id . "w1")
-                                (label . "shell")))))
-                 '((version . "1.2.3") (protocol . 21))))))
-    (herdr-status-tests--with-dashboard
-      (goto-char (point-min))
-      (should (re-search-forward "Focus  alpha .*%9 · herdr.el" nil t)))))
 
 (ert-deftest herdr-status-counts-the-agents-someone-is-waiting-on ()
   (cl-letf (((symbol-function 'herdr-status-tests--entries)
