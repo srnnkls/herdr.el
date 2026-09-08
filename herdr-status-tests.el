@@ -62,6 +62,9 @@
   (if (equal session "alpha")
       '((version . "1.2.3")
         (protocol . 21)
+        (focused_pane_id . "%1")
+        (focused_tab_id . "tab1")
+        (focused_workspace_id . "w1")
         (workspaces . (((workspace_id . "w1") (label . "herdr.el"))))
         (tabs . (((tab_id . "tab1") (label . "main"))))
         (panes . (((pane_id . "%1") (workspace_id . "w1"))
@@ -69,6 +72,7 @@
                   ((pane_id . "%9") (workspace_id . "w1") (label . "shell")))))
     '((version . "1.2.3")
       (protocol . 21)
+      (focused_pane_id . "%3")
       (workspaces . (((workspace_id . "w9") (label . "other"))))
       (tabs . (((tab_id . "tab9") (label . "side"))))
       (panes . (((pane_id . "%3") (workspace_id . "w9")))))))
@@ -352,7 +356,7 @@
       (should-not (string-match-p "%9" text))
       (should (string-match-p "● api-review" text))
       (should-not (string-match-p "reachable" text))
-      (should-not (string-match-p "protocol" text))
+      (should-not (string-match-p "^ +protocol" text))
       (should-not (string-match-p "terminal_id" text)))))
 
 (ert-deftest herdr-status-expanding-an-instance-reveals-its-body ()
@@ -438,18 +442,70 @@
                    "\n"))
                  '("⏺ The suite is green; nothing left to fix."))))
 
-(ert-deftest herdr-status-airs-the-row-above-a-preview-only ()
+(ert-deftest herdr-status-airs-an-expanded-row-and-folds-the-air-away ()
   (let ((herdr-status-preview-spacing 2))
     (herdr-status-tests--with-dashboard
       (goto-char (point-min))
       (should (re-search-forward "^ +● api-review" nil t))
-      (should (equal (get-text-property (line-end-position) 'line-spacing) 2))
+      (forward-line 1)
+      (should (equal (get-text-property (point) 'line-height) 2))
+      (should-not (invisible-p (point)))
+      (magit-section-hide (magit-section-at (line-beginning-position 0)))
+      (should (invisible-p (point)))
       (goto-char (point-min))
       (should (re-search-forward "^ +○ docs" nil t))
-      (should-not (get-text-property (line-end-position) 'line-spacing))
+      (forward-line 1)
+      (should-not (equal (get-text-property (point) 'line-height) 2)))))
+
+(ert-deftest herdr-status-opens-with-what-each-server-is-pointed-at ()
+  (herdr-status-tests--with-dashboard
+    (let ((text (buffer-substring-no-properties
+                 (point-min) (or (save-excursion
+                                   (goto-char (point-min))
+                                   (re-search-forward "^\n" nil t))
+                                 (point-max)))))
+      (should (string-match-p "Focus  alpha .*api-review" text))
+      (should (string-match-p "Focus  beta .*beta-work" text))
+      (should (string-match-p "%1 · herdr.el" text))
+      (should (string-match-p "Herdr  1.2.3  · protocol 21" text))
+      (should (< (string-match "Focus" text)
+                 (string-match "Herdr" text))))))
+
+(ert-deftest herdr-status-names-the-focused-pane-that-runs-no-agent ()
+  (cl-letf (((symbol-function 'herdr-status-tests--snapshot)
+             (lambda (session)
+               (if (equal session "alpha")
+                   '((version . "1.2.3") (protocol . 21)
+                     (focused_pane_id . "%9")
+                     (workspaces . (((workspace_id . "w1")
+                                     (label . "herdr.el"))))
+                     (tabs . (((tab_id . "tab1") (label . "main"))))
+                     (panes . (((pane_id . "%9") (workspace_id . "w1")
+                                (label . "shell")))))
+                 '((version . "1.2.3") (protocol . 21))))))
+    (herdr-status-tests--with-dashboard
       (goto-char (point-min))
-      (should (re-search-forward "^Agents " nil t))
-      (should-not (get-text-property (line-end-position) 'line-spacing)))))
+      (should (re-search-forward "Focus  alpha .*%9 · herdr.el" nil t)))))
+
+(ert-deftest herdr-status-counts-the-agents-someone-is-waiting-on ()
+  (cl-letf (((symbol-function 'herdr-status-tests--entries)
+             (let ((entries (herdr-status-tests--entries)))
+               (lambda ()
+                 (cons (cons '(agent_status . "blocked")
+                             (assq-delete-all 'agent_status
+                                              (copy-alist (car entries))))
+                       (cdr entries))))))
+    (herdr-status-tests--with-dashboard
+      (goto-char (point-min))
+      (should (re-search-forward "Agents 3 .*· 1 blocked" nil t)))))
+
+(ert-deftest herdr-status-names-the-server-that-answered-nothing ()
+  (herdr-status-tests--with-dashboard
+    (cl-letf (((symbol-function 'herdr-available-p)
+               (lambda () (equal herdr-session "alpha"))))
+      (herdr-status-refresh))
+    (goto-char (point-min))
+    (should (re-search-forward "Servers 2  · beta unreachable" nil t))))
 
 (ert-deftest herdr-status-quiets-only-the-lines-the-harness-wrote ()
   (herdr-status-tests--with-dashboard
@@ -487,14 +543,6 @@
                       (cl-decf depth)))))
         (herdr-status-refresh)
         (should (= deepest 1))))))
-
-(ert-deftest herdr-status-survives-a-preview-whose-row-is-gone ()
-  (herdr-status-tests--with-dashboard
-    (let ((stale (copy-marker (point-min)))
-          (entry (car (herdr-status-tests--entries))))
-      (with-temp-buffer
-        (herdr-status--insert-preview entry stale herdr-status-preview-rule)
-        (should (string-match-p "┃" (buffer-string)))))))
 
 (ert-deftest herdr-status-heads-the-agents-section-like-every-other ()
   (herdr-status-tests--with-dashboard
