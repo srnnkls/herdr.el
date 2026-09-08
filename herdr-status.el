@@ -154,7 +154,7 @@ takes the solid bullet in its own colour."
   :type '(alist :key-type string :value-type string)
   :group 'herdr-status)
 
-(defcustom herdr-status-preview-spacing 2
+(defcustom herdr-status-preview-spacing 3
   "Pixels of air above a preview.
 The space is asked of the preview's own first line, so a folded row
 keeps none of it.  Terminal frames measure in whole lines and draw none
