@@ -19,7 +19,10 @@
   "How often the stubbed `herdr-agent-status' was called.")
 
 (defvar herdr-status-tests--read-calls 0
-  "How often the stubbed `herdr-api-agent-read' was called.")
+  "How often either stubbed read was called.")
+
+(defvar herdr-status-tests--reads nil
+  "Every read of a run as (METHOD . PANE-ID), newest first.")
 
 (defvar herdr-status-tests--pane-text
   (string-join
@@ -87,6 +90,7 @@
   `(let ((herdr--recent-session-targets nil)
          (herdr-status-tests--agent-status-calls 0)
          (herdr-status-tests--read-calls 0)
+         (herdr-status-tests--reads nil)
          (buffer (generate-new-buffer " *herdr-status-test*")))
      (unwind-protect
          (cl-letf (((symbol-function 'herdr-all-sessions)
@@ -106,6 +110,14 @@
                    ((symbol-function 'herdr-api-agent-read)
                     (lambda (_source pane &rest _)
                       (cl-incf herdr-status-tests--read-calls)
+                      (push (cons 'agent pane) herdr-status-tests--reads)
+                      `((type . "pane_read")
+                        (read . ((pane_id . ,pane)
+                                 (text . ,herdr-status-tests--pane-text))))))
+                   ((symbol-function 'herdr-api-pane-read)
+                    (lambda (pane _source &rest _)
+                      (cl-incf herdr-status-tests--read-calls)
+                      (push (cons 'pane pane) herdr-status-tests--reads)
                       `((type . "pane_read")
                         (read . ((pane_id . ,pane)
                                  (text . ,herdr-status-tests--pane-text)))))))
@@ -127,11 +139,18 @@
         (setq pos next)))
     (apply #'concat (nreverse parts))))
 
+(defun herdr-status-tests--tail (heading)
+  "Return the dashboard text from HEADING to the end of the buffer."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((case-fold-search nil)) (search-forward heading))
+    (buffer-substring-no-properties (line-beginning-position) (point-max))))
+
 (defun herdr-status-tests--section-text (heading)
   "Return the dashboard text from HEADING up to the next blank line."
   (save-excursion
     (goto-char (point-min))
-    (search-forward heading)
+    (let ((case-fold-search nil)) (search-forward heading))
     (buffer-substring-no-properties
      (line-beginning-position)
      (or (save-excursion (re-search-forward "^\n" nil t)) (point-max)))))
@@ -150,12 +169,12 @@
   (herdr-status-tests--with-dashboard
     (goto-char (point-min))
     (should (re-search-forward "✳ claude" nil t))
-    (should (eq (get-text-property (match-beginning 0) 'font-lock-face)
-                'herdr-status-kind-claude))
+    (should (equal (get-text-property (match-beginning 0) 'font-lock-face)
+                   '(herdr-status-kind-glyph herdr-status-kind-claude)))
     (goto-char (point-min))
     (should (re-search-forward "⌬ codex" nil t))
-    (should (eq (get-text-property (match-beginning 0) 'font-lock-face)
-                'herdr-status-kind-codex))))
+    (should (equal (get-text-property (match-beginning 0) 'font-lock-face)
+                   '(herdr-status-kind-glyph herdr-status-kind-codex)))))
 
 (ert-deftest herdr-status-leaves-magit-its-own-visibility-indicators ()
   (let ((magit-section-visibility-indicators
@@ -209,7 +228,7 @@
 
 (ert-deftest herdr-status-panes-section-excludes-panes-running-an-agent ()
   (herdr-status-tests--with-dashboard
-    (let ((panes (herdr-status-tests--section-text "Panes ")))
+    (let ((panes (herdr-status-tests--tail "Panes ")))
       (should (string-match-p "Panes 1" panes))
       (should (string-match-p "%9" panes))
       (should-not (string-match-p "%1" panes)))))
@@ -348,7 +367,7 @@
   (herdr-status-tests--with-dashboard
     (herdr-status-tests--expand)
     (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-      (should (string-match-p "^┃ ⏺ The rebase landed clean\\." text))
+      (should (string-match-p "^ ┃ ⏺ The rebase landed clean\\." text))
       (should (string-match-p "✻ Worked for 12s" text))
       (should (string-match-p "※ recap: batch two is green" text))
       (should-not (string-match-p "❯" text))
@@ -443,6 +462,88 @@
     (should-not (eq (get-text-property (match-beginning 0) 'font-lock-face)
                     'herdr-status-preview-status))))
 
+(ert-deftest herdr-status-leaves-window-margins-alone-without-arrows ()
+  (let ((set nil))
+    (cl-letf (((symbol-function 'set-window-margins)
+               (lambda (&rest arguments) (push arguments set))))
+      (with-temp-buffer
+        (herdr-status-mode)
+        (set-window-buffer (selected-window) (current-buffer))
+        (herdr-status--widen-fringe)
+        (should-not set)))))
+
+(ert-deftest herdr-status-refuses-to-redraw-from-inside-its-own-requests ()
+  (herdr-status-tests--with-dashboard
+    (let ((depth 0)
+          (deepest 0))
+      (cl-letf* ((snapshot (symbol-function 'herdr-snapshot))
+                 ((symbol-function 'herdr-snapshot)
+                  (lambda (&rest arguments)
+                    (cl-incf depth)
+                    (setq deepest (max deepest depth))
+                    (when (< depth 3)
+                      (herdr-status--refresh-buffers))
+                    (prog1 (apply snapshot arguments)
+                      (cl-decf depth)))))
+        (herdr-status-refresh)
+        (should (= deepest 1))))))
+
+(ert-deftest herdr-status-survives-a-preview-whose-row-is-gone ()
+  (herdr-status-tests--with-dashboard
+    (let ((stale (copy-marker (point-min)))
+          (entry (car (herdr-status-tests--entries))))
+      (with-temp-buffer
+        (herdr-status--insert-preview entry stale herdr-status-preview-rule)
+        (should (string-match-p "┃" (buffer-string)))))))
+
+(ert-deftest herdr-status-heads-the-agents-section-like-every-other ()
+  (herdr-status-tests--with-dashboard
+    (dolist (heading '("Servers " "Agents " "Panes "))
+      (goto-char (point-min))
+      (let ((case-fold-search nil))
+        (should (search-forward heading nil t)))
+      (should (eq (get-text-property (line-beginning-position) 'font-lock-face)
+                  'magit-section-heading)))))
+
+(ert-deftest herdr-status-reads-a-bare-pane-through-pane-read ()
+  (herdr-status-tests--with-dashboard
+    (herdr-status-tests--expand)
+    (should (equal (assoc-default "%9" (mapcar (lambda (read)
+                                                 (cons (cdr read) (car read)))
+                                               herdr-status-tests--reads))
+                   'pane))
+    (should (equal (assoc-default "%1" (mapcar (lambda (read)
+                                                 (cons (cdr read) (car read)))
+                                               herdr-status-tests--reads))
+                   'agent))))
+
+(ert-deftest herdr-status-leaves-a-bare-pane-out-of-the-markdown-renderer ()
+  (let ((rendered 0))
+    (cl-letf (((symbol-function 'memex-markdown-render)
+               (lambda (markdown &optional _code)
+                 (cl-incf rendered)
+                 markdown)))
+      (herdr-status-tests--with-dashboard
+        (herdr-status-tests--expand)
+        (should (= rendered 3))))))
+
+(ert-deftest herdr-status-previews-a-pane-without-the-agent-rule ()
+  (herdr-status-tests--with-dashboard
+    (herdr-status-tests--expand)
+    (let ((panes (herdr-status-tests--tail "Panes ")))
+      (should (string-match-p "^ +%9" panes))
+      (should (string-match-p "^   ⏺ The rebase landed clean\\." panes))
+      (should-not (string-match-p "┃" panes))
+      (should-not (string-match-p "workspace_id" panes)))))
+
+(ert-deftest herdr-status-shows-pane-metadata-once-details-are-on ()
+  (let ((herdr-status-show-details t))
+    (herdr-status-tests--with-dashboard
+      (herdr-status-tests--expand)
+      (let ((panes (herdr-status-tests--tail "Panes ")))
+        (should (string-match-p "workspace_id +w1" panes))
+        (should-not (string-match-p "server_key" panes))))))
+
 (ert-deftest herdr-status-preview-keeps-the-blank-between-paragraphs ()
   (should (equal (herdr-status--preview-lines
                   (string-join '("" "" "first paragraph" "" ""
@@ -488,9 +589,9 @@
   (herdr-status-tests--with-dashboard
     (should (= herdr-status-tests--read-calls 1))
     (herdr-status-tests--expand)
-    (should (= herdr-status-tests--read-calls 3))
+    (should (= herdr-status-tests--read-calls 4))
     (herdr-status-tests--expand)
-    (should (= herdr-status-tests--read-calls 3))))
+    (should (= herdr-status-tests--read-calls 4))))
 
 (ert-deftest herdr-status-preview-can-be-turned-off ()
   (let ((herdr-status-preview-lines 0))
@@ -569,11 +670,17 @@
                    (current-buffer)))))
       (herdr-status-refresh))
     (goto-char (point-min))
-    (should (re-search-forward "^▌ ● api-review" nil t))
+    (should (re-search-forward "^▎● api-review" nil t))
+    (should (eq (get-text-property (match-beginning 0) 'font-lock-face)
+                'herdr-status-attached))
+    (should (eq (get-text-property (- (point) 2) 'font-lock-face)
+                'herdr-status-label))
     (goto-char (point-min))
     (should (re-search-forward "^ +● docs" nil t))
+    (should (eq (get-text-property (- (point) 2) 'font-lock-face)
+                'herdr-status-label-quiet))
     (goto-char (point-min))
-    (should (re-search-forward "^▌ +%9" nil t))))
+    (should (re-search-forward "^▎ +%9" nil t))))
 
 (ert-deftest herdr-status-rows-name-the-server-they-run-on ()
   (herdr-status-tests--with-dashboard

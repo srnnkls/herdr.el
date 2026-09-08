@@ -39,7 +39,7 @@
 
 (defface herdr-status-label-quiet
   '((t :inherit shadow))
-  "Face for the name of an agent that is not working."
+  "Face for the name of an entry Emacs has no buffer for."
   :group 'herdr-status)
 
 (defface herdr-status-path
@@ -68,7 +68,7 @@
   :group 'herdr-status)
 
 (defface herdr-status-attached
-  '((t :inherit font-lock-builtin-face))
+  '((t :inherit herdr-status-label))
   "Face for the marker on an entry Emacs has a buffer for."
   :group 'herdr-status)
 
@@ -110,6 +110,11 @@
   "Face for the mark drawn beside a Codex agent."
   :group 'herdr-status)
 
+(defface herdr-status-kind-glyph
+  '((t :height 1.2))
+  "Face lending the vendor marks their size, over their own colour."
+  :group 'herdr-status)
+
 (defcustom herdr-status-kind-marks
   '(("claude" "✳" . herdr-status-kind-claude)
     ("codex" "⌬" . herdr-status-kind-codex))
@@ -146,7 +151,7 @@ so a state without an entry here still says what it is."
   :type '(alist :key-type string :value-type string)
   :group 'herdr-status)
 
-(defcustom herdr-status-preview-spacing 2
+(defcustom herdr-status-preview-spacing 3
   "Pixels of air between an agent's row and the preview under it.
 Zero draws the dashboard at the frame's own line spacing.  Terminal
 frames measure in whole lines and ignore this."
@@ -179,10 +184,9 @@ anything, so they are drawn in `herdr-status-preview-status'."
   :type 'string
   :group 'herdr-status)
 
-(defcustom herdr-status-attached-glyph "▌"
+(defcustom herdr-status-attached-glyph "▎"
   "String marking an agent or pane Emacs has a buffer for.
-Rows without a buffer are blank in that column, so the glyph should be
-one column wide."
+Rows without a buffer are blank there, so it should be one column wide."
   :type 'string
   :group 'herdr-status)
 
@@ -256,6 +260,14 @@ along with what they answered, so what is left is what was said."
 (defcustom herdr-status-auto-refresh t
   "Whether herdr lifecycle events redraw a live dashboard."
   :type 'boolean
+  :group 'herdr-status)
+
+(defcustom herdr-status-preview-ttl 5
+  "Seconds a preview stays good before the pane is read again.
+Every read is a request, so a dashboard redrawn on every lifecycle event
+would otherwise ask each visible pane what it says several times a
+second."
+  :type 'number
   :group 'herdr-status)
 
 (defcustom herdr-status-refresh-delay 0.4
@@ -345,7 +357,10 @@ Each pane is returned stamped with its server key."
       (dolist (pane (alist-get 'panes (alist-get 'snapshot server)))
         (unless (gethash (cons (alist-get 'key server) (alist-get 'pane_id pane))
                          claimed)
-          (push (cons (cons 'server_key (alist-get 'key server)) pane) panes))))))
+          (push (append (list (cons 'server_key (alist-get 'key server))
+                              (cons 'session (alist-get 'session server)))
+                        pane)
+                panes))))))
 
 ;;;; Filters
 
@@ -511,9 +526,9 @@ A state left out of the list sorts after the ones in it, by name."
                 'font-lock-face (herdr-status--state-face state))))
 
 (defun herdr-status--label-column (entry width)
-  "Return ENTRY's name padded to WIDTH, quiet unless its agent is working."
+  "Return ENTRY's name padded to WIDTH, lit where Emacs holds its buffer."
   (propertize (herdr-status--pad (herdr--entry-label entry) width)
-              'font-lock-face (if (herdr-status--working-p entry)
+              'font-lock-face (if (herdr--entry-buffer entry)
                                   'herdr-status-label
                                 'herdr-status-label-quiet)))
 
@@ -539,7 +554,8 @@ A state left out of the list sorts after the ones in it, by name."
   (let ((mark (herdr-status--kind-mark entry))
         (kind (alist-get 'agent entry)))
     (concat (if mark
-                (propertize (car mark) 'font-lock-face (cdr mark))
+                (propertize (car mark) 'font-lock-face
+                            (list 'herdr-status-kind-glyph (cdr mark)))
               " ")
             " "
             (propertize (herdr-status--pad kind width)
@@ -579,7 +595,7 @@ A state left out of the list sorts after the ones in it, by name."
 WIDTHS holds the label, kind, and session column widths, and WORKSPACES
 resolves the workspace label."
   (concat
-   (herdr-status--attached-column entry) " "
+   (herdr-status--attached-column entry)
    (herdr-status--state-column entry) " "
    (string-join
     (delq nil
@@ -697,23 +713,36 @@ and the blank lines that survive keep the paragraphs apart."
   (when-let* ((pane (alist-get 'pane_id entry)))
     (condition-case nil
         (herdr-with-session (alist-get 'session entry)
-          (let ((result (herdr-api-agent-read
-                         "recent" pane
-                         :lines herdr-status-preview-read-lines
-                         :strip-ansi t)))
+          (let ((result (if (alist-get 'agent entry)
+                            (herdr-api-agent-read
+                             "recent" pane
+                             :lines herdr-status-preview-read-lines
+                             :strip-ansi t)
+                          (herdr-api-pane-read
+                           pane "recent_unwrapped"
+                           :lines herdr-status-preview-read-lines
+                           :strip-ansi t))))
             (herdr-status--preview-lines
              (alist-get 'text (alist-get 'read result)))))
       (error nil))))
 
 (defun herdr-status--preview (entry)
-  "Return ENTRY's preview lines, fetching them at most once per refresh."
+  "Return ENTRY's preview lines, read again once they are stale.
+A redraw an event asks for comes in bursts, and reading every visible
+pane again in each of them is what makes the dashboard crawl, so what
+was read stays good for `herdr-status-preview-ttl' seconds."
   (when (> herdr-status-preview-lines 0)
-    (let ((key (or (alist-get 'pane_id entry) (alist-get 'terminal_id entry))))
-      (when key
-        (if-let* ((cached (assoc key herdr-status--previews)))
-            (cdr cached)
+    (when-let* ((key (or (alist-get 'pane_id entry)
+                         (alist-get 'terminal_id entry))))
+      (let ((cached (assoc key herdr-status--previews)))
+        (if (and cached
+                 (< (float-time (time-since (cadr cached)))
+                    herdr-status-preview-ttl))
+            (cddr cached)
           (let ((lines (herdr-status--read-preview entry)))
-            (push (cons key lines) herdr-status--previews)
+            (setq herdr-status--previews
+                  (cons (cons key (cons (current-time) lines))
+                        (assoc-delete-all key herdr-status--previews)))
             lines))))))
 
 (declare-function memex-markdown-render "memex-markdown" (markdown &optional code))
@@ -738,24 +767,49 @@ draw time and loaded where it is installed."
        (split-string (string-trim-right text) "\n"))
     lines))
 
-(defun herdr-status--insert-preview (entry &optional after)
-  "Insert the last thing ENTRY's agent said, behind a rule in its own colour.
-A line the harness prints about itself is drawn apart from the words
-around it.  AFTER is the end of the row this preview belongs to, which
-gains the air between the two."
+(defun herdr-status--insert-preview (entry &optional after rule)
+  "Insert the last thing ENTRY showed, each line behind RULE.
+A RULE marks the lines as an agent's own words, drawn in that harness's
+colour; without one the lines are set in by its width instead, which is
+what a plain pane's scrollback gets.  A line the harness prints about
+itself is drawn apart from the words around it.  AFTER is the end of the
+row this preview belongs to, which gains the air between the two."
   (when-let* ((lines (herdr-status--preview entry)))
-    (when (and after (> herdr-status-preview-spacing 0))
-      (put-text-property (1- after) after
+    (when-let* (((> herdr-status-preview-spacing 0))
+                (position (and after (if (markerp after)
+                                         (marker-position after)
+                                       after)))
+                ((> position (point-min)))
+                ((eq (char-before position) ?\n)))
+      (put-text-property (1- position) position
                          'line-spacing herdr-status-preview-spacing))
-    (let ((rule (propertize herdr-status-preview-rule
-                            'font-lock-face (herdr-status--kind-face entry))))
+    (let ((prefix (if rule
+                      (concat " "
+                              (propertize rule 'font-lock-face
+                                          (herdr-status--kind-face entry))
+                              " ")
+                    (make-string (+ 2 (string-width herdr-status-preview-rule))
+                                 ?\s))))
       (dolist (line (herdr-status--render-preview lines))
-        (insert rule " "
+        (insert prefix
                 (if (string-match-p herdr-status-preview-status-regexp line)
                     (propertize line 'font-lock-face
                                 'herdr-status-preview-status)
                   line)
                 "\n")))))
+
+(defun herdr-status--insert-body (entry rule details)
+  "Insert ENTRY's preview behind RULE, then its DETAILS when asked for.
+DETAILS is called with the indent its lines take, and only where
+`herdr-status-show-details' is on, so every row opens on what its
+terminal last showed and nothing else.  Only an agent writes markdown,
+so a bare pane's scrollback is drawn as the lines it came in."
+  (let ((herdr-status-preview-markdown
+         (and herdr-status-preview-markdown (alist-get 'agent entry) t)))
+    (herdr-status--insert-preview
+     entry (oref magit-insert-section--current content) rule))
+  (when herdr-status-show-details
+    (funcall details 2)))
 
 (defun herdr-status--adapter-status (entry)
   "Return the adapter fields for ENTRY, fetching them at most once."
@@ -782,10 +836,11 @@ WIDTHS aligns the columns, and TABS and WORKSPACES resolve its labels."
                          entry (not (herdr-status--working-p entry)))
     (magit-insert-heading (herdr-status--row entry widths workspaces))
     (magit-insert-section-body
-      (herdr-status--insert-preview entry (oref magit-insert-section--current content))
-      (when herdr-status-show-details
-        (herdr-status--insert-details entry tabs workspaces 2)
-        (herdr-status--insert-adapter entry 2)))))
+      (herdr-status--insert-body
+       entry herdr-status-preview-rule
+       (lambda (indent)
+         (herdr-status--insert-details entry tabs workspaces indent)
+         (herdr-status--insert-adapter entry indent))))))
 
 (defun herdr-status--sort-summary ()
   "Return the order the agents are in, rendered for their heading."
@@ -855,9 +910,10 @@ WIDTHS, TABS, and WORKSPACES are passed through to each row."
         (total (length (herdr-status--agents herdr-status--entries))))
     (magit-insert-section (herdr-status-agents)
       (magit-insert-heading
-        (concat (if (= (length visible) total)
-                    (format "Agents %d" total)
-                  (format "Agents %d/%d" (length visible) total))
+        (concat (propertize (if (= (length visible) total)
+                                (format "Agents %d" total)
+                              (format "Agents %d/%d" (length visible) total))
+                            'font-lock-face 'magit-section-heading)
                 (when-let* ((working (cl-count-if #'herdr-status--working-p
                                                   visible))
                             ((> working 0)))
@@ -893,7 +949,11 @@ WIDTHS, TABS, and WORKSPACES are passed through to each row."
                                                                 workspaces)))
                  "  "))
               (magit-insert-section-body
-                (herdr-status--insert-alist pane '(server_key))))))
+                (herdr-status--insert-body
+                 pane nil
+                 (lambda (indent)
+                   (herdr-status--insert-alist
+                    pane '(server_key session) indent)))))))
         (insert "\n")))))
 
 ;;;; Mode
@@ -925,7 +985,9 @@ WIDTHS, TABS, and WORKSPACES are passed through to each row."
         (unless (eq (car fringes) herdr-status-left-fringe-width)
           (set-window-fringes window herdr-status-left-fringe-width
                               (nth 1 fringes)))))
-    (unless (eq (car (window-margins window)) left-margin-width)
+    (when (and (> left-margin-width 0)
+               (not (eq (or (car (window-margins window)) 0)
+                        left-margin-width)))
       (set-window-margins window left-margin-width
                           (cdr (window-margins window))))))
 
@@ -942,17 +1004,31 @@ WIDTHS, TABS, and WORKSPACES are passed through to each row."
   (add-hook 'window-configuration-change-hook
             #'herdr-status--widen-fringe nil t))
 
+(defvar herdr-status--refreshing nil
+  "Non-nil while a redraw is running anywhere.
+Every request waits in `accept-process-output', which runs the timers
+that fall due meanwhile, and the redraw timer is one of them.  Without
+this a redraw calls itself from inside its own requests until Emacs
+runs out of stack.")
+
 (defun herdr-status-refresh ()
   "Re-fetch every known herdr server and redraw the dashboard."
   (interactive)
   (unless (derived-mode-p 'herdr-status-mode)
     (user-error "Not a herdr status buffer"))
-  (let ((inhibit-read-only t)
-        (line (line-number-at-pos)))
+  (unless herdr-status--refreshing
+    (herdr-status--redraw)))
+
+(defun herdr-status--redraw ()
+  "Re-fetch and redraw the dashboard in the current buffer."
+  (let ((herdr-status--refreshing t)
+        (inhibit-read-only t)
+        (line (line-number-at-pos))
+        (starts (mapcar (lambda (window) (cons window (window-start window)))
+                        (get-buffer-window-list nil nil t))))
     (setq herdr-status--servers (herdr-status--collect-servers)
           herdr-status--entries (herdr-status--collect-entries)
-          herdr-status--details nil
-          herdr-status--previews nil)
+          herdr-status--details nil)
     (herdr--prune-session-targets herdr-status--entries)
     (let ((tabs (herdr-status--snapshot-index
                  'tabs 'tab_id herdr-status--servers))
@@ -969,7 +1045,10 @@ WIDTHS, TABS, and WORKSPACES are passed through to each row."
       (let ((magit-section-cache-visibility nil))
         (magit-section-show magit-root-section)))
     (goto-char (point-min))
-    (forward-line (1- line))))
+    (forward-line (1- line))
+    (pcase-dolist (`(,window . ,start) starts)
+      (when (window-live-p window)
+        (set-window-start window (min start (point-max)) t)))))
 
 (defun herdr-status-toggle-details ()
   "Show or hide the metadata under the expanded agents of this dashboard."
