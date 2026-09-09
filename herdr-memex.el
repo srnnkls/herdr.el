@@ -35,10 +35,10 @@
   (and (locate-library "memex") (locate-library "memex-herdr") t))
 
 (defun herdr-memex-install-keys ()
-  "Bind the memex keys in `herdr-status-mode-map' where memex.el exists."
+  "Bind the search keys in `herdr-status-mode-map' where memex.el exists."
   (when (herdr-memex-available-p)
-    (keymap-set herdr-status-mode-map "m" #'herdr-memex-search)
-    (keymap-set herdr-status-mode-map "M" #'herdr-memex-dispatch)))
+    (keymap-set herdr-status-mode-map "s" #'herdr-memex-search)
+    (keymap-set herdr-status-mode-map "S" #'herdr-memex-dispatch)))
 
 (defun herdr-memex--ready ()
   "Load memex, refusing by name when it is not installed."
@@ -138,13 +138,13 @@ MODE is `lexical', `semantic' or `hybrid'."
 ;;;###autoload
 (transient-define-prefix herdr-memex-dispatch ()
   "Search and read the history of the agents herdr runs."
-  [["Search"
-    ("m" herdr-memex-search :description herdr-memex--scope-description)
+  [["Scope"
+    ("s" herdr-memex-search :description herdr-memex--scope-description)
     ("g" "search everything" herdr-memex-search-globally)]
    ["Mode"
-    ("l" "lexical"
+    ("x" "lexical"
      (lambda () (interactive) (herdr-memex-search 'lexical)))
-    ("s" "semantic"
+    ("m" "semantic"
      (lambda () (interactive) (herdr-memex-search 'semantic)))
     ("y" "hybrid"
      (lambda () (interactive) (herdr-memex-search 'hybrid)))]

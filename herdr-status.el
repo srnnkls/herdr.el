@@ -1014,13 +1014,12 @@ lines up with them."
 
 (defvar-keymap herdr-status-mode-map
   :doc "Keymap for `herdr-status-mode'.
-The memex keys `m' and `M' are installed by `herdr-memex-install-keys'
+The search keys `s' and `S' are installed by `herdr-memex-install-keys'
 where memex.el is on the load path, and are unbound where it is not."
   :parent magit-section-mode-map
   "?" #'herdr-status-dispatch
   "RET" #'herdr-status-visit
   "o" #'herdr-status-visit-other-window
-  "s" #'herdr-status-switch
   "P" #'herdr-status-prompt
   "R" #'herdr-status-rename
   "k" #'herdr-status-stop
@@ -1231,15 +1230,20 @@ of prompting."
              :key (lambda (server) (alist-get 'key server))
              :test #'equal)))
 
-(defun herdr-status-visit ()
+(defun herdr-status-visit (&optional focus)
   "Show whatever the section at point stands for.
 An agent or pane is attached when nothing shows it yet; a server attaches
-its whole session through `herdr-attach-session'."
-  (interactive)
+its whole session through `herdr-attach-session'.
+
+FOCUS, the prefix argument, moves herdr itself to the agent's pane as
+well, so the terminal and Emacs end up on the same agent."
+  (interactive "P")
   (if-let* ((server (herdr-status--server-at-point)))
       (prog1 (herdr-attach-session (alist-get 'session server))
         (herdr-status-refresh))
-    (herdr-visit (herdr-status--attachable-at-point))))
+    (if focus
+        (herdr-agent-switch (herdr-status--target-at-point))
+      (herdr-visit (herdr-status--attachable-at-point)))))
 
 (defun herdr-status-visit-other-window ()
   "Show the agent at point in another window."
@@ -1247,11 +1251,6 @@ its whole session through `herdr-attach-session'."
   (let ((display-buffer-overriding-action
          '(display-buffer-use-some-window (inhibit-same-window . t))))
     (herdr-status-visit)))
-
-(defun herdr-status-switch ()
-  "Focus the agent at point in herdr and show its buffer."
-  (interactive)
-  (herdr-agent-switch (herdr-status--target-at-point)))
 
 (defun herdr-status-prompt (text)
   "Send TEXT to the agent at point."
@@ -1403,8 +1402,7 @@ Every suffix here is bound directly in `herdr-status-mode-map' as well."
                       (length (herdr-status--agents herdr-status--entries))))
    ["Visit"
     ("RET" "visit" herdr-status-visit)
-    ("o" "other window" herdr-status-visit-other-window)
-    ("s" "switch" herdr-status-switch)]
+    ("o" "other window" herdr-status-visit-other-window)]
    ["Agent"
     ("P" "prompt" herdr-status-prompt)
     ("R" "rename" herdr-status-rename)
@@ -1418,10 +1416,10 @@ Every suffix here is bound directly in `herdr-status-mode-map' as well."
     ("g" "refresh" herdr-status-refresh)]
    ["Herd"
     ("h" "herds" herdr-herd-dispatch)]
-   ["Memex"
+   ["Search"
     :if herdr-memex-available-p
-    ("m" "search" herdr-memex-search)
-    ("M" "memex" herdr-memex-dispatch)]]
+    ("s" "search" herdr-memex-search)
+    ("S" "memex" herdr-memex-dispatch)]]
   [:class transient-row
    ("?" "close" transient-quit-one)
    ("q" "quit dashboard" quit-window)])

@@ -183,8 +183,7 @@ redraw a live dashboard on a short idle delay, which
 
 | Key | Action |
 | --- | --- |
-| `RET` / `o` | Show the agent or pane, attaching it when nothing does yet; on a server, attach that whole session |
-| `s` | Focus the agent in herdr |
+| `RET` / `o` | Show the agent or pane, attaching it when nothing does yet; on a server, attach that whole session. With a prefix argument, move herdr itself to the agent's pane as well |
 | `P` | Send a prompt |
 | `R` | Rename |
 | `k` | Stop, after confirmation |
@@ -193,15 +192,15 @@ redraw a live dashboard on a short idle delay, which
 | `O` | Order menu |
 | `d` | Show or hide agent metadata |
 | `h` | Herd menu |
-| `m` | Search agent history, narrowed by the section at point |
-| `M` | Memex menu |
+| `s` | Search agent history, narrowed by the section at point |
+| `S` | Search menu |
 | `g` | Refresh |
 | `?` | `herdr-status-dispatch`, a menu of these same keys |
 
 Every action has a direct key; `?` opens a menu that mirrors them and
-closes on a second `?`. `m` and `M` are bound only where
+closes on a second `?`. `s` and `S` are bound only where
 [memex.el](https://github.com/srnnkls/memex.el) is on the load path, and
-are absent otherwise.
+are absent otherwise — the same keys `memex-status` searches under.
 
 `herdr-status-entry-at-point` returns the agent or pane row under point,
 or nil elsewhere, so an editor integration can add a binding that attaches
@@ -292,10 +291,10 @@ leaves agents the plain `herdr` commands alone. The script needs
 
 ## Searching agent history
 
-With [memex.el](https://github.com/srnnkls/memex.el) installed, `m`
+With [memex.el](https://github.com/srnnkls/memex.el) installed, `s`
 searches the transcripts memex indexed, narrowed to what point stands
 for: one agent on an agent row, a herd's members inside a herd, every
-listed agent elsewhere in the dashboard, and everything outside it. `M`
+listed agent elsewhere in the dashboard, and everything outside it. `S`
 opens the menu, which adds the search modes and, for the agent at point,
 its transcript and a resume into a fresh tab.
 

@@ -96,16 +96,16 @@
     (cl-letf (((symbol-function 'locate-library) (lambda (&rest _) nil))
               (herdr-status-mode-map map))
       (herdr-memex-install-keys)
-      (should-not (keymap-lookup map "m"))
-      (should-not (keymap-lookup map "M")))))
+      (should-not (keymap-lookup map "s"))
+      (should-not (keymap-lookup map "S")))))
 
 (ert-deftest herdr-memex-binds-its-keys-where-memex-exists ()
   (let ((map (copy-keymap herdr-status-mode-map)))
     (cl-letf (((symbol-function 'locate-library) (lambda (&rest _) "/tmp/memex.el"))
               (herdr-status-mode-map map))
       (herdr-memex-install-keys)
-      (should (eq #'herdr-memex-search (keymap-lookup map "m")))
-      (should (eq #'herdr-memex-dispatch (keymap-lookup map "M"))))))
+      (should (eq #'herdr-memex-search (keymap-lookup map "s")))
+      (should (eq #'herdr-memex-dispatch (keymap-lookup map "S"))))))
 
 ;;;; Scope
 

@@ -794,7 +794,7 @@
     (plist-get (cdr suffix) :command)))
 
 (ert-deftest herdr-status-dispatch-mirrors-the-keymap ()
-  (dolist (key '("RET" "o" "s" "P" "R" "k" "D" "f" "O" "d" "h" "g" "q"))
+  (dolist (key '("RET" "o" "P" "R" "k" "D" "f" "O" "d" "h" "g" "q"))
     (let ((bound (keymap-lookup herdr-status-mode-map key))
           (offered (herdr-status-tests--suffix-command 'herdr-status-dispatch key)))
       (should (commandp bound))
@@ -886,6 +886,35 @@ labelling the panes the fixture agents occupy."
       (magit-section-show (herdr-status-tests--herd-section "refactor"))
       (herdr-status-refresh)
       (should-not (oref (herdr-status-tests--herd-section "refactor") hidden)))))
+
+(ert-deftest herdr-status-visiting-shows-the-agent-without-moving-herdr ()
+  (herdr-status-tests--with-dashboard
+    (let (switched visited)
+      (cl-letf (((symbol-function 'herdr-agent-switch)
+                 (lambda (target) (setq switched target)))
+                ((symbol-function 'herdr-visit)
+                 (lambda (entry) (setq visited entry))))
+        (goto-char (point-min))
+        (should (re-search-forward "^ +● api-review" nil t))
+        (herdr-status-visit)
+        (should-not switched)
+        (should (equal "t1" (alist-get 'terminal_id visited)))))))
+
+(ert-deftest herdr-status-visiting-with-a-prefix-moves-herdr-too ()
+  "Focusing the pane in herdr was its own key; it folded into the visit a
+prefix argument makes, so the terminal and Emacs land on one agent."
+  (herdr-status-tests--with-dashboard
+    (let (switched visited)
+      (cl-letf (((symbol-function 'herdr-agent-switch)
+                 (lambda (target) (setq switched target)))
+                ((symbol-function 'herdr-visit)
+                 (lambda (entry) (setq visited entry))))
+        (goto-char (point-min))
+        (should (re-search-forward "^ +● api-review" nil t))
+        (let ((current-prefix-arg '(4)))
+          (call-interactively #'herdr-status-visit))
+        (should-not visited)
+        (should (equal '("/tmp/alpha.sock" . "t1") switched))))))
 
 (provide 'herdr-status-tests)
 ;;; herdr-status-tests.el ends here
