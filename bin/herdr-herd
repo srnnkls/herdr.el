@@ -1,0 +1,202 @@
+#!/bin/sh
+# herdr-herd — read and change the herd an agent's pane belongs to.
+#
+# Membership is the pane's own manual label, as `herd:NAME' ahead of
+# whatever else the label says. Everything here is `herdr pane rename',
+# `herdr pane list' and `herdr agent prompt'; nothing is stored outside
+# herdr, and every command below can be typed by hand instead.
+#
+# A pane argument defaults to $HERDR_PANE_ID, which herdr injects into
+# every pane it manages, so an agent addresses itself with no arguments.
+
+set -eu
+
+HERDR=${HERDR_BIN_PATH:-herdr}
+PREFIX=herd:
+
+die() {
+	printf '%s\n' "$*" >&2
+	exit 1
+}
+
+usage() {
+	cat <<'EOF'
+usage: herdr-herd <command> [argument ...]
+
+  list                     every herd and the agents in it
+  members [<herd>]         the agents in <herd>, this pane's herd by default
+  peers                    the other agents in this pane's herd
+  of [<pane>]              the herd a pane is in
+  join <herd> [<pane>]     put a pane in <herd>, keeping the rest of its label
+  leave [<pane>]           take a pane out of its herd
+  say <message>            send <message> to every idle peer
+  tell <name> <message>    send <message> to one agent by name
+
+A pane defaults to $HERDR_PANE_ID. Names come from `herdr agent list'.
+EOF
+}
+
+require_pane() {
+	if [ -n "${1:-}" ]; then
+		printf '%s\n' "$1"
+	elif [ -n "${HERDR_PANE_ID:-}" ]; then
+		printf '%s\n' "$HERDR_PANE_ID"
+	else
+		die "no pane given and HERDR_PANE_ID is unset; are you inside a herdr pane?"
+	fi
+}
+
+# Read every agent as tab-separated PANE, NAME, HERD, STATUS, REST-OF-LABEL.
+# The label lives on the pane and the name on the agent, so both are read
+# and joined on the pane id.
+agents() {
+	panes=$("$HERDR" pane list)
+	list=$("$HERDR" agent list)
+	PREFIX="$PREFIX" PANES="$panes" AGENTS="$list" python3 -c '
+import json, os
+
+prefix = os.environ["PREFIX"]
+panes = json.loads(os.environ["PANES"])["result"]["panes"]
+agents = json.loads(os.environ["AGENTS"])["result"]["agents"]
+
+labels = {p.get("pane_id"): p.get("label") for p in panes}
+
+def split(label):
+    if not label:
+        return None, ""
+    head, _, rest = label.partition(" ")
+    if head.startswith(prefix) and len(head) > len(prefix):
+        return head[len(prefix):], rest.strip()
+    return None, label
+
+for agent in agents:
+    pane = agent.get("pane_id") or ""
+    herd, rest = split(labels.get(pane))
+    print("\t".join([
+        pane,
+        agent.get("name") or "",
+        herd or "",
+        agent.get("agent_status") or "",
+        rest,
+    ]))
+'
+}
+
+herd_of() {
+	pane=$(require_pane "${1:-}")
+	agents | awk -F '\t' -v p="$pane" '$1 == p { print $3 }'
+}
+
+rest_of() {
+	pane=$1
+	agents | awk -F '\t' -v p="$pane" '$1 == p { print $5 }'
+}
+
+cmd_list() {
+	agents | awk -F '\t' '$3 != "" { printf "%s\t%s\t%s\n", $3, ($2 == "" ? $1 : $2), $4 }' |
+		sort |
+		awk -F '\t' '
+			$1 != herd { herd = $1; printf "%s\n", herd }
+			{ printf "  %-24s %s\n", $2, $3 }
+		'
+}
+
+cmd_members() {
+	herd=${1:-$(herd_of "")}
+	[ -n "$herd" ] || die "this pane is in no herd"
+	agents | awk -F '\t' -v h="$herd" '$3 == h { print ($2 == "" ? $1 : $2) }'
+}
+
+cmd_peers() {
+	pane=$(require_pane "")
+	herd=$(herd_of "$pane")
+	[ -n "$herd" ] || die "this pane is in no herd"
+	agents | awk -F '\t' -v h="$herd" -v p="$pane" \
+		'$3 == h && $1 != p { print ($2 == "" ? $1 : $2) }'
+}
+
+cmd_join() {
+	herd=${1:-}
+	[ -n "$herd" ] || die "usage: herdr-herd join <herd> [<pane>]"
+	case $herd in
+	*[[:space:]]*) die "a herd name carries no whitespace: $herd" ;;
+	"$PREFIX"*) die "a herd name does not start with $PREFIX: $herd" ;;
+	esac
+	pane=$(require_pane "${2:-}")
+	rest=$(rest_of "$pane")
+	if [ -n "$rest" ]; then
+		"$HERDR" pane rename "$pane" "$PREFIX$herd $rest" >/dev/null
+	else
+		"$HERDR" pane rename "$pane" "$PREFIX$herd" >/dev/null
+	fi
+	printf '%s is in herd %s\n' "$pane" "$herd"
+}
+
+cmd_leave() {
+	pane=$(require_pane "${1:-}")
+	herd=$(herd_of "$pane")
+	[ -n "$herd" ] || die "$pane is in no herd"
+	rest=$(rest_of "$pane")
+	if [ -n "$rest" ]; then
+		"$HERDR" pane rename "$pane" "$rest" >/dev/null
+	else
+		"$HERDR" pane rename "$pane" --clear >/dev/null
+	fi
+	printf '%s left herd %s\n' "$pane" "$herd"
+}
+
+cmd_say() {
+	[ "$#" -gt 0 ] || die "usage: herdr-herd say <message>"
+	pane=$(require_pane "")
+	herd=$(herd_of "$pane")
+	[ -n "$herd" ] || die "this pane is in no herd"
+	me=$(agents | awk -F '\t' -v p="$pane" '$1 == p { print ($2 == "" ? $1 : $2) }')
+	agents |
+		awk -F '\t' -v h="$herd" -v p="$pane" \
+			'$3 == h && $1 != p { print $2 "\t" $4 }' |
+		while IFS="$(printf '\t')" read -r name status; do
+			if [ -z "$name" ]; then
+				printf 'skipped an unnamed peer\n' >&2
+			elif [ "$status" = working ] || [ "$status" = blocked ]; then
+				printf 'skipped %s (%s)\n' "$name" "$status" >&2
+			else
+				"$HERDR" agent prompt "$name" "[$herd] $me: $*" >/dev/null
+				printf 'told %s\n' "$name"
+			fi
+		done
+}
+
+cmd_tell() {
+	[ "$#" -ge 2 ] || die "usage: herdr-herd tell <name> <message>"
+	name=$1
+	shift
+	"$HERDR" agent prompt "$name" "$*" >/dev/null
+	printf 'told %s\n' "$name"
+}
+
+[ "${HERDR_ENV:-}" = 1 ] ||
+	die "not inside a herdr pane: HERDR_ENV is not 1"
+
+command -v python3 >/dev/null 2>&1 ||
+	die "herdr-herd needs python3 to read herdr's JSON"
+
+command=${1:-}
+if [ "$#" -gt 0 ]; then
+	shift
+fi
+
+case $command in
+list) cmd_list ;;
+members) cmd_members "${1:-}" ;;
+peers) cmd_peers ;;
+of) printf '%s\n' "$(herd_of "${1:-}")" ;;
+join) cmd_join "${1:-}" "${2:-}" ;;
+leave) cmd_leave "${1:-}" ;;
+say) cmd_say "$@" ;;
+tell) cmd_tell "$@" ;;
+-h | --help | help | "") usage ;;
+*)
+	usage >&2
+	die "unknown command: $command"
+	;;
+esac

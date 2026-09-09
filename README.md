@@ -121,8 +121,8 @@ Status:   i dashboard   I one line     C customize
 
 Opening the menu starts no process. Every agent command reads its target
 from the status dashboard when the menu is opened there, and prompts
-otherwise — so `?` in the dashboard is the menu scoped to the row at
-point.
+otherwise. The dashboard has its own menu on `?`, `herdr-status-dispatch`,
+mirroring the keys it binds directly.
 
 ## Status dashboard
 
@@ -140,6 +140,7 @@ fringe the collapse arrows are drawn in, so they clear the headings.
 | --- | --- |
 | `Servers` | One entry per known session: reachability, socket, herdr version, protocol, and object counts |
 | `Recent` | Agents in most-recently-used order, omitted when none |
+| `Herds` | One collapsible entry per herd the listed agents name, omitted when none does |
 | `Agents` | The filterable list, headed by the visible-of-total count and the active filters |
 | `Panes` | Panes running no agent, grouped under their workspace |
 
@@ -182,7 +183,6 @@ redraw a live dashboard on a short idle delay, which
 
 | Key | Action |
 | --- | --- |
-| `?` | `herdr-transient`, acting on the agent at point |
 | `RET` / `o` | Show the agent or pane, attaching it when nothing does yet; on a server, attach that whole session |
 | `s` | Focus the agent in herdr |
 | `P` | Send a prompt |
@@ -190,7 +190,18 @@ redraw a live dashboard on a short idle delay, which
 | `k` | Stop, after confirmation |
 | `D` | Detach from Emacs, leaving the herdr pane alone |
 | `f` | Filter menu |
+| `S` | Sort menu |
+| `d` | Show or hide agent metadata |
+| `h` | Herd menu |
+| `m` | Search agent history, narrowed by the section at point |
+| `M` | Memex menu |
 | `g` | Refresh |
+| `?` | `herdr-status-dispatch`, a menu of these same keys |
+
+Every action has a direct key; `?` opens a menu that mirrors them and
+closes on a second `?`. `m` and `M` are bound only where
+[memex.el](https://github.com/srnnkls/memex.el) is on the load path, and
+are absent otherwise.
 
 `herdr-status-entry-at-point` returns the agent or pane row under point,
 or nil elsewhere, so an editor integration can add a binding that attaches
@@ -212,6 +223,83 @@ Each element maps a symbol to a function of no arguments. That function
 may prompt and returns a predicate of one session entry, or nil to add no
 filter. `herdr-status-add-filter` completes over the registry, so a
 custom predicate is available under `f x` without further wiring.
+
+## Herds
+
+A herd is a named set of agents that know each other's names and know the
+`herdr` CLI is how they reach one another. `h` in the dashboard opens the
+menu:
+
+| Key | Action |
+| --- | --- |
+| `a` | Add the agent at point to a herd, naming a new one if you like |
+| `A` | Add several — the rows the region covers, else pick from the live agents |
+| `r` | Take the agent at point out of its herd |
+| `d` | Dissolve a herd, leaving its agents running and named |
+| `b` | Send one prompt to every idle member |
+| `R` | Send the roster again after membership changed |
+
+Joining sends the member `herdr-herd-protocol` followed by the live
+roster, through `herdr agent prompt`. Nothing is written into the project
+the agent works in, so Codex and Pi members join on the same terms as
+Claude. An agent that is `working` or `blocked` is skipped and named
+rather than interrupted mid-turn; `herdr-herd-busy-states` is that list.
+
+Members address each other by name only. An agent that already has one
+keeps it; one that has none is named at join from the repository it works
+in and the task its terminal title shows — `memex-incremental-index`,
+`sira-unified-kv` — offered as an editable default and passed through
+herdr's own uniqueness check. A linked worktree is named after the
+repository it was cut from, not its own directory.
+
+### Membership lives in herdr
+
+A member's pane carries its herd in the pane's own manual label, as
+`herd:NAME` ahead of whatever else the label says:
+
+```console
+$ herdr pane rename w71:p1 "herd:refactor"      # join
+$ herdr pane list | jq -r '.result.panes[].label'
+$ herdr pane rename w71:p1 --clear              # leave
+```
+
+Emacs is therefore not the entry point. Herdr persists that label across
+a restart and reports it with the pane, so an agent joins, leaves, and
+reads a herd with the same `herdr` CLI it already uses for everything
+else, and needs no editor running. Emacs only reads and writes the same
+field. A herd exists exactly as long as some live pane names it; nothing
+is stored outside herdr.
+
+The label is drawn only where a pane has no terminal title — which every
+agent pane sets — so on an agent it stays invisible. Text a pane label
+already carried survives every herd command: joining prepends `herd:NAME`
+and leaving takes it away again.
+
+`bin/herdr-herd` wraps those calls for agents. It defaults every pane
+argument to `$HERDR_PANE_ID`, so an agent talks about itself with no
+arguments:
+
+```console
+$ herdr-herd join refactor
+$ herdr-herd peers
+$ herdr-herd say "rebased onto main, your turn"
+```
+
+The roster an agent receives names the script's absolute path, so no
+`PATH` setup is needed; `herdr-herd-command` controls that, and nil
+leaves agents the plain `herdr` commands alone. The script needs
+`python3` to read herdr's JSON and refuses outside a herdr pane.
+
+## Searching agent history
+
+With [memex.el](https://github.com/srnnkls/memex.el) installed, `m`
+searches the transcripts memex indexed, narrowed to what point stands
+for: one agent on an agent row, a herd's members inside a herd, every
+listed agent elsewhere in the dashboard, and everything outside it. `M`
+opens the menu, which adds the search modes and, for the agent at point,
+its transcript and a resume into a fresh tab.
+
+Without memex.el neither key is bound and nothing is loaded.
 
 ## Agent-facing Emacs integration
 

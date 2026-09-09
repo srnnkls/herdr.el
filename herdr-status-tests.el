@@ -43,17 +43,23 @@
   (list '((kind . "herdr") (session . "alpha")
           (server_key . "/tmp/alpha.sock")
           (agent . "claude") (agent_status . "working")
+          (agent_session . ((agent . "claude") (kind . "id")
+                            (source . "herdr:claude") (value . "s1")))
           (name . "api-review") (terminal_title_stripped . "api-review")
           (terminal_id . "t1") (pane_id . "%1")
           (workspace_id . "w1") (tab_id . "tab1") (cwd . "/tmp/proj/"))
         '((kind . "herdr") (session . "alpha")
           (server_key . "/tmp/alpha.sock")
           (agent . "codex") (agent_status . "idle")
+          (agent_session . ((agent . "codex") (kind . "id")
+                            (source . "herdr:codex") (value . "s2")))
           (name . "docs") (terminal_id . "t2") (pane_id . "%2")
           (workspace_id . "w1") (tab_id . "tab1") (cwd . "/tmp/proj/"))
         '((kind . "herdr") (session . "beta")
           (server_key . "/tmp/beta.sock")
           (agent . "claude") (agent_status . "orbiting")
+          (agent_session . ((agent . "claude") (kind . "id")
+                            (source . "herdr:claude") (value . "s3")))
           (name . "beta-work") (terminal_id . "t3") (pane_id . "%3")
           (workspace_id . "w9") (tab_id . "tab9") (cwd . "/tmp/other/"))))
 
@@ -779,6 +785,107 @@
 (ert-deftest herdr-status-entry-is-nil-outside-the-dashboard ()
   (with-temp-buffer
     (should-not (herdr-status-entry-at-point))))
+
+;;;; Dispatch
+
+(defun herdr-status-tests--suffix-command (prefix key)
+  "Return the command PREFIX runs for KEY, or nil when it binds none."
+  (when-let* ((suffix (ignore-errors (transient-get-suffix prefix key))))
+    (plist-get (cdr suffix) :command)))
+
+(ert-deftest herdr-status-dispatch-mirrors-the-keymap ()
+  (dolist (key '("RET" "o" "s" "P" "R" "k" "D" "f" "S" "d" "h" "g" "q"))
+    (let ((bound (keymap-lookup herdr-status-mode-map key))
+          (offered (herdr-status-tests--suffix-command 'herdr-status-dispatch key)))
+      (should (commandp bound))
+      (should (eq bound offered)))))
+
+(ert-deftest herdr-status-dispatch-closes-on-a-second-question-mark ()
+  (should (eq 'transient-quit-one
+              (herdr-status-tests--suffix-command 'herdr-status-dispatch "?")))
+  (should (eq #'herdr-status-dispatch (keymap-lookup herdr-status-mode-map "?"))))
+
+(ert-deftest herdr-herd-dispatch-offers-only-real-commands ()
+  (dolist (key '("a" "A" "r" "d" "b" "R"))
+    (should (commandp (herdr-status-tests--suffix-command 'herdr-herd-dispatch key)))))
+
+(ert-deftest herdr-transient-keeps-the-anchors-memex-appends-after ()
+  (should (herdr-status-tests--suffix-command 'herdr-transient "i"))
+  (should-not (herdr-status-tests--suffix-command 'herdr-transient "x")))
+
+;;;; Herds
+
+(defmacro herdr-status-tests--with-herds (labels &rest body)
+  "Run BODY with LABELS on the fixture agents, keyed by agent name.
+Herd membership is the pane label herdr reports, so a herd is set up by
+labelling the panes the fixture agents occupy."
+  (declare (indent 1) (debug (form body)))
+  `(let ((entries (herdr-status-tests--entries))
+         (table ,labels))
+     (cl-letf (((symbol-function 'herdr-status-tests--entries)
+                (lambda ()
+                  (mapcar (lambda (entry)
+                            (let ((label (cdr (assoc (alist-get 'name entry)
+                                                     table))))
+                              (cons (cons 'pane_label label) entry)))
+                          entries))))
+       ,@body)))
+
+(defun herdr-status-tests--herd-section (name)
+  "Return the section drawing the herd called NAME."
+  (or (seq-find (lambda (section)
+                  (and (eq (oref section type) 'herdr-status-herd)
+                       (equal (oref section value) name)))
+                (herdr-status--sections magit-root-section))
+      (error "No section for herd %s" name)))
+
+(ert-deftest herdr-status-draws-no-herds-section-without-a-herd ()
+  (herdr-status-tests--with-herds nil
+    (herdr-status-tests--with-dashboard
+      (goto-char (point-min))
+      (should-not (search-forward "Herds" nil t)))))
+
+(ert-deftest herdr-status-draws-a-herd-with-its-live-members ()
+  (herdr-status-tests--with-herds
+      '(("api-review" . "herd:refactor") ("docs" . "herd:refactor"))
+    (herdr-status-tests--with-dashboard
+      (let ((herds (herdr-status-tests--section-text "Herds 1")))
+        (should (string-match-p "refactor  · 2 members" herds))
+        (should (string-match-p "api-review" herds))
+        (should (string-match-p "docs" herds))))))
+
+(defun herdr-status-tests--herd-text (name)
+  "Return the text the section drawing the herd NAME covers."
+  (let ((section (herdr-status-tests--herd-section name)))
+    (buffer-substring-no-properties (oref section start) (oref section end))))
+
+(ert-deftest herdr-status-leaves-an-unlabelled-agent-out-of-every-herd ()
+  (herdr-status-tests--with-herds '(("api-review" . "herd:refactor"))
+    (herdr-status-tests--with-dashboard
+      (should (string-match-p "refactor  · 1 member"
+                              (herdr-status-tests--section-text "Herds 1")))
+      (let ((herd (herdr-status-tests--herd-text "refactor")))
+        (should (string-match-p "api-review" herd))
+        (should-not (string-match-p "beta-work" herd))
+        (should-not (string-match-p "docs" herd))))))
+
+(ert-deftest herdr-status-reads-a-herd-past-the-rest-of-a-pane-label ()
+  (herdr-status-tests--with-herds
+      '(("api-review" . "herd:refactor  a label of its own"))
+    (herdr-status-tests--with-dashboard
+      (should (string-match-p "refactor  · 1 member"
+                              (herdr-status-tests--section-text "Herds 1"))))))
+
+(ert-deftest herdr-status-keeps-a-herd-collapsed-across-a-refresh ()
+  (herdr-status-tests--with-herds '(("api-review" . "herd:refactor"))
+    (herdr-status-tests--with-dashboard
+      (should-not (oref (herdr-status-tests--herd-section "refactor") hidden))
+      (magit-section-hide (herdr-status-tests--herd-section "refactor"))
+      (herdr-status-refresh)
+      (should (oref (herdr-status-tests--herd-section "refactor") hidden))
+      (magit-section-show (herdr-status-tests--herd-section "refactor"))
+      (herdr-status-refresh)
+      (should-not (oref (herdr-status-tests--herd-section "refactor") hidden)))))
 
 (provide 'herdr-status-tests)
 ;;; herdr-status-tests.el ends here

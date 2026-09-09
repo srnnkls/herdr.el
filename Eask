@@ -27,6 +27,7 @@
 (load-paths ".")
 
 (files "herdr*.el"
+       "bin/herdr-herd"
        "LICENSE"
        '(:exclude "herdr*-tests.el"))
 

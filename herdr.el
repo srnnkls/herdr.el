@@ -548,14 +548,26 @@ REQUIRE-AGENT keeps only entries running that agent kind."
 Entries are alists; `kind' names the group they appear under and
 `buffer' points at the Emacs buffer showing them, when one exists.")
 
+(defun herdr--pane-labels ()
+  "Return the manual label of every pane, keyed by pane id.
+Herdr reports an agent without the label of the pane it occupies, and
+the label is where a pane records durable state of its own."
+  (let ((labels (make-hash-table :test #'equal)))
+    (dolist (pane (herdr-panes) labels)
+      (when-let* ((label (alist-get 'label pane)))
+        (puthash (alist-get 'pane_id pane) label labels)))))
+
 (defun herdr-agent-sessions ()
-  "Return the agents of the herdr session in scope as session entries."
-  (mapcar (lambda (agent)
-            (append `((kind . "herdr")
-                      (session . ,herdr-session)
-                      (server_key . ,(herdr-server-key)))
-                    agent))
-          (herdr-agents)))
+  "Return the agents of the herdr session in scope as session entries.
+Each carries `pane_label', the manual label of the pane it occupies."
+  (let ((labels (herdr--pane-labels)))
+    (mapcar (lambda (agent)
+              (append `((kind . "herdr")
+                        (session . ,herdr-session)
+                        (server_key . ,(herdr-server-key))
+                        (pane_label . ,(gethash (alist-get 'pane_id agent) labels)))
+                      agent))
+            (herdr-agents))))
 
 (defun herdr--session-entries ()
   "Return the entries of every session in `herdr-all-sessions'.
@@ -597,6 +609,10 @@ Entries that already have an Emacs buffer win over bare ones."
 
 (defvar herdr--recent-session-targets nil
   "Session targets ordered from most to least recently used.")
+
+(defun herdr--entry-server (entry)
+  "Return the canonical server key ENTRY belongs to."
+  (or (alist-get 'server_key entry) (herdr-server-key)))
 
 (defun herdr--entry-target (entry)
   "Return ENTRY's composite server and terminal target, or nil."

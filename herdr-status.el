@@ -25,6 +25,7 @@
 (require 'magit-section)
 (require 'transient)
 (require 'herdr-agent)
+(require 'herdr-herd)
 
 ;;;; Appearance
 
@@ -297,6 +298,11 @@ A burst of events collapses into one redraw."
 (defvar-local herdr-status--previews nil
   "Output previews already fetched since the last refresh.")
 
+(defvar-local herdr-status--collapsed-herds nil
+  "Names of the herds collapsed in this dashboard.
+A redraw re-expands every section, so this is what carries a collapsed
+herd across the refresh an agent event triggers.")
+
 (defvar herdr-status--timer nil
   "Idle timer coalescing event-driven redraws.")
 
@@ -341,10 +347,6 @@ SERVERS are the records `herdr-status--collect-servers' produced."
         (puthash (cons (alist-get 'key server) (alist-get key record))
                  record table)))))
 
-(defun herdr-status--entry-server (entry)
-  "Return the canonical server key ENTRY belongs to."
-  (or (alist-get 'server_key entry) (herdr-server-key)))
-
 (defun herdr-status--agents (entries)
   "Return the ENTRIES that are running an agent."
   (cl-remove-if-not (lambda (entry) (alist-get 'agent entry)) entries))
@@ -356,7 +358,7 @@ Each pane is returned stamped with its server key."
         panes)
     (dolist (entry entries)
       (when-let* ((pane (alist-get 'pane_id entry)))
-        (puthash (cons (herdr-status--entry-server entry) pane) t claimed)))
+        (puthash (cons (herdr--entry-server entry) pane) t claimed)))
     (dolist (server servers (nreverse panes))
       (dolist (pane (alist-get 'panes (alist-get 'snapshot server)))
         (unless (gethash (cons (alist-get 'key server) (alist-get 'pane_id pane))
@@ -577,7 +579,7 @@ A pane running no agent has no state to report and is left blank there."
 
 (defun herdr-status--workspace-label (entry workspaces)
   "Return the label of ENTRY's workspace, looked up in WORKSPACES."
-  (let ((record (gethash (cons (herdr-status--entry-server entry)
+  (let ((record (gethash (cons (herdr--entry-server entry)
                                (alist-get 'workspace_id entry))
                          workspaces)))
     (or (alist-get 'label record)
@@ -676,7 +678,7 @@ INDENT is how far the lines are set in."
   (herdr-status--insert-field
    "workspace" (herdr-status--workspace-label entry workspaces) indent)
   (herdr-status--insert-field
-   "tab" (alist-get 'label (gethash (cons (herdr-status--entry-server entry)
+   "tab" (alist-get 'label (gethash (cons (herdr--entry-server entry)
                                           (alist-get 'tab_id entry))
                                     tabs))
    indent)
@@ -945,6 +947,26 @@ WIDTHS, TABS, and WORKSPACES are passed through to each row."
         (dolist (entry entries)
           (herdr-status--insert-agent entry widths tabs workspaces))))))
 
+(defun herdr-status--insert-herds (widths tabs workspaces)
+  "Insert one collapsible section per herd the listed agents form.
+WIDTHS, TABS, and WORKSPACES draw a member on the same columns as the
+agent list.  Nothing is drawn where no agent names a herd."
+  (when-let* ((herds (herdr-herds (herdr-status--agents herdr-status--entries))))
+    (magit-insert-section (herdr-status-herds nil t)
+      (magit-insert-heading
+        (propertize (format "Herds %d" (length herds))
+                    'font-lock-face 'magit-section-heading))
+      (pcase-dolist (`(,name . ,members) herds)
+        (magit-insert-section (herdr-status-herd name)
+          (magit-insert-heading
+            (concat (propertize name 'font-lock-face 'herdr-status-label)
+                    (propertize (format "  · %d member%s" (length members)
+                                        (if (= 1 (length members)) "" "s"))
+                                'font-lock-face 'herdr-status-meta)))
+          (magit-insert-section-body
+            (dolist (entry members)
+              (herdr-status--insert-agent entry widths tabs workspaces))))))))
+
 (defun herdr-status--insert-agents (widths tabs workspaces)
   "Insert the filtered agent list.
 WIDTHS, TABS, and WORKSPACES are passed through to each row."
@@ -985,12 +1007,17 @@ lines up with them."
 
 ;;;; Mode
 
-(autoload 'herdr-transient "herdr-transient" nil t)
+(autoload 'herdr-memex-search "herdr-memex" nil t)
+(autoload 'herdr-memex-dispatch "herdr-memex" nil t)
+(autoload 'herdr-memex-available-p "herdr-memex")
+(autoload 'herdr-memex-install-keys "herdr-memex")
 
 (defvar-keymap herdr-status-mode-map
-  :doc "Keymap for `herdr-status-mode'."
+  :doc "Keymap for `herdr-status-mode'.
+The memex keys `m' and `M' are installed by `herdr-memex-install-keys'
+where memex.el is on the load path, and are unbound where it is not."
   :parent magit-section-mode-map
-  "?" #'herdr-transient
+  "?" #'herdr-status-dispatch
   "RET" #'herdr-status-visit
   "o" #'herdr-status-visit-other-window
   "s" #'herdr-status-switch
@@ -1000,6 +1027,7 @@ lines up with them."
   "D" #'herdr-status-detach
   "f" #'herdr-status-filter
   "S" #'herdr-status-sort
+  "h" #'herdr-herd-dispatch
   "d" #'herdr-status-toggle-details
   "g" #'herdr-status-refresh
   "q" #'quit-window)
@@ -1028,6 +1056,7 @@ lines up with them."
                 herdr-status-visibility-indicators))
   (when (characterp (car (magit-section-visibility-indicator)))
     (setq-local left-margin-width 2))
+  (herdr-memex-install-keys)
   (add-hook 'window-configuration-change-hook
             #'herdr-status--widen-fringe nil t))
 
@@ -1046,6 +1075,28 @@ runs out of stack.")
   (unless herdr-status--refreshing
     (herdr-status--redraw)))
 
+(defun herdr-status--sections (section)
+  "Return SECTION and every section under it."
+  (cons section (mapcan #'herdr-status--sections
+                        (copy-sequence (oref section children)))))
+
+(defun herdr-status--collapsed-herds ()
+  "Return the names of the herds collapsed in this dashboard."
+  (when magit-root-section
+    (delq nil
+          (mapcar (lambda (section)
+                    (and (eq (oref section type) 'herdr-status-herd)
+                         (oref section hidden)
+                         (oref section value)))
+                  (herdr-status--sections magit-root-section)))))
+
+(defun herdr-status--restore-collapsed-herds ()
+  "Collapse the herds that were collapsed before the redraw."
+  (dolist (section (herdr-status--sections magit-root-section))
+    (when (and (eq (oref section type) 'herdr-status-herd)
+               (member (oref section value) herdr-status--collapsed-herds))
+      (magit-section-hide section))))
+
 (defun herdr-status--redraw ()
   "Re-fetch and redraw the dashboard in the current buffer."
   (let ((herdr-status--refreshing t)
@@ -1053,6 +1104,7 @@ runs out of stack.")
         (line (line-number-at-pos))
         (starts (mapcar (lambda (window) (cons window (window-start window)))
                         (get-buffer-window-list nil nil t))))
+    (setq herdr-status--collapsed-herds (herdr-status--collapsed-herds))
     (setq herdr-status--servers (herdr-status--collect-servers)
           herdr-status--entries (herdr-status--collect-entries)
           herdr-status--details nil)
@@ -1068,11 +1120,13 @@ runs out of stack.")
       (erase-buffer)
       (magit-insert-section (herdr-status-root)
         (herdr-status--insert-recent widths tabs workspaces)
+        (herdr-status--insert-herds widths tabs workspaces)
         (herdr-status--insert-agents widths tabs workspaces)
         (herdr-status--insert-panes widths workspaces)
         (herdr-status--insert-servers))
       (let ((magit-section-cache-visibility nil))
-        (magit-section-show magit-root-section)))
+        (magit-section-show magit-root-section))
+      (herdr-status--restore-collapsed-herds))
     (goto-char (point-min))
     (forward-line (1- line))
     (pcase-dolist (`(,window . ,start) starts)
@@ -1335,6 +1389,42 @@ its whole session through `herdr-attach-session'."
     ("x" "custom" herdr-status-add-filter)
     ("-" "drop one" herdr-status-remove-filter)
     ("DEL" "clear" herdr-status-clear-filters)]])
+
+(defun herdr-status--details-description ()
+  "Return the label of the detail toggle, carrying its state."
+  (format "details (%s)" (if herdr-status-show-details "on" "off")))
+
+;;;###autoload
+(transient-define-prefix herdr-status-dispatch ()
+  "Show the herdr dashboard's own keys.
+Every suffix here is bound directly in `herdr-status-mode-map' as well."
+  [:description
+   (lambda () (format "herdr dashboard  ·  %d agents"
+                      (length (herdr-status--agents herdr-status--entries))))
+   ["Visit"
+    ("RET" "visit" herdr-status-visit)
+    ("o" "other window" herdr-status-visit-other-window)
+    ("s" "switch" herdr-status-switch)]
+   ["Agent"
+    ("P" "prompt" herdr-status-prompt)
+    ("R" "rename" herdr-status-rename)
+    ("k" "stop" herdr-status-stop)
+    ("D" "detach" herdr-status-detach)]
+   ["List"
+    ("f" "filter" herdr-status-filter)
+    ("S" "sort" herdr-status-sort)
+    ("d" herdr-status-toggle-details
+     :description herdr-status--details-description)
+    ("g" "refresh" herdr-status-refresh)]
+   ["Herd"
+    ("h" "herds" herdr-herd-dispatch)]
+   ["Memex"
+    :if herdr-memex-available-p
+    ("m" "search" herdr-memex-search)
+    ("M" "memex" herdr-memex-dispatch)]]
+  [:class transient-row
+   ("?" "close" transient-quit-one)
+   ("q" "quit dashboard" quit-window)])
 
 (provide 'herdr-status)
 ;;; herdr-status.el ends here

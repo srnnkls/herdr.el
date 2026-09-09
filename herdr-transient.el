@@ -108,10 +108,6 @@
   "Return non-nil in a dashboard buffer."
   (derived-mode-p 'herdr-status-mode))
 
-(defun herdr-transient--details-description ()
-  "Return the label of the agent-details toggle, carrying its state."
-  (format "details (%s)" (if herdr-status-show-details "on" "off")))
-
 ;;;###autoload
 (transient-define-prefix herdr-transient ()
   "Manage Herdr workflows."
@@ -137,7 +133,7 @@
     ("i" "dashboard" herdr-status)
     ("I" "one line" herdr-transient--status)
     ("d" herdr-status-toggle-details
-     :description herdr-transient--details-description
+     :description herdr-status--details-description
      :if herdr-transient--dashboard-p)
     ("C" "customize" herdr-transient--customize)]])
 
