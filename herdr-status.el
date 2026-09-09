@@ -1026,7 +1026,7 @@ where memex.el is on the load path, and are unbound where it is not."
   "k" #'herdr-status-stop
   "D" #'herdr-status-detach
   "f" #'herdr-status-filter
-  "S" #'herdr-status-sort
+  "O" #'herdr-status-sort
   "h" #'herdr-herd-dispatch
   "d" #'herdr-status-toggle-details
   "g" #'herdr-status-refresh
@@ -1412,7 +1412,7 @@ Every suffix here is bound directly in `herdr-status-mode-map' as well."
     ("D" "detach" herdr-status-detach)]
    ["List"
     ("f" "filter" herdr-status-filter)
-    ("S" "sort" herdr-status-sort)
+    ("O" "sort" herdr-status-sort)
     ("d" herdr-status-toggle-details
      :description herdr-status--details-description)
     ("g" "refresh" herdr-status-refresh)]

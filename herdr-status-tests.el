@@ -794,7 +794,7 @@
     (plist-get (cdr suffix) :command)))
 
 (ert-deftest herdr-status-dispatch-mirrors-the-keymap ()
-  (dolist (key '("RET" "o" "s" "P" "R" "k" "D" "f" "S" "d" "h" "g" "q"))
+  (dolist (key '("RET" "o" "s" "P" "R" "k" "D" "f" "O" "d" "h" "g" "q"))
     (let ((bound (keymap-lookup herdr-status-mode-map key))
           (offered (herdr-status-tests--suffix-command 'herdr-status-dispatch key)))
       (should (commandp bound))

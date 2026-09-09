@@ -190,7 +190,7 @@ redraw a live dashboard on a short idle delay, which
 | `k` | Stop, after confirmation |
 | `D` | Detach from Emacs, leaving the herdr pane alone |
 | `f` | Filter menu |
-| `S` | Sort menu |
+| `O` | Order menu |
 | `d` | Show or hide agent metadata |
 | `h` | Herd menu |
 | `m` | Search agent history, narrowed by the section at point |
