@@ -314,7 +314,12 @@ reads as *herdr: app@main LABEL*."
   "Show BUFFER and return its window.
 Attached terminals go to their own slot of the `herdr-window-side'
 side window, so several of them sit next to each other instead of
-replacing one another."
+replacing one another.
+
+`display-buffer-in-side-window' dedicates that window to the terminal on
+its own, weakly.  Dedicating it strongly instead keeps `\[kill-buffer]'
+from finding the window another buffer, which is an error rather than a
+fallback."
   (cond
    (herdr-display-buffer-action (display-buffer buffer herdr-display-buffer-action))
    ((not herdr-use-side-window)
@@ -337,9 +342,7 @@ replacing one another."
                    `((window-height . ,herdr-window-height)))
                (window-parameters . ((no-delete-other-windows . t))))))
            (window (display-buffer buffer)))
-      (when window
-        (set-window-dedicated-p window t)
-        (select-window window))
+      (when window (select-window window))
       window))))
 
 (defvar-local herdr-terminal-id nil
@@ -841,8 +844,16 @@ naming the same session appear once."
           (puthash name t seen)
           (push session sessions))))))
 
+(defun herdr-session-socket (session)
+  "Return the socket SESSION is served over."
+  (let ((herdr-socket-path nil)
+        (herdr-session session))
+    (herdr-socket-file)))
+
 (defun herdr-read-session (prompt &optional default)
-  "Read a herdr session designator with PROMPT, offering DEFAULT."
+  "Read a herdr session designator with PROMPT, offering DEFAULT.
+Each name is shown beside the socket it stands for, since that is what
+tells two sessions apart."
   (let* ((known (mapcar (lambda (session)
                           (pcase session
                             ((or 'nil 'shared) "shared")
@@ -852,10 +863,23 @@ naming the same session appear once."
          (default (pcase default
                     ((or 'nil 'shared) "shared")
                     ('emacs "emacs")
-                    (name name))))
+                    (name name)))
+         (names (delete-dups (append known (list "shared" "emacs"))))
+         (width (apply #'max 0 (mapcar #'string-width names)))
+         (annotation
+          (lambda (name)
+            (concat (make-string (max 1 (- (+ width 2) (string-width name))) ?\s)
+                    (abbreviate-file-name
+                     (herdr-session-socket (herdr--session-designator name))))))
+         (table (lambda (string predicate action)
+                  (if (eq action 'metadata)
+                      `(metadata (category . herdr-session)
+                                 (annotation-function . ,annotation)
+                                 (display-sort-function . identity)
+                                 (cycle-sort-function . identity))
+                    (complete-with-action action names string predicate)))))
     (herdr--session-designator
-     (completing-read (format-prompt prompt default)
-                      (delete-dups (append known (list "shared" "emacs")))
+     (completing-read (format-prompt prompt default) table
                       nil nil nil nil default))))
 
 ;;;###autoload

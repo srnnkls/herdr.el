@@ -405,8 +405,25 @@ alist.  Returns the socket path."
                          (buffer-local-value 'herdr--window-slot buffer)))
           (should (>= (buffer-local-value 'herdr--window-slot buffer)
                       herdr-window-slot-base))
-          (should (window-dedicated-p window)))
+          (should (eq (window-dedicated-p window) 'side)))
       (kill-buffer buffer))))
+
+(ert-deftest herdr-killing-an-attached-terminal-can-find-its-window-a-buffer ()
+  "A window dedicated with t rather than `side' makes
+`switch-to-prev-buffer' an error, which is what kill-buffer advice that
+looks for a replacement buffer runs into."
+  (let ((buffer (generate-new-buffer "*herdr: probe term_dedicated*"))
+        (herdr-use-side-window t)
+        (herdr-window-side 'right)
+        (herdr-display-buffer-action nil))
+    (unwind-protect
+        (let ((window (herdr-display-buffer buffer)))
+          (should-not (eq (window-dedicated-p window) t))
+          (with-selected-window window
+            (should-not (condition-case err
+                            (progn (switch-to-prev-buffer nil t) nil)
+                          (error err)))))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (ert-deftest herdr-ghostel-focus-event-drops-focus-loss-for-attached-terminals ()
   (let ((buffer (generate-new-buffer " *herdr focus*"))
