@@ -14,6 +14,11 @@
 ;; member a roster; nothing is written into the project it works in, so a
 ;; harness without a skill mechanism joins on the same terms as Claude.
 ;;
+;; A herd belongs to one herdr session, because `herdr agent prompt'
+;; reaches one server: agents on different sessions never share a herd
+;; however alike their labels.  A herd is therefore named by the cons of
+;; its session and its own name.
+;;
 ;; Membership lives in herdr, not in Emacs: a member's pane carries the
 ;; herd in its manual label, as `herd:NAME' ahead of whatever else the
 ;; label says.  Herdr persists that label across a restart and reports it
@@ -140,10 +145,6 @@ what clears a label."
                            (and rest (not (string-empty-p rest)) rest)))))
     (and parts (string-join parts " "))))
 
-(defun herdr-herd-of-entry (entry)
-  "Return the name of the herd ENTRY's pane belongs to, or nil."
-  (car (herdr-herd--split (alist-get 'pane_label entry))))
-
 (defun herdr-herd--valid-name-p (name)
   "Return non-nil when NAME can head a pane label."
   (and (stringp name)
@@ -162,36 +163,82 @@ what clears a label."
 
 ;;;; Reading the herds
 
-(defun herdr-herd--entry-session (entry)
-  "Return the session id herdr reports for ENTRY, or nil."
+(defun herdr-herd--agent-session (entry)
+  "Return the id of the agent session herdr reports for ENTRY, or nil.
+This is the harness's own session, not the herdr session ENTRY lives on."
   (alist-get 'value (alist-get 'agent_session entry)))
 
-(defun herdr-herd-live-agents ()
-  "Return every live agent entry herdr reports a session for."
-  (seq-filter #'herdr-herd--entry-session (herdr-sessions)))
+(defun herdr-herd-live-agents (&optional session)
+  "Return every live agent entry herdr reports an agent session for.
+SESSION keeps only the agents on that herdr session."
+  (seq-filter (lambda (entry)
+                (and (herdr-herd--agent-session entry)
+                     (or (null session)
+                         (equal (herdr-herd--session-label
+                                 (alist-get 'session entry))
+                                (herdr-herd--session-label session)))))
+              (herdr-sessions)))
+
+(defun herdr-herd--session-label (session)
+  "Return the name SESSION goes under, the shared one included."
+  (or (herdr-session-name session) "shared"))
+
+(defun herdr-herd-label (herd)
+  "Return HERD as one string, its session included where one is named."
+  (let ((session (herdr-herd--session-label (car herd))))
+    (if (equal session "shared")
+        (cdr herd)
+      (format "%s/%s" session (cdr herd)))))
+
+(defun herdr-herd-of-entry (entry)
+  "Return the herd ENTRY's pane belongs to, or nil.
+A herd is the cons of the session it lives on and its own name."
+  (when-let* ((name (car (herdr-herd--split (alist-get 'pane_label entry)))))
+    (cons (alist-get 'session entry) name)))
+
+(defun herdr-herd--same-p (one other)
+  "Return non-nil when ONE and OTHER name the same herd."
+  (and one other
+       (equal (herdr-herd--session-label (car one))
+              (herdr-herd--session-label (car other)))
+       (equal (cdr one) (cdr other))))
 
 (defun herdr-herds (&optional agents)
-  "Return every herd as an alist of name to the entries in it.
-AGENTS are the entries to read, the live ones by default.  Herds come
-out in name order and members in the order herdr reports them."
+  "Return every herd as an alist of herd to the entries in it.
+AGENTS are the entries to read, the live ones by default.  Herds come out
+in session and then name order, members in the order herdr reports them."
   (let (herds)
     (dolist (entry (or agents (herdr-herd-live-agents)))
-      (when-let* ((name (herdr-herd-of-entry entry)))
-        (let ((cell (assoc name herds)))
+      (when-let* ((herd (herdr-herd-of-entry entry)))
+        (let ((cell (seq-find (lambda (cell) (herdr-herd--same-p (car cell) herd))
+                              herds)))
           (if cell
               (setcdr cell (cons entry (cdr cell)))
-            (push (cons name (list entry)) herds)))))
+            (push (cons herd (list entry)) herds)))))
     (mapcar (lambda (herd) (cons (car herd) (nreverse (cdr herd))))
-            (sort herds (lambda (a b) (string< (car a) (car b)))))))
+            (sort herds
+                  (lambda (a b)
+                    (let ((one (herdr-herd-label (car a)))
+                          (other (herdr-herd-label (car b))))
+                      (string< one other)))))))
 
-(defun herdr-herd-names ()
-  "Return the name of every herd that has a live member."
-  (mapcar #'car (herdr-herds)))
+(defun herdr-herd-names (&optional session)
+  "Return the name of every herd with a live member on SESSION.
+Every session's names when SESSION is nil."
+  (delete-dups
+   (delq nil
+         (mapcar (lambda (herd)
+                   (when (or (null session)
+                             (equal (herdr-herd--session-label (car (car herd)))
+                                    (herdr-herd--session-label session)))
+                     (cdr (car herd))))
+                 (herdr-herds)))))
 
-(defun herdr-herd-member-entries (name &optional agents)
-  "Return the live agent entries of the herd called NAME.
+(defun herdr-herd-member-entries (herd &optional agents)
+  "Return the live agent entries of HERD, the cons of a session and a name.
 AGENTS are the entries to read, the live ones by default."
-  (cdr (assoc name (herdr-herds agents))))
+  (cdr (seq-find (lambda (cell) (herdr-herd--same-p (car cell) herd))
+                 (herdr-herds agents))))
 
 ;;;; Deriving a name
 
@@ -310,7 +357,8 @@ so use those directly whenever you prefer.")))
   "Return the prompt telling SELF it is in HERD alongside MEMBERS."
   (let ((peers (seq-remove (lambda (entry)
                              (equal (alist-get 'name entry) self))
-                           members)))
+                           members))
+        (herd (cdr herd)))
     (concat "/herd " herd " — you are " self "\n\n"
             herdr-herd-protocol "\n\n"
             (when-let* ((helper (herdr-herd--helper)))
@@ -329,12 +377,12 @@ so use those directly whenever you prefer.")))
 (defun herdr-herd--report (herd sent skipped verb)
   "Say that VERB reached SENT members of HERD and SKIPPED the rest."
   (if skipped
-      (message "herd %s: %s %d, skipped %s" herd verb sent
+      (message "herd %s: %s %d, skipped %s" (herdr-herd-label herd) verb sent
                (string-join (mapcar (lambda (skip)
                                       (format "%s (%s)" (car skip) (cdr skip)))
                                     skipped)
                             ", "))
-    (message "herd %s: %s %d member%s" herd verb sent
+    (message "herd %s: %s %d member%s" (herdr-herd-label herd) verb sent
              (if (= 1 sent) "" "s")))
   skipped)
 
@@ -375,23 +423,95 @@ MEMBERS are the entries to reach.  VERB heads the report."
     found))
 
 (defun herdr-herd-at-point ()
-  "Return the name of the herd the section at point belongs to, or nil."
+  "Return the herd the section at point belongs to, or nil."
   (or (herdr-herd--section-value 'herdr-status-herd)
       (when-let* ((entry (herdr-herd--section-value 'herdr-status-agent)))
         (herdr-herd-of-entry entry))))
 
-(defun herdr-herd--read-name (prompt &optional require)
-  "Read a herd name with PROMPT, defaulting to the one at point.
-REQUIRE non-nil refuses a name no herd carries."
-  (let ((names (herdr-herd-names)))
-    (when (and require (null names))
-      (user-error "No herd has a live member"))
-    (completing-read prompt names nil require nil nil (herdr-herd-at-point))))
+(defun herdr-herd-session-at-point ()
+  "Return the herdr session the section at point belongs to, or `unknown'.
+An agent row, a herd, and a session row each name one; anywhere else in
+the dashboard names none, and a caller needing one asks."
+  (cond
+   ((herdr-herd--section-value 'herdr-status-herd)
+    (car (herdr-herd--section-value 'herdr-status-herd)))
+   ((herdr-herd--section-value 'herdr-status-agent)
+    (alist-get 'session (herdr-herd--section-value 'herdr-status-agent)))
+   ((herdr-herd--section-value 'herdr-status-session)
+    (herdr-herd--session-of-key
+     (herdr-herd--section-value 'herdr-status-session)))
+   (t 'unknown)))
 
-(defun herdr-herd--entry-at-point ()
-  "Return the agent entry the dashboard row at point stands for."
-  (or (herdr-herd--section-value 'herdr-status-agent)
-      (user-error "No agent at point")))
+(defun herdr-herd--session-of-key (key)
+  "Return the session designator whose server KEY identifies."
+  (or (seq-find (lambda (session)
+                  (equal (herdr-with-session session (herdr-server-key)) key))
+                (herdr-all-sessions))
+      'unknown))
+
+(defun herdr-herd--read-session (&optional prompt)
+  "Return the session point names, asking with PROMPT where it names none."
+  (let ((session (herdr-herd-session-at-point)))
+    (if (eq session 'unknown)
+        (herdr-read-session (or prompt "Session"))
+      session)))
+
+(defun herdr-herd--read (prompt &optional require)
+  "Read a herd with PROMPT, taking the session point names or asking for it.
+REQUIRE non-nil refuses a name that session carries no herd under."
+  (let* ((at-point (herdr-herd-at-point))
+         (session (herdr-herd--read-session))
+         (names (herdr-herd-names session))
+         (default (when (and at-point
+                             (equal (herdr-herd--session-label (car at-point))
+                                    (herdr-herd--session-label session)))
+                    (cdr at-point))))
+    (when (and require (null names))
+      (user-error "The %s session has no herd with a live member"
+                  (herdr-herd--session-label session)))
+    (cons session
+          (completing-read (format-prompt
+                            (format "%s (%s session)" prompt
+                                    (herdr-herd--session-label session))
+                            default)
+                           names nil require nil nil default))))
+
+(defun herdr-herd--read-entries (session &optional prompt)
+  "Return the agent entries to act on, from the region or by completion.
+Only the agents on SESSION are offered, since a herd reaches one server."
+  (or (herdr-herd--region-entries session)
+      (let* ((candidates (mapcar (lambda (entry)
+                                   (cons (herdr--entry-label entry) entry))
+                                 (herdr-herd-live-agents session)))
+             (chosen (progn
+                       (unless candidates
+                         (user-error "The %s session runs no agent"
+                                     (herdr-herd--session-label session)))
+                       (completing-read-multiple
+                        (or prompt (format "Agents (%s session): "
+                                           (herdr-herd--session-label session)))
+                        (mapcar #'car candidates) nil t))))
+        (delq nil (mapcar (lambda (label) (cdr (assoc label candidates)))
+                          chosen)))))
+
+(defun herdr-herd--region-entries (session)
+  "Return the agent entries of the rows the region covers, on SESSION."
+  (when (and (use-region-p) (derived-mode-p 'herdr-status-mode))
+    (let ((end (region-end))
+          (label (herdr-herd--session-label session))
+          (entries nil))
+      (save-excursion
+        (goto-char (region-beginning))
+        (while (< (point) end)
+          (when-let* ((entry (herdr-status-entry-at-point))
+                      ((alist-get 'agent entry))
+                      ((equal (herdr-herd--session-label
+                               (alist-get 'session entry))
+                              label))
+                      ((not (member entry entries))))
+            (push entry entries))
+          (forward-line 1)))
+      (nreverse entries))))
 
 (defun herdr-herd--refresh ()
   "Redraw the dashboard when point is in one."
@@ -402,98 +522,87 @@ REQUIRE non-nil refuses a name no herd carries."
 
 ;;;###autoload
 (defun herdr-herd-add (entries herd)
-  "Put ENTRIES in HERD and tell every member who is in it now."
+  "Put ENTRIES in HERD and tell every member who is in it now.
+HERD is the cons of a herdr session and a name.  An entry on another
+session is refused: a herd reaches one server, so a member elsewhere
+could neither be reached nor reach back."
   (interactive
-   (list (list (herdr-herd--entry-at-point))
-         (herdr-herd--read-name "Add to herd: ")))
-  (unless (herdr-herd--valid-name-p herd)
-    (user-error "A herd name carries no whitespace: %s" herd))
-  (dolist (entry entries)
-    (cond
-     ((null (alist-get 'pane_id entry))
-      (message "herd %s: herdr reports no pane for %s, skipped"
-               herd (herdr--entry-label entry)))
-     ((equal (herdr-herd-of-entry entry) herd)
-      (message "herd %s: %s is already a member"
-               herd (herdr--entry-label entry)))
-     (t (herdr-herd--name entry)
-        (herdr-herd--put entry herd))))
+   (let* ((herd (herdr-herd--read "Add to herd"))
+          (at-point (herdr-herd--section-value 'herdr-status-agent)))
+     (list (if at-point
+               (list at-point)
+             (herdr-herd--read-entries (car herd)))
+           herd)))
+  (unless (herdr-herd--valid-name-p (cdr herd))
+    (user-error "A herd name carries no whitespace: %s" (cdr herd)))
+  (let ((label (herdr-herd--session-label (car herd))))
+    (dolist (entry entries)
+      (cond
+       ((null (alist-get 'pane_id entry))
+        (message "herd %s: herdr reports no pane for %s, skipped"
+                 (herdr-herd-label herd) (herdr--entry-label entry)))
+       ((not (equal (herdr-herd--session-label (alist-get 'session entry)) label))
+        (message "herd %s: %s runs on the %s session, skipped"
+                 (herdr-herd-label herd) (herdr--entry-label entry)
+                 (herdr-herd--session-label (alist-get 'session entry))))
+       ((herdr-herd--same-p (herdr-herd-of-entry entry) herd)
+        (message "herd %s: %s is already a member"
+                 (herdr-herd-label herd) (herdr--entry-label entry)))
+       (t (herdr-herd--name entry)
+          (herdr-herd--put entry (cdr herd))))))
   (herdr-herd--refresh)
   (herdr-herd--announce herd))
 
 ;;;###autoload
 (defun herdr-herd-add-many (entries herd)
   "Put several ENTRIES in HERD at once.
-The rows the region covers are taken where there is one, and the live
-agents are offered for completion where there is not."
+The rows the region covers are taken where there is one, and the agents
+of HERD's session are offered for completion where there is not."
   (interactive
-   (list (herdr-herd--read-entries)
-         (herdr-herd--read-name "Add to herd: ")))
+   (let ((herd (herdr-herd--read "Add to herd")))
+     (list (herdr-herd--read-entries (car herd)) herd)))
   (herdr-herd-add entries herd))
-
-(defun herdr-herd--region-entries ()
-  "Return the agent entries of the dashboard rows the region covers."
-  (when (and (use-region-p) (derived-mode-p 'herdr-status-mode))
-    (let ((end (region-end))
-          (entries nil))
-      (save-excursion
-        (goto-char (region-beginning))
-        (while (< (point) end)
-          (when-let* ((entry (herdr-status-entry-at-point))
-                      ((alist-get 'agent entry))
-                      ((not (member entry entries))))
-            (push entry entries))
-          (forward-line 1)))
-      (nreverse entries))))
-
-(defun herdr-herd--read-entries ()
-  "Return the agent entries to act on, from the region or by completion."
-  (or (herdr-herd--region-entries)
-      (let* ((candidates (mapcar (lambda (entry)
-                                   (cons (herdr--entry-label entry) entry))
-                                 (herdr-herd-live-agents)))
-             (chosen (completing-read-multiple
-                      "Agents: " (mapcar #'car candidates) nil t)))
-        (delq nil (mapcar (lambda (label) (cdr (assoc label candidates)))
-                          chosen)))))
 
 ;;;###autoload
 (defun herdr-herd-remove (entry)
   "Take ENTRY's agent out of the herd it is in."
-  (interactive (list (herdr-herd--entry-at-point)))
+  (interactive (list (or (herdr-herd--section-value 'herdr-status-agent)
+                         (user-error "No agent at point"))))
   (let ((herd (or (herdr-herd-of-entry entry)
                   (user-error "%s is in no herd" (herdr--entry-label entry)))))
     (herdr-herd--put entry nil)
     (herdr-herd--refresh)
-    (message "herd %s: %s removed" herd (herdr--entry-label entry))
+    (message "herd %s: %s removed"
+             (herdr-herd-label herd) (herdr--entry-label entry))
     (when (herdr-herd-member-entries herd)
       (herdr-herd--announce herd))))
 
 ;;;###autoload
 (defun herdr-herd-dissolve (herd)
   "Take every member out of HERD, leaving the agents running and named."
-  (interactive (list (herdr-herd--read-name "Dissolve herd: " t)))
+  (interactive (list (herdr-herd--read "Dissolve herd" t)))
   (let ((members (herdr-herd-member-entries herd)))
     (when (yes-or-no-p (format "Dissolve herd %s (%d member%s)? "
-                               herd (length members)
+                               (herdr-herd-label herd) (length members)
                                (if (= 1 (length members)) "" "s")))
       (dolist (entry members)
         (herdr-herd--put entry nil))
       (herdr-herd--refresh)
-      (message "herd %s dissolved" herd))))
+      (message "herd %s dissolved" (herdr-herd-label herd)))))
 
 ;;;###autoload
 (defun herdr-herd-announce (herd)
   "Send every live member of HERD the current roster."
-  (interactive (list (herdr-herd--read-name "Announce herd: " t)))
+  (interactive (list (herdr-herd--read "Announce herd" t)))
   (herdr-herd--announce herd))
 
 ;;;###autoload
 (defun herdr-herd-broadcast (herd text)
   "Send TEXT to every live member of HERD."
   (interactive
-   (let ((herd (herdr-herd--read-name "Broadcast to herd: " t)))
-     (list herd (read-string (format "Prompt herd %s: " herd)))))
+   (let ((herd (herdr-herd--read "Broadcast to herd" t)))
+     (list herd (read-string (format "Prompt herd %s: "
+                                     (herdr-herd-label herd))))))
   (herdr-herd--send herd (herdr-herd-member-entries herd)
                     (lambda (_entry) text) "sent to")
   (herdr-herd--refresh))

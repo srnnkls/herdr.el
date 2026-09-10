@@ -232,7 +232,7 @@ menu:
 | Key | Action |
 | --- | --- |
 | `a` | Add the agent at point to a herd, naming a new one if you like |
-| `A` | Add several — the rows the region covers, else pick from the live agents |
+| `A` | Add several — the rows the region covers, else pick from the session's agents |
 | `r` | Take the agent at point out of its herd |
 | `d` | Dissolve a herd, leaving its agents running and named |
 | `b` | Send one prompt to every idle member |
@@ -250,6 +250,24 @@ in and the task its terminal title shows — `memex-incremental-index`,
 `sira-unified-kv` — offered as an editable default and passed through
 herdr's own uniqueness check. A linked worktree is named after the
 repository it was cut from, not its own directory.
+
+A herd belongs to one session. `herdr agent prompt` reaches one server,
+so agents on different sessions can neither reach each other nor be
+reached, and two alike labels on two sessions are two herds — written
+`cmw/refactor` where the session is named. Every herd command takes the
+session from what point is on: an agent row, a herd, or a session row.
+Where point names none it asks, listing each session beside the socket it
+stands for:
+
+```text
+Session (default shared):
+shared   ~/.config/herdr/herdr.sock
+cmw      ~/.config/herdr/sessions/cmw/herdr.sock
+gf       ~/.config/herdr/sessions/gf/herdr.sock
+```
+
+Adding an agent from another session is refused by name rather than
+quietly making a herd that cannot talk to itself.
 
 ### Membership lives in herdr
 
