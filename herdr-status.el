@@ -1023,12 +1023,12 @@ where memex.el is on the load path, and are unbound where it is not."
   "o" #'herdr-status-visit-other-window
   "P" #'herdr-status-prompt
   "R" #'herdr-status-rename
-  "k" #'herdr-status-stop
-  "D" #'herdr-status-detach
+  "d" #'herdr-status-detach
+  "x" #'herdr-status-stop
   "f" #'herdr-status-filter
   "O" #'herdr-status-sort
   "h" #'herdr-herd-dispatch
-  "d" #'herdr-status-toggle-details
+  "t" #'herdr-status-toggle-details
   "g" #'herdr-status-refresh
   "q" #'quit-window)
 
@@ -1265,20 +1265,37 @@ well, so the terminal and Emacs end up on the same agent."
   (herdr-agent-rename (herdr-status--target-at-point) name)
   (herdr-status-refresh))
 
+(defun herdr-status--attachment-at-point ()
+  "Return the Emacs session attached to the agent at point, or nil."
+  (ignore-error user-error
+    (herdr-agent-resolve-session (herdr-status--target-at-point))))
+
 (defun herdr-status-stop ()
-  "Stop the agent at point after confirmation."
+  "Close the herdr pane of the agent at point, after confirmation.
+Emacs lets go of the terminal and its buffer first, so the pane and the
+buffer go together; `herdr-status-detach' is the one that leaves the pane
+running."
   (interactive)
-  (let ((entry (herdr-status--entry-at-point)))
-    (when (yes-or-no-p (format "Stop %s? " (herdr--entry-label entry)))
+  (let* ((entry (herdr-status--entry-at-point))
+         (label (herdr--entry-label entry)))
+    (when (yes-or-no-p (format "Stop %s? " label))
+      (when-let* ((session (herdr-status--attachment-at-point)))
+        (herdr-agent-detach session))
       (herdr-agent-stop (herdr--entry-target entry))
-      (herdr-status-refresh))))
+      (herdr-status-refresh)
+      (message "Stopped %s" label))))
 
 (defun herdr-status-detach ()
-  "Detach the agent at point from Emacs, leaving its herdr pane alone."
+  "Let go of the agent at point, leaving its herdr pane running.
+Emacs releases the terminal and its buffer; the agent in that pane carries
+on, and attaching again picks it back up."
   (interactive)
-  (herdr-agent-detach
-   (herdr-agent-resolve-session (herdr-status--target-at-point)))
-  (herdr-status-refresh))
+  (let ((label (herdr--entry-label (herdr-status--entry-at-point))))
+    (if-let* ((session (herdr-status--attachment-at-point)))
+        (progn (herdr-agent-detach session)
+               (herdr-status-refresh)
+               (message "Detached %s, its pane left running" label))
+      (message "Emacs holds no attachment to %s" label))))
 
 (defun herdr-status-add-filter (name)
   "Add the filter registered as NAME."
@@ -1407,12 +1424,12 @@ Every suffix here is bound directly in `herdr-status-mode-map' as well."
    ["Agent"
     ("P" "prompt" herdr-status-prompt)
     ("R" "rename" herdr-status-rename)
-    ("k" "stop" herdr-status-stop)
-    ("D" "detach" herdr-status-detach)]
+    ("d" "detach, pane runs on" herdr-status-detach)
+    ("x" "stop, pane closes" herdr-status-stop)]
    ["List"
     ("f" "filter" herdr-status-filter)
     ("O" "sort" herdr-status-sort)
-    ("d" herdr-status-toggle-details
+    ("t" herdr-status-toggle-details
      :description herdr-status--details-description)
     ("g" "refresh" herdr-status-refresh)]
    ["Herd"

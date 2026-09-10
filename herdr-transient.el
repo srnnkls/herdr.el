@@ -84,11 +84,6 @@
   (interactive)
   (herdr-agent-stop-all))
 
-(defun herdr-transient--customize ()
-  "Customize Herdr."
-  (interactive)
-  (customize-group 'herdr))
-
 (defun herdr-transient--format-status (status)
   "Format agent STATUS for display."
   (string-join
@@ -110,32 +105,35 @@
 
 ;;;###autoload
 (transient-define-prefix herdr-transient ()
-  "Manage Herdr workflows."
-  [["Session"
-    ("s" "start" herdr-transient--start)
+  "Manage Herdr workflows.
+An action the dashboard also offers is on the key the dashboard binds it
+to, so the two menus can be read as one."
+  [["Launch"
+    ("N" "new" herdr-transient--start)
     ("c" "continue" herdr-transient--continue)
     ("r" "resume" herdr-transient--resume)]
    ["Agent"
+    ("P" "prompt" herdr-transient--prompt)
+    ("R" "rename" herdr-transient--rename)
     ("j" "switch" herdr-transient--switch)
-    ("p" "prompt" herdr-transient--prompt)
-    ("n" "rename" herdr-transient--rename)
     ("e" "escape" herdr-transient--escape)
     ("RET" "return" herdr-transient--newline)
-    ("k" "stop" herdr-transient--stop)
-    ("K" "stop all" herdr-transient--stop-all)]
+    ("x" "stop" herdr-transient--stop)
+    ("X" "stop all" herdr-transient--stop-all)]
    ["Attach"
     ("a" "agent" herdr-attach-agent)
-    ("P" "pane" herdr-attach-pane)
+    ("p" "pane" herdr-attach-pane)
     ("A" "session" herdr-attach-session)
     ("J" "jump" herdr-jump)
-    ("R" "route project" herdr-assign-project-session)]
-   ["Status"
+    ("o" "route project" herdr-assign-project-session)]
+   ["Find"
+    ("s" "search" herdr-memex-search :if herdr-memex-available-p)
+    ("S" "search menu" herdr-memex-dispatch :if herdr-memex-available-p)
     ("i" "dashboard" herdr-status)
     ("I" "one line" herdr-transient--status)
-    ("d" herdr-status-toggle-details
+    ("t" herdr-status-toggle-details
      :description herdr-status--details-description
-     :if herdr-transient--dashboard-p)
-    ("C" "customize" herdr-transient--customize)]])
+     :if herdr-transient--dashboard-p)]])
 
 (provide 'herdr-transient)
 ;;; herdr-transient.el ends here

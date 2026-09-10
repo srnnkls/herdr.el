@@ -29,8 +29,6 @@
                (lambda (seen &rest _) (push (list 'stop seen) calls)))
               ((symbol-function 'herdr-agent-stop-all)
                (lambda (&rest _) (push '(stop-all) calls)))
-              ((symbol-function 'customize-group)
-               (lambda (group &rest _) (push (list 'customize group) calls)))
               ((symbol-function 'start-process)
                (lambda (&rest _) (ert-fail "Transient action spawned a process")))
               ((symbol-function 'call-process)
@@ -44,8 +42,7 @@
       (herdr-transient--escape target)
       (herdr-transient--newline target)
       (herdr-transient--stop target)
-      (herdr-transient--stop-all)
-      (herdr-transient--customize))
+      (herdr-transient--stop-all))
     (should
      (equal
       (nreverse calls)
@@ -58,8 +55,7 @@
         (escape ,target)
         (newline ,target)
         (stop ,target)
-        (stop-all)
-        (customize herdr))))))
+        (stop-all))))))
 
 (ert-deftest herdr-transient-status-formatting-is-agent-specific ()
   (let ((view (herdr-transient--format-status

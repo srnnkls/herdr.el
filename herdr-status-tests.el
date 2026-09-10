@@ -794,7 +794,7 @@
     (plist-get (cdr suffix) :command)))
 
 (ert-deftest herdr-status-dispatch-mirrors-the-keymap ()
-  (dolist (key '("RET" "o" "P" "R" "k" "D" "f" "O" "d" "h" "g" "q"))
+  (dolist (key '("RET" "o" "P" "R" "d" "x" "f" "O" "t" "h" "g" "q"))
     (let ((bound (keymap-lookup herdr-status-mode-map key))
           (offered (herdr-status-tests--suffix-command 'herdr-status-dispatch key)))
       (should (commandp bound))
@@ -809,9 +809,20 @@
   (dolist (key '("a" "A" "r" "d" "b" "R"))
     (should (commandp (herdr-status-tests--suffix-command 'herdr-herd-dispatch key)))))
 
-(ert-deftest herdr-transient-keeps-the-anchors-memex-appends-after ()
+(ert-deftest herdr-transient-keeps-the-anchor-memex-appends-after ()
+  "`memex-herdr-setup' appends after the suffix keyed i and only when the
+key it wants is free, so taking either silently costs the transcript entry."
   (should (herdr-status-tests--suffix-command 'herdr-transient "i"))
-  (should-not (herdr-status-tests--suffix-command 'herdr-transient "x")))
+  (should-not (herdr-status-tests--suffix-command 'herdr-transient "v")))
+
+(ert-deftest herdr-transient-shares-the-keys-of-the-actions-the-dashboard-has ()
+  "Two menus disagreeing on the key for one action is worse than either."
+  (pcase-dolist (`(,key ,dashboard ,global)
+                 '(("P" herdr-status-prompt herdr-transient--prompt)
+                   ("R" herdr-status-rename herdr-transient--rename)
+                   ("x" herdr-status-stop herdr-transient--stop)))
+    (should (eq dashboard (keymap-lookup herdr-status-mode-map key)))
+    (should (eq global (herdr-status-tests--suffix-command 'herdr-transient key)))))
 
 ;;;; Herds
 
@@ -915,6 +926,75 @@ prefix argument makes, so the terminal and Emacs land on one agent."
           (call-interactively #'herdr-status-visit))
         (should-not visited)
         (should (equal '("/tmp/alpha.sock" . "t1") switched))))))
+
+(ert-deftest herdr-status-stopping-lets-go-of-the-buffer-before-the-pane ()
+  "A stopped pane leaves its terminal buffer showing a dead process, so
+Emacs releases the attachment first and the two go together."
+  (herdr-status-tests--with-dashboard
+    (let (calls)
+      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
+                ((symbol-function 'herdr-agent-resolve-session)
+                 (lambda (_target) 'session))
+                ((symbol-function 'herdr-agent-detach)
+                 (lambda (session) (push (list 'detach session) calls)))
+                ((symbol-function 'herdr-agent-stop)
+                 (lambda (target) (push (list 'stop target) calls))))
+        (goto-char (point-min))
+        (should (re-search-forward "^ +● api-review" nil t))
+        (herdr-status-stop))
+      (should (equal '((detach session)
+                       (stop ("/tmp/alpha.sock" . "t1")))
+                     (nreverse calls))))))
+
+(ert-deftest herdr-status-stopping-an-unattached-agent-still-closes-its-pane ()
+  (herdr-status-tests--with-dashboard
+    (let (calls)
+      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
+                ((symbol-function 'herdr-agent-resolve-session)
+                 (lambda (_target) (user-error "Unknown agent: t1")))
+                ((symbol-function 'herdr-agent-detach)
+                 (lambda (&rest _) (ert-fail "detached what was not attached")))
+                ((symbol-function 'herdr-agent-stop)
+                 (lambda (target) (push (list 'stop target) calls))))
+        (goto-char (point-min))
+        (should (re-search-forward "^ +● api-review" nil t))
+        (herdr-status-stop))
+      (should (equal '((stop ("/tmp/alpha.sock" . "t1"))) calls)))))
+
+(ert-deftest herdr-status-declining-the-question-stops-nothing ()
+  (herdr-status-tests--with-dashboard
+    (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) nil))
+              ((symbol-function 'herdr-agent-stop)
+               (lambda (&rest _) (ert-fail "stopped without being told to")))
+              ((symbol-function 'herdr-agent-detach)
+               (lambda (&rest _) (ert-fail "detached without being told to"))))
+      (goto-char (point-min))
+      (should (re-search-forward "^ +● api-review" nil t))
+      (herdr-status-stop))))
+
+(ert-deftest herdr-status-detaching-leaves-the-pane-running ()
+  (herdr-status-tests--with-dashboard
+    (let (calls)
+      (cl-letf (((symbol-function 'herdr-agent-resolve-session)
+                 (lambda (_target) 'session))
+                ((symbol-function 'herdr-agent-detach)
+                 (lambda (session) (push (list 'detach session) calls)))
+                ((symbol-function 'herdr-agent-stop)
+                 (lambda (&rest _) (ert-fail "detaching closed the pane"))))
+        (goto-char (point-min))
+        (should (re-search-forward "^ +● api-review" nil t))
+        (herdr-status-detach))
+      (should (equal '((detach session)) calls)))))
+
+(ert-deftest herdr-status-detaching-what-emacs-never-attached-says-so ()
+  (herdr-status-tests--with-dashboard
+    (cl-letf (((symbol-function 'herdr-agent-resolve-session)
+               (lambda (_target) (user-error "Unknown agent: t1")))
+              ((symbol-function 'herdr-agent-detach)
+               (lambda (&rest _) (ert-fail "detached what was not attached"))))
+      (goto-char (point-min))
+      (should (re-search-forward "^ +● api-review" nil t))
+      (herdr-status-detach))))
 
 (provide 'herdr-status-tests)
 ;;; herdr-status-tests.el ends here

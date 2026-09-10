@@ -111,13 +111,18 @@ Host access for adapters stays within the public `herdr-agent-resolve-session`, 
 `M-x herdr-transient` opens the canonical Herdr menu:
 
 ```text
-Session:  s start       c continue      r resume
-Agent:    j switch      p prompt        n rename
-          e escape      RET return      k stop       K stop all
-Attach:   a agent       P pane          A session
-          J jump        R route project
-Status:   i dashboard   I one line     C customize
+Launch:  N new         c continue      r resume
+Agent:   P prompt      R rename        j switch
+         e escape      RET return      x stop        X stop all
+Attach:  a agent       p pane          A session
+         J jump        o route project
+Find:    s search      S search menu   i dashboard
+         I one line    t details
 ```
+
+An action the dashboard also offers is on the key the dashboard binds it
+to — `P`, `R`, `x`, `t`, `s`, `S` — so the two menus read as one. A test
+pins that agreement.
 
 Opening the menu starts no process. Every agent command reads its target
 from the status dashboard when the menu is opened there, and prompts
@@ -186,11 +191,11 @@ redraw a live dashboard on a short idle delay, which
 | `RET` / `o` | Show the agent or pane, attaching it when nothing does yet; on a session row, attach the whole of it. With a prefix argument, move herdr itself to the agent's pane as well |
 | `P` | Send a prompt |
 | `R` | Rename |
-| `k` | Stop, after confirmation |
-| `D` | Detach from Emacs, leaving the herdr pane alone |
+| `d` | Detach — Emacs lets go of the terminal and its buffer, the pane runs on |
+| `x` | Stop — the pane closes and the buffer goes with it, after confirmation |
 | `f` | Filter menu |
 | `O` | Order menu |
-| `d` | Show or hide agent metadata |
+| `t` | Show or hide agent metadata |
 | `h` | Herd menu |
 | `s` | Search agent history, narrowed by the section at point |
 | `S` | Search menu |
