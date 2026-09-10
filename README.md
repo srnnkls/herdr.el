@@ -138,7 +138,7 @@ fringe the collapse arrows are drawn in, so they clear the headings.
 
 | Section | Contents |
 | --- | --- |
-| `Servers` | One entry per known session: reachability, socket, herdr version, protocol, and object counts |
+| `Sessions` | One entry per known session: reachability, socket, herdr version, protocol, and object counts |
 | `Recent` | Agents in most-recently-used order, omitted when none |
 | `Herds` | One collapsible entry per herd the listed agents name, omitted when none does |
 | `Agents` | The filterable list, headed by the visible-of-total count and the active filters |
@@ -175,7 +175,7 @@ the prompt, and the status bar, and the last
 `herdr-status-preview-lines` lines of what survives are shown. Setting
 that to 0 turns the preview off and asks herdr for nothing.
 
-A refresh fetches one snapshot per server and no per-agent request. The
+A refresh fetches one snapshot per session and no per-agent request. The
 preview and the adapter fields each cost one request per agent, both
 issued when a row is first expanded and reused until the next refresh. Herdr lifecycle events
 redraw a live dashboard on a short idle delay, which
@@ -183,7 +183,7 @@ redraw a live dashboard on a short idle delay, which
 
 | Key | Action |
 | --- | --- |
-| `RET` / `o` | Show the agent or pane, attaching it when nothing does yet; on a server, attach that whole session. With a prefix argument, move herdr itself to the agent's pane as well |
+| `RET` / `o` | Show the agent or pane, attaching it when nothing does yet; on a session row, attach the whole of it. With a prefix argument, move herdr itself to the agent's pane as well |
 | `P` | Send a prompt |
 | `R` | Rename |
 | `k` | Stop, after confirmation |

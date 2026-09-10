@@ -283,7 +283,7 @@ A burst of events collapses into one redraw."
 
 ;;;; State
 
-(defvar-local herdr-status--servers nil
+(defvar-local herdr-status--session-records nil
   "Server records collected by the last refresh.")
 
 (defvar-local herdr-status--entries nil
@@ -308,8 +308,8 @@ herd across the refresh an agent event triggers.")
 
 ;;;; Collection
 
-(defun herdr-status--server-record (session)
-  "Return the dashboard record for SESSION's herdr server."
+(defun herdr-status--session-record (session)
+  "Return the dashboard record of SESSION and the server answering for it."
   (let ((herdr-socket-path (if (equal session herdr-session)
                                herdr-socket-path
                              nil))
@@ -328,9 +328,9 @@ herd across the refresh an agent event triggers.")
              (reachable . t)
              (error . ,(error-message-string err)))))))))
 
-(defun herdr-status--collect-servers ()
+(defun herdr-status--collect-sessions ()
   "Return one record per session in `herdr-all-sessions'."
-  (mapcar #'herdr-status--server-record (herdr-all-sessions)))
+  (mapcar #'herdr-status--session-record (herdr-all-sessions)))
 
 (defun herdr-status--collect-entries ()
   "Return every session entry, ignoring an unreachable server."
@@ -340,7 +340,7 @@ herd across the refresh an agent event triggers.")
 
 (defun herdr-status--snapshot-index (field key servers)
   "Return a table of SERVERS' FIELD records, keyed by server and KEY.
-SERVERS are the records `herdr-status--collect-servers' produced."
+SERVERS are the records `herdr-status--collect-sessions' produced."
   (let ((table (make-hash-table :test #'equal)))
     (dolist (server servers table)
       (dolist (record (alist-get field (alist-get 'snapshot server)))
@@ -596,7 +596,7 @@ A pane running no agent has no state to report and is left blank there."
 
 (defun herdr-status--session-column (entry width)
   "Return ENTRY's session name padded to WIDTH, or nil for a lone server."
-  (when (cdr herdr-status--servers)
+  (when (cdr herdr-status--session-records)
     (herdr-status--pad (herdr-status--session-name entry) width)))
 
 (defun herdr-status--row (entry widths workspaces)
@@ -894,24 +894,24 @@ only by the heading's own total."
                         'font-lock-face 'herdr-status-active-filter))))
 
 (defun herdr-status--unreachable-summary ()
-  "Return the servers that answered nothing, or nil where all of them did."
+  "Return the sessions whose server answered nothing, or nil where all did."
   (when-let* ((down (seq-remove (lambda (server) (alist-get 'reachable server))
-                                herdr-status--servers)))
+                                herdr-status--session-records)))
     (propertize (format "  · %s unreachable"
                         (string-join (mapcar #'herdr-status--session-name down)
                                      " "))
                 'font-lock-face 'herdr-status-state-blocked)))
 
-(defun herdr-status--insert-servers ()
-  "Insert one collapsible entry per known herdr server."
-  (magit-insert-section (herdr-status-servers nil t)
+(defun herdr-status--insert-sessions ()
+  "Insert one collapsible entry per known herdr session."
+  (magit-insert-section (herdr-status-sessions nil t)
     (magit-insert-heading
-      (concat (propertize (format "Servers %d" (length herdr-status--servers))
+      (concat (propertize (format "Sessions %d" (length herdr-status--session-records))
                           'font-lock-face 'magit-section-heading)
               (herdr-status--unreachable-summary)))
-    (dolist (server herdr-status--servers)
+    (dolist (server herdr-status--session-records)
       (let ((snapshot (alist-get 'snapshot server)))
-        (magit-insert-section (herdr-status-server (alist-get 'key server) t)
+        (magit-insert-section (herdr-status-session (alist-get 'key server) t)
           (magit-insert-heading
             (format "%s  %s"
                     (herdr-status--session-name server)
@@ -956,10 +956,11 @@ agent list.  Nothing is drawn where no agent names a herd."
       (magit-insert-heading
         (propertize (format "Herds %d" (length herds))
                     'font-lock-face 'magit-section-heading))
-      (pcase-dolist (`(,name . ,members) herds)
-        (magit-insert-section (herdr-status-herd name)
+      (pcase-dolist (`(,herd . ,members) herds)
+        (magit-insert-section (herdr-status-herd herd)
           (magit-insert-heading
-            (concat (propertize name 'font-lock-face 'herdr-status-label)
+            (concat (propertize (herdr-herd-label herd)
+                                'font-lock-face 'herdr-status-label)
                     (propertize (format "  · %d member%s" (length members)
                                         (if (= 1 (length members)) "" "s"))
                                 'font-lock-face 'herdr-status-meta)))
@@ -990,7 +991,7 @@ WIDTHS, TABS, and WORKSPACES are passed through to each row."
   "Insert the panes running no agent, labelled through WORKSPACES.
 WIDTHS holds the same column widths the agents are drawn on, so a pane
 lines up with them."
-  (let ((panes (herdr-status--orphan-panes herdr-status--servers
+  (let ((panes (herdr-status--orphan-panes herdr-status--session-records
                                            herdr-status--entries)))
     (when panes
       (magit-insert-section (herdr-status-panes nil t)
@@ -1104,17 +1105,17 @@ runs out of stack.")
         (starts (mapcar (lambda (window) (cons window (window-start window)))
                         (get-buffer-window-list nil nil t))))
     (setq herdr-status--collapsed-herds (herdr-status--collapsed-herds))
-    (setq herdr-status--servers (herdr-status--collect-servers)
+    (setq herdr-status--session-records (herdr-status--collect-sessions)
           herdr-status--entries (herdr-status--collect-entries)
           herdr-status--details nil)
     (herdr--prune-session-targets herdr-status--entries)
     (let ((tabs (herdr-status--snapshot-index
-                 'tabs 'tab_id herdr-status--servers))
+                 'tabs 'tab_id herdr-status--session-records))
           (workspaces (herdr-status--snapshot-index
-                       'workspaces 'workspace_id herdr-status--servers))
+                       'workspaces 'workspace_id herdr-status--session-records))
           (widths (herdr-status--widths
                    (append (herdr-status--agents herdr-status--entries)
-                           (herdr-status--orphan-panes herdr-status--servers
+                           (herdr-status--orphan-panes herdr-status--session-records
                                                        herdr-status--entries)))))
       (erase-buffer)
       (magit-insert-section (herdr-status-root)
@@ -1122,7 +1123,7 @@ runs out of stack.")
         (herdr-status--insert-herds widths tabs workspaces)
         (herdr-status--insert-agents widths tabs workspaces)
         (herdr-status--insert-panes widths workspaces)
-        (herdr-status--insert-servers))
+        (herdr-status--insert-sessions))
       (let ((magit-section-cache-visibility nil))
         (magit-section-show magit-root-section))
       (herdr-status--restore-collapsed-herds))
@@ -1222,23 +1223,23 @@ of prompting."
   (or (herdr--entry-target (herdr-status--entry-at-point))
       (user-error "The agent at point has no terminal")))
 
-(defun herdr-status--server-at-point ()
-  "Return the server record of the section at point, or nil."
+(defun herdr-status--session-at-point ()
+  "Return the session record of the section at point, or nil."
   (when-let* ((section (magit-current-section))
-              ((eq (oref section type) 'herdr-status-server)))
-    (cl-find (oref section value) herdr-status--servers
+              ((eq (oref section type) 'herdr-status-session)))
+    (cl-find (oref section value) herdr-status--session-records
              :key (lambda (server) (alist-get 'key server))
              :test #'equal)))
 
 (defun herdr-status-visit (&optional focus)
   "Show whatever the section at point stands for.
-An agent or pane is attached when nothing shows it yet; a server attaches
-its whole session through `herdr-attach-session'.
+An agent or pane is attached when nothing shows it yet; a session row
+attaches the whole of it through `herdr-attach-session'.
 
 FOCUS, the prefix argument, moves herdr itself to the agent's pane as
 well, so the terminal and Emacs end up on the same agent."
   (interactive "P")
-  (if-let* ((server (herdr-status--server-at-point)))
+  (if-let* ((server (herdr-status--session-at-point)))
       (prog1 (herdr-attach-session (alist-get 'session server))
         (herdr-status-refresh))
     (if focus

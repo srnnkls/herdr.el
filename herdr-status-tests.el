@@ -229,12 +229,12 @@
       (should (string-match-p "tab +main" text))
       (should (string-match-p "provider +limen" text))))))
 
-(ert-deftest herdr-status-lists-every-known-server ()
+(ert-deftest herdr-status-lists-every-known-session ()
   (herdr-status-tests--with-dashboard
-    (let ((servers (herdr-status-tests--section-text "Servers ")))
-      (should (string-match-p "Servers 2" servers))
-      (should (string-match-p "/tmp/alpha.sock" servers))
-      (should (string-match-p "/tmp/beta.sock" servers)))))
+    (let ((sessions (herdr-status-tests--section-text "Sessions ")))
+      (should (string-match-p "Sessions 2" sessions))
+      (should (string-match-p "/tmp/alpha.sock" sessions))
+      (should (string-match-p "/tmp/beta.sock" sessions)))))
 
 (ert-deftest herdr-status-panes-section-excludes-panes-running-an-agent ()
   (herdr-status-tests--with-dashboard
@@ -356,7 +356,7 @@
 (ert-deftest herdr-status-opens-with-every-instance-collapsed ()
   (herdr-status-tests--with-dashboard
     (let ((text (herdr-status-tests--visible-text)))
-      (should (string-match-p "Servers 2" text))
+      (should (string-match-p "Sessions 2" text))
       (should-not (string-match-p "/tmp/alpha.sock" text))
       (should (string-match-p "Panes 1" text))
       (should-not (string-match-p "%9" text))
@@ -460,13 +460,13 @@
       (goto-char (point-min))
       (should (re-search-forward "Agents 3 .*· 1 blocked" nil t)))))
 
-(ert-deftest herdr-status-names-the-server-that-answered-nothing ()
+(ert-deftest herdr-status-names-the-session-that-answered-nothing ()
   (herdr-status-tests--with-dashboard
     (cl-letf (((symbol-function 'herdr-available-p)
                (lambda () (equal herdr-session "alpha"))))
       (herdr-status-refresh))
     (goto-char (point-min))
-    (should (re-search-forward "Servers 2  · beta unreachable" nil t))))
+    (should (re-search-forward "Sessions 2  · beta unreachable" nil t))))
 
 (ert-deftest herdr-status-airs-the-preview-and-folds-the-air-away ()
   (herdr-status-tests--with-dashboard
@@ -519,7 +519,7 @@
 
 (ert-deftest herdr-status-heads-the-agents-section-like-every-other ()
   (herdr-status-tests--with-dashboard
-    (dolist (heading '("Servers " "Agents " "Panes "))
+    (dolist (heading '("Sessions " "Agents " "Panes "))
       (goto-char (point-min))
       (let ((case-fold-search nil))
         (should (search-forward heading nil t)))
@@ -641,7 +641,7 @@
                (lambda () (format "/tmp/%s.sock" (or (herdr-session-name) "shared"))))
               ((symbol-function 'herdr-available-p) (lambda () nil)))
       (should (equal (mapcar (lambda (record) (alist-get 'key record))
-                             (herdr-status--collect-servers))
+                             (herdr-status--collect-sessions))
                      '("/tmp/shared.sock" "/tmp/cmw.sock"))))))
 
 (ert-deftest herdr-status-claims-the-selected-window ()
@@ -670,7 +670,7 @@
     (herdr-status-tests--with-dashboard
       (herdr-status-refresh)
       (goto-char (point-min))
-      (should (search-forward "Servers 2" nil t))
+      (should (search-forward "Sessions 2" nil t))
       (should (herdr-status-tests--indicator-at-point))
       (goto-char (point-min))
       (should (re-search-forward "^ +○ docs" nil t))
@@ -835,7 +835,7 @@ labelling the panes the fixture agents occupy."
   "Return the section drawing the herd called NAME."
   (or (seq-find (lambda (section)
                   (and (eq (oref section type) 'herdr-status-herd)
-                       (equal (oref section value) name)))
+                       (equal (cdr (oref section value)) name)))
                 (herdr-status--sections magit-root-section))
       (error "No section for herd %s" name)))
 
