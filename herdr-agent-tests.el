@@ -2236,7 +2236,7 @@
     (goto-char (point-min))
     (forward-line 1)
     (should (equal (herdr-default-send-context nil)
-                   "Emacs context\nfile: /tmp/herdr-context.el\nlines: 2\nmode: fundamental-mode\n\n```\nbeta\n```"))
+                   "Emacs context\nfile: /tmp/herdr-context.el:2\nmode: fundamental-mode\n\n```\nbeta\n```"))
     (let ((transient-mark-mode t))
       (goto-char (point-min))
       (set-mark (point))
@@ -2244,7 +2244,7 @@
       (end-of-line)
       (setq mark-active t)
       (should (equal (herdr-default-send-context nil)
-                     "Emacs context\nfile: /tmp/herdr-context.el\nlines: 1-2\nmode: fundamental-mode\n\n```\nalpha\nbeta\n```")))))
+                     "Emacs context\nfile: /tmp/herdr-context.el:1-2\nmode: fundamental-mode\n\n```\nalpha\nbeta\n```")))))
 
 (ert-deftest herdr-send-commands-route-by-scope-and-recency ()
   (let (calls)
@@ -2345,7 +2345,7 @@
     (rename-buffer "herdr context scratch" t)
     (insert "scratch")
     (should (equal (herdr-default-send-context nil)
-                   "Emacs context\nbuffer: herdr context scratch\nlines: 1\nmode: fundamental-mode\n\n```\nscratch\n```"))))
+                   "Emacs context\nbuffer: herdr context scratch:1\nmode: fundamental-mode\n\n```\nscratch\n```"))))
 
 (ert-deftest herdr-message-composes-text-and-file-context-and-records-history ()
   (let ((herdr-message-history nil)
@@ -2365,7 +2365,7 @@
         (insert "scratch")
         (herdr-message--send target "  plain  " (herdr-message--context nil))))
     (should (equal (nreverse prompts)
-                   `((,target "fix this\n\n---\nEmacs context\nfile: /tmp/herdr-message.el\nlines: 2\nmode: fundamental-mode\n\n```\nbeta\n```")
+                   `((,target "fix this\n\n---\nEmacs context\nfile: /tmp/herdr-message.el:2\nmode: fundamental-mode\n\n```\nbeta\n```")
                      (,target "plain"))))
     (should (equal herdr-message-history '("plain" "fix this")))))
 
@@ -2462,7 +2462,7 @@
                (lambda (target text) (push (list target text) prompts)))
               ((symbol-function 'herdr-sessions) (lambda () nil)))
       (save-window-excursion
-        (let ((buffer (herdr-message--edit target "draft" "Emacs context\nfile: x.el\nlines: 3\n\n```\nline\n```")))
+        (let ((buffer (herdr-message--edit target "draft" "Emacs context\nfile: x.el:3\n\n```\nline\n```")))
           (should (eq (current-buffer) buffer))
           (should (derived-mode-p 'herdr-message-mode))
           (should (string-match-p "\\[x.el:3\\]" header-line-format))
@@ -2474,7 +2474,7 @@
           (herdr-message-cancel)
           (should-not (buffer-live-p buffer)))))
     (should (equal prompts
-                   `((,target "draft and more\n\n---\nEmacs context\nfile: x.el\nlines: 3\n\n```\nline\n```"))))
+                   `((,target "draft and more\n\n---\nEmacs context\nfile: x.el:3\n\n```\nline\n```"))))
     (should (equal herdr-message-history '("draft and more")))))
 
 (ert-deftest herdr-message-pop-out-throws-an-editor-continuation ()

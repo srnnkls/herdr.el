@@ -996,7 +996,7 @@ another provider handle it.  `herdr-default-send-context' is the fallback.")
       (widen)
       (setq start-line (line-number-at-pos beginning)
             end-line (line-number-at-pos last-position)))
-    (format "Emacs context\n%s: %s\nlines: %s\nmode: %s\n\n```\n%s\n```"
+    (format "Emacs context\n%s: %s:%s\nmode: %s\n\n```\n%s\n```"
             (if buffer-file-name "file" "buffer")
             (if buffer-file-name
                 (expand-file-name buffer-file-name)
@@ -1173,17 +1173,12 @@ only file-visiting buffers contribute their region or current line."
       (format "%s" (cdr target))))
 
 (defun herdr-message--context-summary (context)
-  "Return the location of CONTEXT text as NAME:POSITION, or nil."
+  "Return the file or buffer location line of CONTEXT text, or nil."
   (when context
-    (let (name position)
-      (dolist (line (split-string context "\n"))
-        (cond
-         ((string-match "\\`\\(?:file\\|buffer\\): \\(.+\\)" line)
-          (setq name (or name (match-string 1 line))))
-         ((string-match "\\`\\(?:position\\|lines\\): \\(.+\\)" line)
-          (setq position (or position (match-string 1 line))))))
-      (when name
-        (if position (concat name ":" position) name)))))
+    (seq-some (lambda (line)
+                (and (string-match "\\`\\(?:file\\|buffer\\): \\(.+\\)" line)
+                     (match-string 1 line)))
+              (split-string context "\n"))))
 
 (defun herdr-message--edit (target draft context)
   "Open a message buffer for TARGET holding DRAFT, sending with CONTEXT."
