@@ -996,14 +996,16 @@ another provider handle it.  `herdr-default-send-context' is the fallback.")
       (widen)
       (setq start-line (line-number-at-pos beginning)
             end-line (line-number-at-pos last-position)))
-    (format "Emacs context:\n\n%s:%s\n\n%s"
+    (format "Emacs context\n%s: %s\nlines: %s\nmode: %s\n\n```\n%s\n```"
+            (if buffer-file-name "file" "buffer")
             (if buffer-file-name
                 (expand-file-name buffer-file-name)
               (buffer-name))
             (if (= start-line end-line)
                 start-line
               (format "%d-%d" start-line end-line))
-            (buffer-substring-no-properties beginning end))))
+            major-mode
+            (string-trim-right (buffer-substring-no-properties beginning end)))))
 
 (defun herdr-agent--send-context (entry)
   "Return context for agent ENTRY from the configured providers."
@@ -1171,13 +1173,17 @@ only file-visiting buffers contribute their region or current line."
       (format "%s" (cdr target))))
 
 (defun herdr-message--context-summary (context)
-  "Return the location line of CONTEXT text, or nil."
+  "Return the location of CONTEXT text as NAME:POSITION, or nil."
   (when context
-    (seq-some (lambda (line)
-                (let ((line (string-trim
-                             (string-remove-prefix "Emacs context:" line))))
-                  (and (not (string-empty-p line)) line)))
-              (split-string context "\n"))))
+    (let (name position)
+      (dolist (line (split-string context "\n"))
+        (cond
+         ((string-match "\\`\\(?:file\\|buffer\\): \\(.+\\)" line)
+          (setq name (or name (match-string 1 line))))
+         ((string-match "\\`\\(?:position\\|lines\\): \\(.+\\)" line)
+          (setq position (or position (match-string 1 line))))))
+      (when name
+        (if position (concat name ":" position) name)))))
 
 (defun herdr-message--edit (target draft context)
   "Open a message buffer for TARGET holding DRAFT, sending with CONTEXT."
