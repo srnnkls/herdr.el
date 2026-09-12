@@ -32,8 +32,12 @@ Attached buffers are named after the project and git branch the terminal works i
 | detach | Release Emacs state while keeping the Herdr pane and agent alive. |
 | stop | Close one agent's Herdr pane. |
 | stop all | Close every reported agent pane on the selected server. |
+| message | Send a typed message plus the context at point to an agent. |
+| associate | Bind a primary agent to the current buffer, project, or workspace. |
 
 Use `herdr-agent-start`, `herdr-agent-continue`, and `herdr-agent-resume` from Lisp. `herdr-agent-stop` takes a composite `(server-key . terminal-id)` target. Existing work is available through `herdr-attach-agent`, `herdr-attach-pane`, `herdr-attach-session`, and `herdr-jump`.
+
+`herdr-message-session` and its project, workspace, `last`, and `primary` variants read a message with completion over earlier messages and send it followed by the context at point: file, line, and the region or current line for file-visiting buffers, or whatever a provider on `herdr-send-context-functions` returns. `C-c '` in the minibuffer moves the draft to a `*herdr message*` buffer where `C-c C-c` sends and `C-c C-k` discards. `herdr-associate-agent`, `herdr-associate-project-agent`, and `herdr-associate-workspace-agent` bind a primary agent; `herdr-message-primary-session` and `herdr-send-primary-session` resolve buffer, then project, then workspace, and bind the project on first use when nothing is set.
 
 `herdr-attach-session-workspace-policy` defaults to `mirror`, which preserves Herdr workspace groups. Set it to `merge` to accumulate entries with the same `herdr-workspace-label` in one editor workspace.
 

@@ -1109,6 +1109,322 @@ another provider handle it.  `herdr-default-send-context' is the fallback.")
   (interactive)
   (herdr-agent--send-session 'workspace t))
 
+;;;; Messages
+
+(defvar herdr-message-history nil
+  "Messages sent to agents, most recent first.
+Completion candidates and minibuffer history for `herdr-message-session'.")
+
+(defvar-local herdr-message--target nil
+  "Agent target the current message buffer sends to.")
+
+(defvar-local herdr-message--context nil
+  "Context text captured when the current message buffer was opened.")
+
+(defvar-local herdr-message--window-configuration nil
+  "Window configuration to restore when the message buffer closes.")
+
+(defvar herdr-message-minibuffer-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c '") #'herdr-message-edit-from-minibuffer)
+    map)
+  "Keys added to the minibuffer while reading an agent message.")
+
+(defvar herdr-message-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-c") #'herdr-message-send)
+    (define-key map (kbd "C-c C-k") #'herdr-message-cancel)
+    map)
+  "Keymap for `herdr-message-mode'.")
+
+(define-derived-mode herdr-message-mode text-mode "Herdr-Message"
+  "Major mode for composing a message to a herdr agent.
+\\<herdr-message-mode-map>\\[herdr-message-send] sends the message with the
+context captured when the buffer opened; \\[herdr-message-cancel] discards it.")
+
+(defun herdr-message--context (entry)
+  "Return message context for agent ENTRY from the current buffer.
+Providers on `herdr-send-context-functions' answer first; without one,
+only file-visiting buffers contribute their region or current line."
+  (or (run-hook-with-args-until-success 'herdr-send-context-functions entry)
+      (and buffer-file-name (herdr-default-send-context entry))))
+
+(defun herdr-message--compose (text context)
+  "Return TEXT followed by CONTEXT when CONTEXT is non-nil."
+  (if context
+      (concat text "\n\n" context)
+    text))
+
+(defun herdr-message--send (target text context)
+  "Send TEXT with CONTEXT to agent TARGET and record TEXT in history."
+  (let ((text (string-trim text)))
+    (when (string-empty-p text)
+      (user-error "Message is empty"))
+    (add-to-history 'herdr-message-history text)
+    (herdr-agent-prompt target (herdr-message--compose text context))))
+
+(defun herdr-message--target-label (target)
+  "Return a short label for agent TARGET."
+  (or (when-let* ((entry (cl-find target (herdr-sessions)
+                                  :key #'herdr--entry-target :test #'equal)))
+        (herdr--entry-label entry))
+      (format "%s" (cdr target))))
+
+(defun herdr-message--context-summary (context)
+  "Return the location line of CONTEXT text, or nil."
+  (when context
+    (seq-some (lambda (line)
+                (let ((line (string-trim
+                             (string-remove-prefix "Emacs context:" line))))
+                  (and (not (string-empty-p line)) line)))
+              (split-string context "\n"))))
+
+(defun herdr-message--edit (target draft context)
+  "Open a message buffer for TARGET holding DRAFT, sending with CONTEXT."
+  (let ((configuration (current-window-configuration))
+        (buffer (get-buffer-create "*herdr message*"))
+        (summary (herdr-message--context-summary context)))
+    (with-current-buffer buffer
+      (herdr-message-mode)
+      (setq herdr-message--target target
+            herdr-message--context context
+            herdr-message--window-configuration configuration
+            header-line-format
+            (format " Message to %s%s  —  C-c C-c send, C-c C-k cancel"
+                    (herdr-message--target-label target)
+                    (if summary (format "  [%s]" summary) "")))
+      (erase-buffer)
+      (when draft (insert draft)))
+    (pop-to-buffer buffer)
+    buffer))
+
+(defun herdr-message--close ()
+  "Kill the current message buffer and restore its window configuration."
+  (let ((configuration herdr-message--window-configuration))
+    (kill-buffer (current-buffer))
+    (when configuration
+      (set-window-configuration configuration))))
+
+(defun herdr-message-send ()
+  "Send the current message buffer to its agent."
+  (interactive)
+  (unless (derived-mode-p 'herdr-message-mode)
+    (user-error "Not in a herdr message buffer"))
+  (herdr-message--send herdr-message--target
+                       (buffer-substring-no-properties (point-min) (point-max))
+                       herdr-message--context)
+  (herdr-message--close))
+
+(defun herdr-message-cancel ()
+  "Discard the current message buffer."
+  (interactive)
+  (unless (derived-mode-p 'herdr-message-mode)
+    (user-error "Not in a herdr message buffer"))
+  (herdr-message--close))
+
+(defvar herdr-message--pending nil
+  "Target and context of the message being read in the minibuffer.")
+
+(defun herdr-message-edit-from-minibuffer ()
+  "Leave the minibuffer and continue the message in a full buffer."
+  (interactive)
+  (let ((draft (minibuffer-contents))
+        (pending herdr-message--pending))
+    (throw 'exit
+           (lambda ()
+             (herdr-message--edit (car pending) draft (cdr pending))))))
+
+(defun herdr-message--read (target context)
+  "Read a message for TARGET and send it with CONTEXT.
+\\<herdr-message-minibuffer-map>\\[herdr-message-edit-from-minibuffer] in the
+minibuffer moves the draft to a `herdr-message-mode' buffer instead."
+  (let ((herdr-message--pending (cons target context)))
+    (minibuffer-with-setup-hook
+        (lambda ()
+          (use-local-map (make-composed-keymap herdr-message-minibuffer-map
+                                               (current-local-map))))
+      (let ((text (completing-read "Message: " herdr-message-history
+                                   nil nil nil 'herdr-message-history)))
+        (herdr-message--send target text context)))))
+
+(defun herdr-message--session (scope last)
+  "Message an agent in SCOPE, selecting by LAST when non-nil."
+  (let* ((all (herdr-agent--send-candidates))
+         (_ (herdr--prune-session-targets all))
+         (entries (herdr-agent--send-scope-entries all scope))
+         (entry (if last
+                    (herdr-agent--last-send-entry entries scope)
+                  (herdr-read-entry "Message agent: " entries)))
+         (target (herdr--entry-target entry)))
+    (herdr-message--read target (herdr-message--context entry))))
+
+;;;###autoload
+(defun herdr-message-session ()
+  "Message an agent selected from every session, with context at point."
+  (interactive)
+  (herdr-message--session 'all nil))
+
+;;;###autoload
+(defun herdr-message-last-session ()
+  "Message the last-used agent across all sessions, with context at point."
+  (interactive)
+  (herdr-message--session 'all t))
+
+;;;###autoload
+(defun herdr-message-project-session ()
+  "Message a selected agent in the current project, with context at point."
+  (interactive)
+  (herdr-message--session 'project nil))
+
+;;;###autoload
+(defun herdr-message-last-project-session ()
+  "Message the last-used agent in the current project, with context at point."
+  (interactive)
+  (herdr-message--session 'project t))
+
+;;;###autoload
+(defun herdr-message-workspace-session ()
+  "Message a selected agent in the current workspace, with context at point."
+  (interactive)
+  (herdr-message--session 'workspace nil))
+
+;;;###autoload
+(defun herdr-message-last-workspace-session ()
+  "Message the last-used agent in the current workspace, with context at point."
+  (interactive)
+  (herdr-message--session 'workspace t))
+
+;;;; Primary agents
+
+(defvar-local herdr-current-agent nil
+  "Composite target of the agent associated with the current buffer.")
+
+(defvar herdr--project-agents nil
+  "Alist of project roots to the composite agent target bound to each.")
+
+(defvar herdr--workspace-agents nil
+  "Alist of workspace labels to the composite agent target bound to each.")
+
+(defun herdr--current-project-root ()
+  "Return the current buffer's project root, or nil."
+  (let ((directory (or (and buffer-file-name
+                            (file-name-directory buffer-file-name))
+                       default-directory)))
+    (condition-case nil
+        (funcall herdr-project-root-function directory)
+      (file-error nil))))
+
+(defun herdr-primary-agent-target ()
+  "Return the primary agent target for the current buffer, or nil.
+The buffer binding wins over the project binding, which wins over the
+workspace binding.  Bindings whose agent is gone are dropped."
+  (let ((live (delq nil (mapcar #'herdr--entry-target
+                                (herdr-agent--send-candidates))))
+        (project (herdr--current-project-root))
+        (workspace (herdr-current-workspace-label)))
+    (unless (member herdr-current-agent live)
+      (setq herdr-current-agent nil))
+    (setq herdr--project-agents
+          (cl-remove-if-not (lambda (binding) (member (cdr binding) live))
+                            herdr--project-agents)
+          herdr--workspace-agents
+          (cl-remove-if-not (lambda (binding) (member (cdr binding) live))
+                            herdr--workspace-agents))
+    (or herdr-current-agent
+        (and project (cdr (assoc project herdr--project-agents)))
+        (and workspace (cdr (assoc workspace herdr--workspace-agents))))))
+
+(defun herdr--read-agent-target (prompt)
+  "Read a running agent with PROMPT and return its composite target."
+  (let ((all (herdr-agent--send-candidates)))
+    (herdr--prune-session-targets all)
+    (herdr--entry-target (herdr-read-entry prompt all))))
+
+;;;###autoload
+(defun herdr-associate-agent (target)
+  "Bind agent TARGET as the current buffer's primary agent."
+  (interactive (list (herdr--read-agent-target "Primary agent for this buffer: ")))
+  (setq herdr-current-agent target)
+  (message "Buffer %s now messages %s"
+           (buffer-name) (herdr-message--target-label target))
+  target)
+
+;;;###autoload
+(defun herdr-associate-project-agent (target)
+  "Bind agent TARGET as the current project's primary agent."
+  (interactive (list (herdr--read-agent-target "Primary agent for this project: ")))
+  (let ((project (or (herdr--current-project-root)
+                     (user-error "Current buffer is not in a project"))))
+    (setf (alist-get project herdr--project-agents nil nil #'equal) target)
+    (message "Project %s now messages %s"
+             (abbreviate-file-name project)
+             (herdr-message--target-label target))
+    target))
+
+;;;###autoload
+(defun herdr-associate-workspace-agent (target)
+  "Bind agent TARGET as the current workspace's primary agent."
+  (interactive (list (herdr--read-agent-target "Primary agent for this workspace: ")))
+  (let ((workspace (or (herdr-current-workspace-label)
+                       (user-error "No current editor workspace"))))
+    (setf (alist-get workspace herdr--workspace-agents nil nil #'equal) target)
+    (message "Workspace %s now messages %s"
+             workspace (herdr-message--target-label target))
+    target))
+
+;;;###autoload
+(defun herdr-dissociate-agent (&optional all)
+  "Clear the current buffer's primary agent.
+With prefix argument ALL, also clear the current project's and
+workspace's bindings."
+  (interactive "P")
+  (setq herdr-current-agent nil)
+  (when all
+    (when-let* ((project (herdr--current-project-root)))
+      (setf (alist-get project herdr--project-agents nil t #'equal) nil))
+    (when-let* ((workspace (herdr-current-workspace-label)))
+      (setf (alist-get workspace herdr--workspace-agents nil t #'equal) nil)))
+  (message "Primary agent cleared"))
+
+(defun herdr--primary-or-bind-target ()
+  "Return the primary agent target, binding the project on first use."
+  (or (herdr-primary-agent-target)
+      (let ((target (herdr--read-agent-target "Primary agent: "))
+            (project (herdr--current-project-root)))
+        (if project
+            (progn
+              (setf (alist-get project herdr--project-agents nil nil #'equal)
+                    target)
+              (message "Project %s now messages %s"
+                       (abbreviate-file-name project)
+                       (herdr-message--target-label target)))
+          (setq herdr-current-agent target))
+        target)))
+
+(defun herdr--entry-for-target (target)
+  "Return the running session entry for TARGET, or nil."
+  (cl-find target (herdr-agent--send-candidates)
+           :key #'herdr--entry-target :test #'equal))
+
+;;;###autoload
+(defun herdr-message-primary-session ()
+  "Message the primary agent for the current buffer, with context at point.
+Without a binding, read an agent and bind it to the current project."
+  (interactive)
+  (let ((target (herdr--primary-or-bind-target)))
+    (herdr-message--read target
+                         (herdr-message--context
+                          (herdr--entry-for-target target)))))
+
+;;;###autoload
+(defun herdr-send-primary-session ()
+  "Send context at point to the primary agent for the current buffer."
+  (interactive)
+  (let ((target (herdr--primary-or-bind-target)))
+    (herdr-agent-prompt target
+                        (herdr-agent--send-context
+                         (herdr--entry-for-target target)))))
+
 (defun herdr-agent-escape (target)
   "Send escape to TARGET through herdr's agent API."
   (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))

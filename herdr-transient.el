@@ -114,6 +114,9 @@ to, so the two menus can be read as one."
     ("r" "resume" herdr-transient--resume)]
    ["Agent"
     ("P" "prompt" herdr-transient--prompt)
+    ("m" "message primary" herdr-message-primary-session)
+    ("M" "message…" herdr-message-project-session)
+    ("=" "associate" herdr-associate-agent)
     ("R" "rename" herdr-transient--rename)
     ("j" "switch" herdr-transient--switch)
     ("e" "escape" herdr-transient--escape)
