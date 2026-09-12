@@ -1150,9 +1150,9 @@ only file-visiting buffers contribute their region or current line."
       (and buffer-file-name (herdr-default-send-context entry))))
 
 (defun herdr-message--compose (text context)
-  "Return TEXT followed by CONTEXT when CONTEXT is non-nil."
+  "Return TEXT followed by a barrier and CONTEXT when CONTEXT is non-nil."
   (if context
-      (concat text "\n\n" context)
+      (concat text "\n\n---\n" (string-trim-right context))
     text))
 
 (defun herdr-message--send (target text context)

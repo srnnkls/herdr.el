@@ -2365,7 +2365,7 @@
         (insert "scratch")
         (herdr-message--send target "  plain  " (herdr-message--context nil))))
     (should (equal (nreverse prompts)
-                   `((,target "fix this\n\nEmacs context:\n\n/tmp/herdr-message.el:2\n\nbeta")
+                   `((,target "fix this\n\n---\nEmacs context:\n\n/tmp/herdr-message.el:2\n\nbeta")
                      (,target "plain"))))
     (should (equal herdr-message-history '("plain" "fix this")))))
 
@@ -2448,7 +2448,7 @@
     (should-not agent-reads)
     (should (equal prompts
                    '((("/servers/worktree.sock" . "shared")
-                      "do it\n\ncontext:worktree"))))
+                      "do it\n\n---\ncontext:worktree"))))
     (should (equal herdr-message-history '("do it")))
     (herdr-message-project-session)
     (should (equal agent-reads '("Message agent: ")))
@@ -2474,7 +2474,7 @@
           (herdr-message-cancel)
           (should-not (buffer-live-p buffer)))))
     (should (equal prompts
-                   `((,target "draft and more\n\nEmacs context:\n\nx.el:3\n\nline"))))
+                   `((,target "draft and more\n\n---\nEmacs context:\n\nx.el:3\n\nline"))))
     (should (equal herdr-message-history '("draft and more")))))
 
 (ert-deftest herdr-message-pop-out-throws-an-editor-continuation ()
@@ -2524,8 +2524,8 @@
       (herdr-message-primary-session)
       (should (= (length agent-reads) 1))
       (should (equal prompts
-                     '((("/servers/worktree.sock" . "shared") "do it\n\ncontext:worktree")
-                       (("/servers/worktree.sock" . "shared") "do it\n\ncontext:worktree"))))
+                     '((("/servers/worktree.sock" . "shared") "do it\n\n---\ncontext:worktree")
+                       (("/servers/worktree.sock" . "shared") "do it\n\n---\ncontext:worktree"))))
       (herdr-send-primary-session)
       (should (equal (car prompts)
                      '(("/servers/worktree.sock" . "shared") "context:worktree"))))))
