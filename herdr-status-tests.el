@@ -229,6 +229,39 @@
       (should (string-match-p "tab +main" text))
       (should (string-match-p "provider +limen" text))))))
 
+(ert-deftest herdr-status-sections-functions-insert-before-recent ()
+  (let ((herdr-status-sections-functions
+         (list (lambda (agents widths _tabs workspaces)
+                 (magit-insert-section (herdr-status-tests-extra)
+                   (magit-insert-heading (format "Extra %d" (length agents)))
+                   (magit-insert-section (herdr-status-agent (car agents))
+                     (magit-insert-heading
+                       (herdr-status-agent-row (car agents) widths workspaces))))))))
+    (herdr-status-tests--with-dashboard
+      (herdr--record-session-target '("/tmp/alpha.sock" . "t1"))
+      (herdr-status-refresh)
+      (goto-char (point-min))
+      (should (looking-at "Extra 3"))
+      (forward-line 1)
+      (should (looking-at " +. +api-review +. +claude"))
+      (should (equal (herdr-status-target-at-point) '("/tmp/alpha.sock" . "t1")))
+      (should (re-search-forward "^Recent 1" nil t)))))
+
+(ert-deftest herdr-status-request-refresh-schedules-one-idle-redraw ()
+  (let ((herdr-status-auto-refresh t)
+        (herdr-status--timer nil))
+    (herdr-status-tests--with-dashboard
+      (unwind-protect
+          (progn
+            (herdr-status-request-refresh)
+            (should (timerp herdr-status--timer))
+            (let ((timer herdr-status--timer))
+              (herdr-status-request-refresh)
+              (should (eq herdr-status--timer timer))))
+        (when herdr-status--timer
+          (cancel-timer herdr-status--timer)
+          (setq herdr-status--timer nil))))))
+
 (ert-deftest herdr-status-lists-every-known-session ()
   (herdr-status-tests--with-dashboard
     (let ((sessions (herdr-status-tests--section-text "Sessions ")))

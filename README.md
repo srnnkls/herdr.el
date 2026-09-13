@@ -153,6 +153,8 @@ fringe the collapse arrows are drawn in, so they clear the headings.
 | `Agents` | The filterable list, headed by the visible-of-total count and the active filters |
 | `Panes` | Panes running no agent, grouped under their workspace |
 
+Functions on `herdr-status-sections-functions` insert further sections above `Recent`; each receives the agent entries, the column widths, and the tab and workspace indexes, draws an agent on the shared columns with `herdr-status-agent-row`, and inserts nothing when it has nothing to show. `herdr-status-request-refresh` schedules the coalesced redraw those sections need when their data changes. Limen's `limen-inbox-mode` uses this for the questions agents are waiting on.
+
 An agent row opens with `herdr-status-attached-glyph` when Emacs has a
 buffer for it, then its state, name, harness, pane id, server,
 workspace, and working directory:

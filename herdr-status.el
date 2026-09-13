@@ -616,6 +616,12 @@ resolves the workspace label."
                   (propertize directory 'font-lock-face 'herdr-status-path))))
     "  ")))
 
+(defun herdr-status-agent-row (entry widths workspaces)
+  "Return the dashboard line for agent ENTRY on WIDTHS, labelled via WORKSPACES.
+Sections other packages insert through `herdr-status-sections-functions'
+draw an agent on the same columns as the agent list with this."
+  (herdr-status--row entry widths workspaces))
+
 (defun herdr-status--widths (entries)
   "Return the column widths fitting ENTRIES."
   (list (herdr-status--width entries #'herdr--entry-label 8)
@@ -1097,6 +1103,13 @@ runs out of stack.")
                (member (oref section value) herdr-status--collapsed-herds))
       (magit-section-hide section))))
 
+(defvar herdr-status-sections-functions nil
+  "Functions inserting sections at the top of the dashboard.
+Each is called inside the root section, before the recent agents, with
+the agent entries, the column widths, the tab index, and the workspace
+index the redraw computed, and inserts nothing when it has nothing to
+show.")
+
 (defun herdr-status--redraw ()
   "Re-fetch and redraw the dashboard in the current buffer."
   (let ((herdr-status--refreshing t)
@@ -1119,6 +1132,9 @@ runs out of stack.")
                                                        herdr-status--entries)))))
       (erase-buffer)
       (magit-insert-section (herdr-status-root)
+        (run-hook-with-args 'herdr-status-sections-functions
+                            (herdr-status--agents herdr-status--entries)
+                            widths tabs workspaces)
         (herdr-status--insert-recent widths tabs workspaces)
         (herdr-status--insert-herds widths tabs workspaces)
         (herdr-status--insert-agents widths tabs workspaces)
@@ -1173,14 +1189,19 @@ runs out of stack.")
           (herdr-status-refresh)
         (herdr-error nil)))))
 
-(defun herdr-status--on-event (&rest _)
-  "Schedule a redraw after a herdr lifecycle event."
+(defun herdr-status-request-refresh ()
+  "Schedule a redraw of every live dashboard buffer.
+Redraws coalesce on one idle timer, so calling this often is cheap."
   (when (and herdr-status-auto-refresh
              (null herdr-status--timer)
              (herdr-status--buffers))
     (setq herdr-status--timer
           (run-with-idle-timer herdr-status-refresh-delay nil
                                #'herdr-status--refresh-buffers))))
+
+(defun herdr-status--on-event (&rest _)
+  "Schedule a redraw after a herdr lifecycle event."
+  (herdr-status-request-refresh))
 
 (add-hook 'herdr-agent-event-functions #'herdr-status--on-event)
 
