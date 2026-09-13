@@ -1157,13 +1157,23 @@ only file-visiting buffers contribute their region or current line."
       (concat text "\n\n---\n" (string-trim-right context))
     text))
 
+(defvar herdr-message-compose-functions nil
+  "Functions composing the prompt sent for a message.
+Each receives the agent target, the trimmed message text, and the context
+string or nil, and returns the prompt to send or nil to defer.  When none
+returns a prompt, `herdr-message--compose' appends the context under a
+barrier.")
+
 (defun herdr-message--send (target text context)
   "Send TEXT with CONTEXT to agent TARGET and record TEXT in history."
   (let ((text (string-trim text)))
     (when (string-empty-p text)
       (user-error "Message is empty"))
     (add-to-history 'herdr-message-history text)
-    (herdr-agent-prompt target (herdr-message--compose text context))))
+    (herdr-agent-prompt target
+                        (or (run-hook-with-args-until-success
+                             'herdr-message-compose-functions target text context)
+                            (herdr-message--compose text context)))))
 
 (defun herdr-message--target-label (target)
   "Return a short label for agent TARGET."

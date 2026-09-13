@@ -2369,6 +2369,24 @@
                      (,target "plain"))))
     (should (equal herdr-message-history '("plain" "fix this")))))
 
+(ert-deftest herdr-message-compose-functions-replace-the-default-prompt ()
+  (let ((herdr-message-history nil)
+        (target '("/servers/a.sock" . "shared"))
+        (herdr-message-compose-functions
+         (list (lambda (_target _text _context) nil)
+               (lambda (target text context)
+                 (and (equal target '("/servers/a.sock" . "shared"))
+                      context
+                      (concat text " <hooked>")))))
+        prompts)
+    (cl-letf (((symbol-function 'herdr-agent-prompt)
+               (lambda (target text) (push (list target text) prompts))))
+      (herdr-message--send target " fix this " "Emacs context\nfile: a.el:1")
+      (herdr-message--send target "plain" nil))
+    (should (equal (nreverse prompts)
+                   `((,target "fix this <hooked>")
+                     (,target "plain"))))))
+
 (ert-deftest herdr-message-rejects-empty-text ()
   (let ((herdr-message-history nil))
     (cl-letf (((symbol-function 'herdr-agent-prompt)
