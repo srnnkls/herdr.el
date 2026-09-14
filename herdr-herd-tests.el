@@ -94,6 +94,24 @@ and `:on', the herdr session the agent runs on."
   (should (equal "mine" (herdr-herd--compose nil "mine")))
   (should-not (herdr-herd--compose nil nil)))
 
+(ert-deftest herdr-herd-a-label-word-is-read-and-rewritten-in-place ()
+  (should (equal "finished,exited"
+                 (herdr-herd-label-token "herd:limen notify:finished,exited wip"
+                                         "notify:")))
+  (should-not (herdr-herd-label-token "herd:limen wip" "notify:"))
+  (should-not (herdr-herd-label-token nil "notify:"))
+  (should (equal "herd:limen notify:prompt wip"
+                 (herdr-herd-label-with-token
+                  "herd:limen notify:finished,exited wip" "notify:" "prompt")))
+  (should (equal "herd:limen wip notify:prompt"
+                 (herdr-herd-label-with-token "herd:limen wip" "notify:" "prompt")))
+  (should (equal "herd:limen wip"
+                 (herdr-herd-label-with-token
+                  "herd:limen notify:finished wip" "notify:" nil)))
+  (should (equal "notify:prompt"
+                 (herdr-herd-label-with-token nil "notify:" "prompt")))
+  (should-not (herdr-herd-label-with-token "notify:finished" "notify:" nil)))
+
 (ert-deftest herdr-herd-a-name-with-whitespace-is-refused ()
   (should (herdr-herd--valid-name-p "refactor"))
   (should-not (herdr-herd--valid-name-p "two words"))
@@ -221,6 +239,47 @@ and `:on', the herdr session the agent runs on."
     (herdr-herd-tests--with-stubs (list entry)
       (should-error (herdr-herd-add (list entry) '("alpha" . "two words")) :type 'user-error)
       (should-not herdr-herd-tests--renames))))
+
+(ert-deftest herdr-herd-joining-tells-the-joiner-the-roster-and-the-others-one-line ()
+  (let ((old (herdr-herd-tests--entry "/tmp/projects/memex/" "index"
+                                      :name "one" :session "s1" :pane "w1:p1"
+                                      :label "herd:refactor"))
+        (new (herdr-herd-tests--entry "/tmp/projects/nmnm/" "nmnm"
+                                      :name "two" :session "s2" :pane "w2:p1")))
+    (herdr-herd-tests--with-stubs (list old new)
+      (herdr-herd-add (list new) '("alpha" . "refactor"))
+      (let ((to-old (cdr (assoc (herdr--entry-target old) herdr-herd-tests--prompts)))
+            (to-new (cdr (assoc (herdr--entry-target new) herdr-herd-tests--prompts))))
+        (should (equal 2 (length herdr-herd-tests--prompts)))
+        (should (equal "[herd refactor] two joined (claude, /tmp/projects/nmnm/). No reply needed."
+                       to-old))
+        (should (string-match-p "you are two" to-new))
+        (should (string-match-p "herdr agent prompt" to-new))
+        (should (string-match-p "^  one " to-new))))))
+
+(ert-deftest herdr-herd-the-roster-carries-what-protocol-functions-add ()
+  (let ((entry (herdr-herd-tests--entry "/tmp/projects/memex/" "index"
+                                        :name "one" :label "herd:refactor"))
+        (herdr-herd-protocol-functions
+         (list (lambda (herd) (format "Extra about %s." (cdr herd)))
+               #'ignore)))
+    (herdr-herd-tests--with-stubs (list entry)
+      (herdr-herd-announce '("alpha" . "refactor"))
+      (should (string-match-p "\n\nExtra about refactor\\.\n\n"
+                              (cdr (car herdr-herd-tests--prompts)))))))
+
+(ert-deftest herdr-herd-leaving-tells-the-others-one-line ()
+  (let ((one (herdr-herd-tests--entry "/tmp/projects/memex/" "index"
+                                      :name "one" :session "s1" :pane "w1:p1"
+                                      :label "herd:refactor"))
+        (two (herdr-herd-tests--entry "/tmp/projects/nmnm/" "nmnm"
+                                      :name "two" :session "s2" :pane "w2:p1"
+                                      :label "herd:refactor")))
+    (herdr-herd-tests--with-stubs (list one two)
+      (herdr-herd-remove two)
+      (should (equal (list (cons (herdr--entry-target one)
+                                 "[herd refactor] two left. No reply needed."))
+                     herdr-herd-tests--prompts)))))
 
 (ert-deftest herdr-herd-announcing-tells-every-member-of-its-peers ()
   (let ((one (herdr-herd-tests--entry "/tmp/projects/memex/" "index"

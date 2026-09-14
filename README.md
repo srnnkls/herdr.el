@@ -249,11 +249,16 @@ menu:
 | `b` | Send one prompt to every idle member |
 | `R` | Send the roster again after membership changed |
 
-Joining sends the member `herdr-herd-protocol` followed by the live
-roster, through `herdr agent prompt`. Nothing is written into the project
-the agent works in, so Codex and Pi members join on the same terms as
-Claude. An agent that is `working` or `blocked` is skipped and named
-rather than interrupted mid-turn; `herdr-herd-busy-states` is that list.
+Joining sends the member `herdr-herd-protocol`, any paragraphs functions
+on `herdr-herd-protocol-functions` add, and the live roster, through
+`herdr agent prompt`; the members already there get one line, `[herd
+refactor] memex-index joined (claude, ~/src/memex). No reply needed.`,
+and leaving tells them the same way. `herdr-herd-notice` builds such a
+line and `herdr-herd-notice-prefix` opens it, so a hook can tell a notice
+from a task. Nothing is written into the project the agent works in, so
+Codex and Pi members join on the same terms as Claude. An agent that is
+`working` or `blocked` is skipped and named rather than interrupted
+mid-turn; `herdr-herd-busy-states` is that list.
 
 Members address each other by name only. An agent that already has one
 keeps it; one that has none is named at join from the repository it works
@@ -301,7 +306,10 @@ is stored outside herdr.
 The label is drawn only where a pane has no terminal title — which every
 agent pane sets — so on an agent it stays invisible. Text a pane label
 already carried survives every herd command: joining prepends `herd:NAME`
-and leaving takes it away again.
+and leaving takes it away again. Other packages keep their own per-agent
+settings in the same place as further `PREFIX:VALUE` words;
+`herdr-herd-label-token` reads one and `herdr-herd-label-with-token`
+rewrites it, leaving the herd and every other word alone.
 
 `bin/herdr-herd` wraps those calls for agents. It defaults every pane
 argument to `$HERDR_PANE_ID`, so an agent talks about itself with no

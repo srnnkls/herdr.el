@@ -52,6 +52,13 @@ every herd command."
   :type 'string
   :group 'herdr-herd)
 
+(defcustom herdr-herd-notice-prefix "[herd "
+  "What opens a one-line notice sent to a herd's members.
+The herd's name and a closing bracket follow it, so an agent, or a hook
+reading the prompt an agent received, can tell a notice from a task."
+  :type 'string
+  :group 'herdr-herd)
+
 (defcustom herdr-herd-busy-states '("working" "blocked")
   "Agent states a herd will not prompt into.
 A prompt sent to an agent in one of these interleaves with the turn it
@@ -119,6 +126,11 @@ The live roster is appended to this when a member joins."
   :type 'string
   :group 'herdr-herd)
 
+(defvar herdr-herd-protocol-functions nil
+  "Functions returning further paragraphs of the herd protocol, or nil.
+Each is called with the herd and runs after `herdr-herd-protocol' in
+what a joining member is told.")
+
 (defconst herdr-herd--name-limit 32
   "Longest agent name herdr accepts.")
 
@@ -144,6 +156,33 @@ what clears a label."
                      (list (and herd (concat herdr-herd-label-prefix herd))
                            (and rest (not (string-empty-p rest)) rest)))))
     (and parts (string-join parts " "))))
+
+(defun herdr-herd-label-token (label prefix)
+  "Return what the word of LABEL's own text opening with PREFIX says after it.
+Nil where no word does.  The herd word is not the label's own text."
+  (when-let* ((rest (cdr (herdr-herd--split label))))
+    (seq-some (lambda (word)
+                (and (string-prefix-p prefix word)
+                     (substring word (length prefix))))
+              (split-string rest))))
+
+(defun herdr-herd-label-with-token (label prefix value)
+  "Return LABEL with its word opening with PREFIX saying VALUE after it.
+The word keeps its place, is added at the end where there was none, and
+is dropped when VALUE is nil; the herd and every other word stay."
+  (pcase-let* ((`(,herd . ,rest) (herdr-herd--split label))
+               (word (and value (concat prefix value)))
+               (words (and rest (split-string rest)))
+               (placed nil)
+               (words (delq nil
+                            (mapcar (lambda (each)
+                                      (if (string-prefix-p prefix each)
+                                          (prog1 (and (not placed) word)
+                                            (setq placed t))
+                                        each))
+                                    words)))
+               (words (if (and word (not placed)) (append words (list word)) words)))
+    (herdr-herd--compose herd (and words (string-join words " ")))))
 
 (defun herdr-herd--valid-name-p (name)
   "Return non-nil when NAME can head a pane label."
@@ -358,17 +397,42 @@ so use those directly whenever you prefer.")))
   (let ((peers (seq-remove (lambda (entry)
                              (equal (alist-get 'name entry) self))
                            members))
-        (herd (cdr herd)))
-    (concat "/herd " herd " — you are " self "\n\n"
+        (name (cdr herd)))
+    (concat "/herd " name " — you are " self "\n\n"
             herdr-herd-protocol "\n\n"
+            (mapconcat (lambda (paragraph) (concat paragraph "\n\n"))
+                       (delq nil (mapcar (lambda (function) (funcall function herd))
+                                         herdr-herd-protocol-functions))
+                       "")
             (when-let* ((helper (herdr-herd--helper)))
               (concat helper "\n\n"))
             (if peers
-                (concat "Your peers in herd " herd ":\n"
+                (concat "Your peers in herd " name ":\n"
                         (string-join (mapcar #'herdr-herd--roster-line peers)
                                      "\n"))
-              (concat "You are the only member of herd " herd " so far."))
+              (concat "You are the only member of herd " name " so far."))
             "\n")))
+
+(defun herdr-herd-notice (herd text)
+  "Return TEXT as a one-line notice to a member of HERD.
+It opens with `herdr-herd-notice-prefix' and HERD's name and asks for
+no reply, so the member reads it without acting on it."
+  (format "%s%s] %s No reply needed." herdr-herd-notice-prefix (cdr herd) text))
+
+(defun herdr-herd--same-pane-p (one other)
+  "Return non-nil when entries ONE and OTHER name the same pane."
+  (and (equal (alist-get 'pane_id one) (alist-get 'pane_id other))
+       (equal (herdr--entry-server one) (herdr--entry-server other))))
+
+(defun herdr-herd--members-with (herd entries)
+  "Return HERD's live members with ENTRIES ahead of them.
+ENTRIES are members herdr may not report as such yet."
+  (append entries
+          (seq-remove (lambda (member)
+                        (seq-some (lambda (entry)
+                                    (herdr-herd--same-pane-p member entry))
+                                  entries))
+                      (herdr-herd-member-entries herd))))
 
 (defun herdr-herd--busy-p (entry)
   "Return non-nil when ENTRY's agent should not be prompted right now."
@@ -409,6 +473,34 @@ MEMBERS are the entries to reach.  VERB heads the report."
      (lambda (entry)
        (herdr-herd--roster herd (alist-get 'name entry) members))
      "told")))
+
+(defun herdr-herd--welcome (herd joined)
+  "Tell JOINED the roster of HERD and the other members who joined."
+  (let* ((members (herdr-herd--members-with herd joined))
+         (others (seq-remove (lambda (member)
+                               (seq-some (lambda (entry)
+                                           (herdr-herd--same-pane-p member entry))
+                                         joined))
+                             members)))
+    (herdr-herd--send herd joined
+                      (lambda (entry)
+                        (herdr-herd--roster herd (alist-get 'name entry) members))
+                      "welcomed")
+    (when others
+      (herdr-herd--send
+       herd others
+       (lambda (_entry)
+         (herdr-herd-notice
+          herd (string-join
+                (mapcar (lambda (entry)
+                          (format "%s joined (%s, %s)."
+                                  (alist-get 'name entry)
+                                  (or (alist-get 'agent entry) "?")
+                                  (abbreviate-file-name
+                                   (or (alist-get 'cwd entry) ""))))
+                        joined)
+                " ")))
+       "told"))))
 
 ;;;; Reading the dashboard
 
@@ -535,7 +627,8 @@ could neither be reached nor reach back."
            herd)))
   (unless (herdr-herd--valid-name-p (cdr herd))
     (user-error "A herd name carries no whitespace: %s" (cdr herd)))
-  (let ((label (herdr-herd--session-label (car herd))))
+  (let ((label (herdr-herd--session-label (car herd)))
+        (joined nil))
     (dolist (entry entries)
       (cond
        ((null (alist-get 'pane_id entry))
@@ -548,10 +641,19 @@ could neither be reached nor reach back."
        ((herdr-herd--same-p (herdr-herd-of-entry entry) herd)
         (message "herd %s: %s is already a member"
                  (herdr-herd-label herd) (herdr--entry-label entry)))
-       (t (herdr-herd--name entry)
-          (herdr-herd--put entry (cdr herd))))))
-  (herdr-herd--refresh)
-  (herdr-herd--announce herd))
+       (t (let ((name (herdr-herd--name entry)))
+            (herdr-herd--put entry (cdr herd))
+            (push (cons (cons 'name name)
+                        (cons (cons 'pane_label
+                                    (herdr-herd--compose
+                                     (cdr herd)
+                                     (cdr (herdr-herd--split
+                                           (alist-get 'pane_label entry)))))
+                              entry))
+                  joined)))))
+    (herdr-herd--refresh)
+    (when joined
+      (herdr-herd--welcome herd (nreverse joined)))))
 
 ;;;###autoload
 (defun herdr-herd-add-many (entries herd)
@@ -574,8 +676,14 @@ of HERD's session are offered for completion where there is not."
     (herdr-herd--refresh)
     (message "herd %s: %s removed"
              (herdr-herd-label herd) (herdr--entry-label entry))
-    (when (herdr-herd-member-entries herd)
-      (herdr-herd--announce herd))))
+    (when-let* ((members (seq-remove (lambda (member)
+                                       (herdr-herd--same-pane-p member entry))
+                                     (herdr-herd-member-entries herd))))
+      (herdr-herd--send herd members
+                        (lambda (_member)
+                          (herdr-herd-notice
+                           herd (format "%s left." (herdr--entry-label entry))))
+                        "told"))))
 
 ;;;###autoload
 (defun herdr-herd-dissolve (herd)
