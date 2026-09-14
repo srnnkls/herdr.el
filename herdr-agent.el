@@ -1463,5 +1463,16 @@ Without a binding, read an agent and bind it to the current project."
        (lambda (request-target)
          (herdr-api-agent-send-keys '("enter") request-target))))))
 
+(defun herdr-agent-send-keys (target keys)
+  "Send KEYS, a list of key names, to TARGET through herdr's agent API.
+Unlike `herdr-agent-prompt' this drives the pane directly, so it reaches
+an agent that is blocked waiting on interactive input."
+  (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
+    (herdr-agent--with-server server-key
+      (herdr-agent--call-with-request-target
+       server-key terminal
+       (lambda (request-target)
+         (herdr-api-agent-send-keys (vconcat keys) request-target))))))
+
 (provide 'herdr-agent)
 ;;; herdr-agent.el ends here

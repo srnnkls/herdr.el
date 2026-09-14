@@ -1687,7 +1687,8 @@
 
 (ert-deftest herdr-agent-native-prompt-escape-and-newline-use-agent-api ()
   (herdr-agent-tests--require-functions
-   'herdr-agent-prompt 'herdr-agent-escape 'herdr-agent-newline)
+   'herdr-agent-prompt 'herdr-agent-escape 'herdr-agent-newline
+   'herdr-agent-send-keys)
   (let ((calls nil))
     (cl-letf (((symbol-function 'herdr-api-agent-prompt)
                (lambda (target text &rest arguments)
@@ -1711,11 +1712,13 @@
       (herdr-agent-prompt "term-a" "Write the tests")
       (herdr-agent-escape "term-a")
       (herdr-agent-newline "term-a")
+      (herdr-agent-send-keys "term-a" '("2" "right"))
       (should
        (equal (nreverse calls)
               '((prompt "term-a" "Write the tests" nil)
                 (keys ("esc") "term-a")
-                (keys ("enter") "term-a")))))))
+                (keys ("enter") "term-a")
+                (keys ["2" "right"] "term-a")))))))
 
 (ert-deftest herdr-agent-native-switch-focuses-the-visible-owned-terminal ()
   (herdr-agent-tests--require-functions 'herdr-agent-switch)
