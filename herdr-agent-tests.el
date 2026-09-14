@@ -189,12 +189,13 @@
                       (should (equal (herdr-server-key) expected-target)))))))))
       (delete-directory root t))))
 
-(ert-deftest herdr-agent-adoption-separates-same-label-terminal-on-explicit-servers ()
+(ert-deftest herdr-agent-adoption-separates-same-label-terminal-on-explicit-sessions ()
   (let* ((herdr-agent-harnesses
           (herdr-agent-tests--with-adapter "claude" nil))
          (root (make-temp-file "herdr-agent-servers" t))
-         (socket-a (expand-file-name "a/herdr.sock" root))
-         (socket-b (expand-file-name "b/herdr.sock" root))
+         (process-environment (cons (concat "XDG_CONFIG_HOME=" root) process-environment))
+         (socket-a (expand-file-name "herdr/sessions/a/herdr.sock" root))
+         (socket-b (expand-file-name "herdr/sessions/b/herdr.sock" root))
          server-a server-b
          (attachments nil)
          (routed nil)
@@ -212,7 +213,7 @@
                  (lambda (label &optional _directory) (format "*herdr: %s*" label))))
             (cl-letf (((symbol-function 'herdr--terminal-exec)
                        (lambda (buffer &rest _)
-                         (push herdr-socket-path routed)
+                         (push herdr-session routed)
                          (let ((process
                                 (start-process (format "herdr-agent-%s" (buffer-name buffer))
                                                buffer "sleep" "30")))
@@ -221,11 +222,11 @@
               (let ((herdr-socket-path socket-a))
                 (setq first-buffer
                       (herdr-attach-entry
-                       (herdr-agent-tests--agent "claude" "term-shared" "a:pane" "a"))))
+                       (herdr-agent-tests--agent "claude" "term-shared" "a:pane" "a") "a")))
               (let ((herdr-socket-path socket-b))
                 (setq second-buffer
                       (herdr-attach-entry
-                       (herdr-agent-tests--agent "claude" "term-shared" "b:pane" "b"))))
+                       (herdr-agent-tests--agent "claude" "term-shared" "b:pane" "b") "b")))
               (setq first (herdr-agent-find server-a "term-shared")
                     second (herdr-agent-find server-b "term-shared"))
               (should (buffer-live-p first-buffer))
@@ -239,7 +240,7 @@
                              server-a))
               (should (equal (buffer-local-value 'herdr-terminal-server-key second-buffer)
                              server-b))
-              (should (equal (nreverse routed) (list server-a server-b))))))
+              (should (equal (nreverse routed) '("a" "b"))))))
       (herdr-agent-tests--detach first)
       (herdr-agent-tests--detach second)
       (mapc #'herdr-agent-tests--dispose-attachment attachments)

@@ -19,6 +19,12 @@ Install `transient` 0.9.0+ from a configured package archive. Terminal attachmen
 
 Attached buffers are named after the project and git branch the terminal works in, as in `*herdr: app@main claude*`, with linked worktrees named after their main checkout; set `herdr-buffer-name-function` to name them differently. Set `herdr-terminal-backend` when automatic backend selection is unsuitable. The package installs no global keybinding itself.
 
+## Terminal attachment
+
+Pass `:session "review"` to `herdr-attach-terminal` or `herdr-agent-adopt`; `herdr-attach-entry` uses the entry's session or its optional session argument. The CLI receives `--session NAME`, including `--session default` for the shared session. Socket paths are resolved internally and inherited socket environment variables do not select the attachment.
+
+Ghostel attachment errors raise an Emacs warning with the session, terminal, and CLI reason. The last 16,384 characters of output are retained in `*herdr-errors*` before Ghostel deletes the terminal buffer. Normal detach and deliberate cleanup are silent. The adapter's `:attached` phase denotes a live local transport, not a server acceptance acknowledgement.
+
 ## Agent workflows
 
 `herdr-agent.el` provides one lifecycle for Claude Code, Codex, and Pi.

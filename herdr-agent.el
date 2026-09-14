@@ -270,12 +270,12 @@ Return nil when KIND has no registered adapter."
   "Attach SESSION's terminal and record its Emacs resources.
 DISPLAY shows the buffer once attached."
   (let ((buffer
-         (herdr-agent--with-server (herdr-agent-session-server session)
-           (herdr-attach-terminal
-            (herdr-agent-session-terminal session)
-            :label (herdr-agent-session-name session)
-            :directory (herdr-agent-session-project session)
-            :takeover herdr-attach-takeover :display display))))
+         (herdr-attach-terminal
+          (herdr-agent-session-terminal session)
+          :session (or (herdr-agent-session-route session) herdr-session)
+          :label (herdr-agent-session-name session)
+          :directory (herdr-agent-session-project session)
+          :takeover herdr-attach-takeover :display display)))
     (herdr-agent-claim-attachment session buffer (get-buffer-process buffer))))
 
 (defun herdr-agent-claim-attachment (session buffer process)
@@ -290,7 +290,8 @@ DISPLAY shows the buffer once attached."
       (progn
         (unless (and (buffer-live-p buffer) (processp process) (process-live-p process))
           (signal 'herdr-error (list "terminal attachment did not return a buffer and process")))
-        (herdr-claim-buffer buffer (herdr-agent-session-terminal session))
+        (herdr-claim-buffer buffer (herdr-agent-session-terminal session)
+                            (herdr-agent-session-route session))
         (setf (herdr-agent-session-buffer session) buffer
               (herdr-agent-session-attachment-process session) process)
         (herdr-agent--watch-attachment session)
@@ -332,7 +333,8 @@ DISPLAY shows the buffer once attached."
           (herdr-agent-session-name session) (or (alist-get 'name agent) terminal)
           (herdr-agent-session-agent-session session) (alist-get 'agent_session agent)
           (herdr-agent-session-project session) (herdr-agent--project (herdr-entry-directory agent))
-          (herdr-agent-session-route session) (alist-get 'session agent)
+          (herdr-agent-session-route session) (or (alist-get 'session agent)
+                                                  (herdr-agent-session-route session))
           (herdr-agent-session-workspace session) (alist-get 'workspace_id agent)
           (herdr-agent-session-tab session) (alist-get 'tab_id agent)
           (herdr-agent-session-pane session) (alist-get 'pane_id agent))
@@ -351,12 +353,17 @@ DISPLAY shows the buffer once attached."
   "Subscribe SERVER-KEY before creating startup resources."
   (herdr-agent-subscribe server-key))
 
-(cl-defun herdr-agent-adopt (agent &key server-key (attach t) (display t))
-  "Adopt AGENT on SERVER-KEY, optionally deferring ATTACH.
+(cl-defun herdr-agent-adopt (agent &key session server-key (attach t) (display t))
+  "Adopt AGENT on SESSION, optionally deferring ATTACH.
+SESSION defaults to AGENT's session.  SERVER-KEY supports legacy callers
+without a session; session routing takes precedence.
 DISPLAY shows the attached buffer; nil keeps adoption driven by
 events from replacing whatever terminal is on screen."
-  (let* ((server-key (herdr-agent--canonical-server-key
-                      (or server-key (alist-get 'server_key agent) (herdr-server-key))))
+  (let* ((route (or session (alist-get 'session agent)))
+         (agent (if route (cons (cons 'session route) agent) agent))
+         (server-key (herdr-agent--canonical-server-key
+                      (if route (herdr-session-socket route)
+                        (or server-key (alist-get 'server_key agent) (herdr-server-key)))))
          (terminal (alist-get 'terminal_id agent)))
     (unless terminal
       (signal 'herdr-error (list "agent has no terminal_id")))
@@ -669,8 +676,7 @@ ATTACH controls terminal attachment; TIMEOUT-MS limits startup."
   (when (and (herdr-agent--harness (alist-get 'agent entry) t)
              (alist-get 'terminal_id entry))
     (herdr-agent-session-buffer
-     (herdr-agent-adopt entry :server-key (or (alist-get 'server_key entry)
-                                              (herdr-server-key))))))
+     (herdr-agent-adopt entry :session (or (alist-get 'session entry) herdr-session)))))
 
 (defun herdr-agent--pane (data)
   "Return pane data carried by DATA."
@@ -763,6 +769,9 @@ ATTACH controls terminal attachment; TIMEOUT-MS limits startup."
   "Detach SESSION's Emacs resources without terminating its herdr pane."
   (unless (eq (herdr-agent-session-state session) 'stopped)
     (setf (herdr-agent-session-state session) 'detaching)
+    (when-let* ((buffer (herdr-agent-session-buffer session))
+                ((buffer-live-p buffer)))
+      (with-current-buffer buffer (herdr--terminal-closing)))
     (herdr-agent--with-server (herdr-agent-session-server session)
       (let (errors adapter-detached)
         (setq errors (herdr-agent--cleanup-ownership session))

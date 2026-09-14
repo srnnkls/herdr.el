@@ -36,10 +36,14 @@
 (require 'herdr-api)
 
 (declare-function ghostel-exec "ext:ghostel" (buffer program &optional args identity))
+(declare-function ghostel--copy-all-text "ext:ghostel-module" (term))
+(defvar ghostel--term)
 (declare-function eat-mode "ext:eat" ())
 (declare-function eat-exec "ext:eat" (buffer name command startfile switches))
 (declare-function vterm "ext:vterm" (&optional buffer-name))
 (defvar vterm-shell)
+(defvar ghostel-mode-hook)
+(defvar ghostel-exit-functions)
 (defvar vterm-buffer-name)
 (defvar eat-term-name)
 
@@ -225,24 +229,24 @@ or `detection'.  LINES limits how many lines are returned."
                        (list "no terminal backend: install ghostel, vterm or eat"))))
     herdr-terminal-backend))
 
-(defun herdr-attach-command (terminal-id &optional takeover)
-  "Return the command list attaching to TERMINAL-ID.
-TAKEOVER claims input ownership from any other attached client."
-  `(,herdr-executable ,@(herdr-global-args)
+(defun herdr-attach-command (terminal-id &optional takeover session)
+  "Return the command attaching TERMINAL-ID with TAKEOVER on SESSION.
+SESSION defaults to `herdr-session'."
+  `(,herdr-executable "--session" ,(or (herdr-session-name session) "default")
                       "terminal" "attach" ,terminal-id
                       ,@(when takeover '("--takeover"))))
 
 (defun herdr--terminal-exec (buffer program args)
   "Run PROGRAM with ARGS inside BUFFER and return the buffer used."
-  (let ((process-environment (herdr-process-environment)))
-    (herdr--terminal-exec-1 buffer program args)))
+  (herdr--terminal-exec-1 buffer program args))
 
 (defun herdr--terminal-exec-1 (buffer program args)
   "Run PROGRAM with ARGS inside BUFFER using the configured backend."
   (pcase (herdr--backend)
     ('ghostel
      (require 'ghostel)
-     (ghostel-exec buffer program args)
+     (let ((ghostel-mode-hook (cons #'herdr--watch-ghostel-exit ghostel-mode-hook)))
+       (ghostel-exec buffer program args))
      buffer)
     ('vterm
      (require 'vterm)
@@ -357,6 +361,63 @@ fallback."
   "Canonical server key of the herdr terminal this buffer shows.")
 (put 'herdr-terminal-server-key 'permanent-local t)
 
+(defvar-local herdr--terminal-closing nil
+  "Non-nil while deliberately closing this terminal attachment.")
+
+(defvar-local herdr--terminal-error-reported nil
+  "Non-nil after this attachment's CLI error has been reported.")
+
+(defun herdr--terminal-closing ()
+  "Suppress exit diagnostics during deliberate buffer cleanup."
+  (setq herdr--terminal-closing t))
+
+(defun herdr--watch-ghostel-exit ()
+  "Capture Herdr errors before Ghostel deletes this terminal buffer."
+  (when herdr-terminal-id
+    (add-hook 'ghostel-exit-functions #'herdr--terminal-exited -90 t)
+    (add-hook 'kill-buffer-hook #'herdr--terminal-closing -90 t)))
+
+(defun herdr--terminal-error-reason (text)
+  "Return the last Herdr CLI error line in TEXT, or nil."
+  (save-match-data
+    (let ((start 0)
+          (case-fold-search nil)
+          reason)
+      (while (string-match "^herdr: \\([^\n]+\\)" text start)
+        (setq start (match-end 0))
+        (let ((line (string-trim (match-string 1 text))))
+          (setq reason (unless (string-prefix-p "detached from " line) line))))
+      reason)))
+
+(defun herdr--terminal-exited (buffer _event)
+  "Retain BUFFER's Herdr CLI error before backend exit cleanup."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (unless (or herdr--terminal-closing herdr--terminal-error-reported)
+        (let* ((output (or (and (bound-and-true-p ghostel--term)
+                                (fboundp 'ghostel--copy-all-text)
+                                (ghostel--copy-all-text ghostel--term))
+                           (buffer-substring-no-properties (point-min) (point-max))))
+               (text (substring output (max 0 (- (length output) 16384))))
+               (reason (herdr--terminal-error-reason text)))
+          (when reason
+            (setq herdr--terminal-error-reported t)
+            (let ((summary (format "Herdr %s / %s: %s"
+                                   (or (herdr-session-name herdr-terminal-session) "default")
+                                   herdr-terminal-id reason))
+                  (socket herdr-terminal-server-key)
+                  (diagnostics (get-buffer-create "*herdr-errors*")))
+              (with-current-buffer diagnostics
+                (unless (derived-mode-p 'special-mode) (special-mode))
+                (let ((inhibit-read-only t))
+                  (goto-char (point-max))
+                  (insert (format "%s\n%s\nSocket: %s\n\n%s\n\n"
+                                  (format-time-string "%FT%T%z") summary socket text))))
+              (display-warning 'herdr
+                               (format "%s; output retained in %s"
+                                       summary (buffer-name diagnostics))
+                               :error))))))))
+
 (defcustom herdr-report-focus-loss nil
   "Whether attached terminals report Emacs focus loss to their process.
 Herdr's own client also reports focus for the pane, but only speaks
@@ -394,7 +455,11 @@ sees the buffer."
     (with-current-buffer buffer
       (setq herdr-terminal-id terminal-id
             herdr-terminal-session (or session herdr-session)
-            herdr-terminal-server-key (herdr-server-key)))
+            herdr-terminal-server-key (if session
+                                          (let ((herdr-session session)
+                                                (herdr-socket-path nil))
+                                            (herdr-server-key))
+                                        (herdr-server-key))))
     (run-hook-with-args 'herdr-buffer-functions buffer)
     buffer))
 
@@ -429,21 +494,28 @@ is the one already there."
                                  directory))))
     name))
 
-(cl-defun herdr-attach-terminal (terminal-id &key label directory takeover display)
-  "Attach herdr terminal TERMINAL-ID to an Emacs terminal buffer.
+(cl-defun herdr-attach-terminal (terminal-id &key (session herdr-session)
+                                             label directory takeover display)
+  "Attach TERMINAL-ID on SESSION to an Emacs terminal buffer.
 LABEL names the buffer, DIRECTORY sets its `default-directory',
 TAKEOVER claims input ownership, and DISPLAY shows the buffer when
 non-nil.  Returns the buffer."
-  (let ((name (herdr--free-buffer-name (or label terminal-id) terminal-id
-                                       (herdr-server-key) directory)))
+  (let* ((herdr-session session)
+         (herdr-socket-path nil)
+         (server (herdr-server-key))
+         (name (herdr--free-buffer-name (or label terminal-id) terminal-id
+                                        server directory)))
     (when-let* ((existing (get-buffer name)))
       (kill-buffer existing))
     (let ((buffer (get-buffer-create name))
-          (command (herdr-attach-command terminal-id takeover)))
+          (command (herdr-attach-command terminal-id takeover session)))
       (with-current-buffer buffer
+        (setq herdr-terminal-id terminal-id
+              herdr-terminal-session session
+              herdr-terminal-server-key server)
         (when directory (setq default-directory (file-name-as-directory directory))))
       (setq buffer (herdr--terminal-exec buffer (car command) (cdr command)))
-      (herdr-claim-buffer buffer terminal-id)
+      (herdr-claim-buffer buffer terminal-id session)
       (when display (herdr-display-buffer buffer))
       buffer)))
 
@@ -659,26 +731,22 @@ Each is called with the pane or agent alist and returns the buffer it
 opened, or nil to let the next one try.  The plain terminal attach runs
 only when all of them decline.")
 
-(defun herdr-attach-entry (entry)
-  "Attach pane or agent ENTRY and return the buffer showing it.
+(defun herdr-attach-entry (entry &optional session)
+  "Attach ENTRY on SESSION and return the buffer showing it.
+SESSION defaults to ENTRY's session, then `herdr-session'.
 Gives `herdr-attach-functions' the first chance to claim ENTRY."
-  (let ((server-key (alist-get 'server_key entry)))
-    (if server-key
-        (let ((herdr-socket-path server-key)
-              (herdr-session (or (alist-get 'session entry) herdr-session)))
-          (or (run-hook-with-args-until-success 'herdr-attach-functions entry)
-              (herdr-attach-terminal (alist-get 'terminal_id entry)
-                                     :label (herdr--entry-label entry)
-                                     :directory (herdr-entry-directory entry)
-                                     :takeover herdr-attach-takeover
-                                     :display t)))
-      (herdr-with-session (alist-get 'session entry)
-        (or (run-hook-with-args-until-success 'herdr-attach-functions entry)
-            (herdr-attach-terminal (alist-get 'terminal_id entry)
-                                   :label (herdr--entry-label entry)
-                                   :directory (herdr-entry-directory entry)
-                                   :takeover herdr-attach-takeover
-                                   :display t))))))
+  (let* ((herdr-session (or session (alist-get 'session entry) herdr-session))
+         (herdr-socket-path nil)
+         (entry (copy-tree entry)))
+    (setf (alist-get 'session entry) herdr-session
+          (alist-get 'server_key entry) (herdr-server-key))
+    (or (run-hook-with-args-until-success 'herdr-attach-functions entry)
+        (herdr-attach-terminal (alist-get 'terminal_id entry)
+                               :session herdr-session
+                               :label (herdr--entry-label entry)
+                               :directory (herdr-entry-directory entry)
+                               :takeover herdr-attach-takeover
+                               :display t))))
 
 ;;;###autoload
 (defun herdr-attach-agent (agent)

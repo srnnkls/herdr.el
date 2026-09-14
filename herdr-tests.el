@@ -16,6 +16,9 @@
 (require 'herdr-agent)
 
 (defvar herdr-tests--socket-dir nil)
+(defvar ghostel-mode-hook)
+(defvar ghostel-exit-functions)
+(defvar ghostel--term)
 
 (defun herdr-tests--start-server (handler)
   "Start a fake herdr API server answering with HANDLER.
@@ -57,16 +60,16 @@ alist.  Returns the socket path."
         (herdr-socket-path nil)
         (herdr-session 'shared))
     (should (equal (herdr-attach-command "term_1")
-                   '("herdr" "terminal" "attach" "term_1")))
+                   '("herdr" "--session" "default" "terminal" "attach" "term_1")))
     (should (equal (herdr-attach-command "term_1" t)
-                   '("herdr" "terminal" "attach" "term_1" "--takeover")))
+                   '("herdr" "--session" "default" "terminal" "attach" "term_1" "--takeover")))
     (let ((herdr-session "agents"))
       (should (equal (herdr-attach-command "term_1")
                      '("herdr" "--session" "agents" "terminal" "attach" "term_1"))))
     (let ((herdr-session "agents")
           (herdr-socket-path "/tmp/probe/herdr.sock"))
       (should (equal (herdr-attach-command "term_1")
-                     '("herdr" "terminal" "attach" "term_1"))))))
+                     '("herdr" "--session" "agents" "terminal" "attach" "term_1"))))))
 
 (ert-deftest herdr-request-returns-result ()
   (unwind-protect
@@ -689,8 +692,8 @@ looks for a replacement buffer runs into."
         (herdr-project-sessions nil)
         (herdr-session-alist '(("/b" . "work"))))
     (cl-letf (((symbol-function 'herdr-available-sessions)
-               (lambda () '(shared "work" "cmw"))))
-      (should (equal (herdr-all-sessions) '(shared "work" "cmw"))))))
+               (lambda () '(shared "work" "build"))))
+      (should (equal (herdr-all-sessions) '(shared "work" "build"))))))
 
 (ert-deftest herdr-all-sessions-treats-emacs-and-its-name-as-one ()
   (let ((herdr-session 'emacs)
@@ -715,15 +718,24 @@ looks for a replacement buffer runs into."
     (should (member "HERDR_SOCKET_PATH=/tmp/probe/herdr.sock"
                     (herdr-process-environment)))))
 
-(ert-deftest herdr-terminal-exec-passes-the-socket-along ()
-  (let ((herdr-socket-path "/tmp/probe/herdr.sock")
-        (seen nil))
-    (cl-letf (((symbol-function 'herdr--terminal-exec-1)
-               (lambda (buffer &rest _)
-                 (setq seen (getenv "HERDR_SOCKET_PATH"))
-                 buffer)))
-      (herdr--terminal-exec 'buffer "herdr" '("terminal" "attach" "term_1"))
-      (should (equal seen "/tmp/probe/herdr.sock")))))
+(ert-deftest herdr-terminal-exec-passes-session-across-buffer-local-environments ()
+  (with-temp-buffer
+    (setq-local process-environment '("HERDR_SOCKET_PATH=/wrong/herdr.sock"))
+    (let ((herdr-session 'shared)
+          (herdr-socket-path "/also-wrong/herdr.sock")
+          (herdr-executable "/some path/herdr")
+          seen)
+      (cl-letf (((symbol-function 'herdr--terminal-exec-1)
+                 (lambda (buffer program args)
+                   (with-temp-buffer
+                     (setq-local process-environment nil)
+                     (setq seen (cons program args)))
+                   buffer)))
+        (let ((command (herdr-attach-command "term_1" t "build")))
+          (herdr--terminal-exec 'buffer (car command) (cdr command)))
+        (should (equal seen '("/some path/herdr" "--session" "build"
+                              "terminal" "attach" "term_1" "--takeover")))
+        (should (equal (getenv "HERDR_SOCKET_PATH") "/wrong/herdr.sock"))))))
 
 (ert-deftest herdr-start-server-if-needed-starts-one-when-missing ()
   (let ((started 0))
@@ -753,6 +765,85 @@ looks for a replacement buffer runs into."
       (ert-skip "no herdr server running"))
     (should (alist-get 'protocol (herdr-request "ping")))
     (should (listp (herdr-agents)))))
+
+(ert-deftest herdr-ghostel-error-survives-terminal-cleanup ()
+  (let ((buffer (generate-new-buffer " *herdr-failed-attach*"))
+        (diagnostics (generate-new-buffer " *herdr-error-test*"))
+        (require-feature (symbol-function 'require))
+        (ghostel-mode-hook nil)
+        (herdr-terminal-backend 'ghostel)
+        (create-buffer (symbol-function 'get-buffer-create))
+        warnings)
+    (unwind-protect
+        (cl-letf (((symbol-function 'require)
+                   (lambda (feature &rest args)
+                     (if (eq feature 'ghostel) t
+                       (apply require-feature feature args))))
+                  ((symbol-function 'get-buffer-create)
+                   (lambda (name &rest args)
+                     (if (equal name "*herdr-errors*") diagnostics
+                       (apply create-buffer name args))))
+                  ((symbol-function 'display-warning)
+                   (lambda (_type message &rest _) (push message warnings)))
+                  ((symbol-function 'ghostel-exec)
+                   (lambda (target &rest _)
+                     (with-current-buffer target
+                       (kill-all-local-variables)
+                       (setq-local ghostel--term 'native)
+                       (run-hooks 'ghostel-mode-hook))))
+                  ((symbol-function 'ghostel--copy-all-text)
+                   (lambda (_term)
+                     "herdr: server shut down: terminal attach failed: terminal term-missing not found\n")))
+          (with-current-buffer buffer
+            (setq herdr-terminal-id "term-missing"
+                  herdr-terminal-session "build"
+                  herdr-terminal-server-key "/sessions/build/herdr.sock"))
+          (herdr--terminal-exec buffer "herdr" nil)
+          (with-current-buffer buffer
+            (should (memq #'herdr--terminal-exited ghostel-exit-functions))
+            (should (= (point-min) (point-max)))
+            (run-hook-with-args 'ghostel-exit-functions buffer "finished\n")
+            (run-hook-with-args 'ghostel-exit-functions buffer "finished\n"))
+          (kill-buffer buffer)
+          (should (= 1 (length warnings)))
+          (should (string-match-p "build / term-missing" (car warnings)))
+          (with-current-buffer diagnostics
+            (should buffer-read-only)
+            (should (string-match-p "terminal term-missing not found" (buffer-string)))
+            (should (string-match-p "/sessions/build/herdr.sock" (buffer-string)))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (kill-buffer diagnostics))))
+
+(ert-deftest herdr-terminal-deliberate-close-and-normal-detach-are-quiet ()
+  (with-temp-buffer
+    (setq herdr-terminal-id "term-1" herdr-terminal-session "build")
+    (setq-local ghostel--term 'native)
+    (cl-letf (((symbol-function 'ghostel--copy-all-text) (lambda (_term) nil))
+              ((symbol-function 'display-warning)
+               (lambda (&rest _) (ert-fail "Unexpected exit warning"))))
+      (herdr--terminal-exited (current-buffer) "finished\n")
+      (insert "herdr: an earlier error\nherdr: detached from server\n")
+      (herdr--terminal-exited (current-buffer) "finished\n")
+      (should-not herdr--terminal-error-reported)
+      (insert "herdr: server shut down: terminal attach taken over\n")
+      (herdr--terminal-closing)
+      (herdr--terminal-exited (current-buffer) "deleted\n")
+      (should-not herdr--terminal-error-reported))))
+
+(ert-deftest herdr-attach-entry-session-overrides-stale-socket-metadata ()
+  (let ((herdr-session 'shared)
+        (herdr-socket-path "/wrong/herdr.sock")
+        (herdr-attach-functions nil)
+        (entry '((terminal_id . "term-1") (session . "build")
+                 (server_key . "/wrong/herdr.sock")))
+        seen)
+    (cl-letf (((symbol-function 'herdr-attach-terminal)
+               (lambda (_terminal &rest args) (setq seen args) 'buffer)))
+      (herdr-attach-entry entry)
+      (should (equal (plist-get seen :session) "build"))
+      (herdr-attach-entry entry "review")
+      (should (equal (plist-get seen :session) "review"))
+      (should (equal (alist-get 'session entry) "build")))))
 
 (provide 'herdr-tests)
 ;;; herdr-tests.el ends here
