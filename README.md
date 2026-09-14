@@ -255,7 +255,8 @@ on `herdr-herd-protocol-functions` add, and the live roster, through
 refactor] memex-index joined (claude, ~/src/memex). No reply needed.`,
 and leaving tells them the same way. `herdr-herd-notice` builds such a
 line and `herdr-herd-notice-prefix` opens it, so a hook can tell a notice
-from a task. Nothing is written into the project the agent works in, so
+from a task, and `herdr-herd-sent-functions` hears of every prompt a herd
+command sends. Nothing is written into the project the agent works in, so
 Codex and Pi members join on the same terms as Claude. An agent that is
 `working` or `blocked` is skipped and named rather than interrupted
 mid-turn; `herdr-herd-busy-states` is that list.

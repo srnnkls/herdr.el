@@ -131,6 +131,9 @@ The live roster is appended to this when a member joins."
 Each is called with the herd and runs after `herdr-herd-protocol' in
 what a joining member is told.")
 
+(defvar herdr-herd-sent-functions nil
+  "Functions called with the entry and text of every prompt a herd command sends.")
+
 (defconst herdr-herd--name-limit 32
   "Longest agent name herdr accepts.")
 
@@ -460,8 +463,9 @@ MEMBERS are the entries to reach.  VERB heads the report."
           (push (cons (or (alist-get 'name entry) (herdr--entry-label entry))
                       (alist-get 'agent_status entry))
                 skipped)
-        (herdr-agent-prompt (herdr--entry-target entry)
-                            (funcall text-function entry))
+        (let ((text (funcall text-function entry)))
+          (herdr-agent-prompt (herdr--entry-target entry) text)
+          (run-hook-with-args 'herdr-herd-sent-functions entry text))
         (setq sent (1+ sent))))
     (herdr-herd--report herd sent (nreverse skipped) verb)))
 

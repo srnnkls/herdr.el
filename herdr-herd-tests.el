@@ -323,6 +323,21 @@ and `:on', the herdr session the agent runs on."
       (should (string-match-p "you are two"
                               (cdr (car herdr-herd-tests--prompts)))))))
 
+(ert-deftest herdr-herd-sending-tells-sent-functions-who-got-what ()
+  (let ((idle (herdr-herd-tests--entry "/tmp/projects/memex/" "index"
+                                       :name "one" :session "s1" :pane "w1:p1"
+                                       :label "herd:refactor"))
+        (busy (herdr-herd-tests--entry "/tmp/projects/nmnm/" "nmnm"
+                                       :name "two" :session "s2" :pane "w2:p1"
+                                       :status "working" :label "herd:refactor"))
+        (seen nil))
+    (herdr-herd-tests--with-stubs (list idle busy)
+      (let ((herdr-herd-sent-functions
+             (list (lambda (entry text)
+                     (push (cons (alist-get 'name entry) text) seen)))))
+        (herdr-herd-broadcast '("alpha" . "refactor") "ping"))
+      (should (equal seen '(("one" . "ping")))))))
+
 (ert-deftest herdr-herd-broadcast-reaches-only-the-idle-members ()
   (let ((idle (herdr-herd-tests--entry "/tmp/projects/memex/" "index"
                                        :name "one" :session "s1" :pane "w1:p1"
