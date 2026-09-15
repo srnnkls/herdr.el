@@ -149,6 +149,19 @@ that show no other mark of it."
   :type 'string
   :group 'herdr-status)
 
+(defcustom herdr-status-field-glyphs
+  '((pane "▣" "#")
+    (workspace "▤" "")
+    (branch "\uf126" "\ue0a0" "⎇" "@")
+    (directory "⌂" ""))
+  "Glyphs leading the fields that trail a row, keyed by field.
+Each entry lists candidates in order of preference and the first one the
+display can show is drawn, so a font without the Nerd Font branch glyphs
+falls back to the Unicode one and a terminal without any of them to `@'.
+An empty candidate draws the field bare."
+  :type '(alist :key-type symbol :value-type (repeat string))
+  :group 'herdr-status)
+
 (defcustom herdr-status-state-glyphs '(("idle" . "○"))
   "Glyphs replacing `herdr-status-state-glyph', keyed by agent state.
 An agent waiting for work is drawn hollow; a state without an entry here
@@ -598,14 +611,62 @@ agent this is as much as the tail of a name does."
                                   'herdr-status-label
                                 'herdr-status-label-quiet)))
 
-(defun herdr-status--location-column (entry workspaces)
-  "Return where ENTRY runs: its pane, then the workspace WORKSPACES names."
-  (propertize (string-join
-               (delq nil (list (alist-get 'pane_id entry)
-                               (herdr-status--workspace-label entry
-                                                              workspaces)))
-               " · ")
-              'font-lock-face 'herdr-status-meta))
+(defun herdr-status--field-glyph (field)
+  "Return the glyph drawn before FIELD, or the empty string."
+  (let ((candidates (alist-get field herdr-status-field-glyphs)))
+    (or (seq-find (lambda (glyph)
+                    (or (string-empty-p glyph)
+                        (seq-every-p #'char-displayable-p glyph)))
+                  candidates)
+        (car (last candidates))
+        "")))
+
+(defun herdr-status--field-column (field value width &optional face)
+  "Return VALUE behind FIELD's glyph, padded to WIDTH, in FACE.
+A nil VALUE keeps the column's width in blanks so the rows stay aligned,
+and a zero WIDTH means no row has the field, so nothing is drawn."
+  (unless (zerop width)
+    (let* ((glyph (herdr-status--field-glyph field))
+           (lead (if (string-empty-p glyph) "" (concat glyph " "))))
+      (if value
+          (propertize (concat lead (herdr-status--pad value width))
+                      'font-lock-face (or face 'herdr-status-meta))
+        (make-string (+ (string-width lead) width) ?\s)))))
+
+(defun herdr-status--workspace-shown (entry workspaces)
+  "Return the label WORKSPACES gives ENTRY's workspace, or nil.
+A worktree's workspace is named after its directory, so a label equal to
+the directory's own name is left out rather than said twice on one row."
+  (let ((label (herdr-status--workspace-label entry workspaces))
+        (directory (herdr-entry-directory entry)))
+    (unless (and label directory
+                 (member label
+                         (list (file-name-nondirectory
+                                (directory-file-name directory))
+                               (abbreviate-file-name
+                                (directory-file-name directory)))))
+      label)))
+
+(defun herdr-status--branch (entry)
+  "Return the git branch ENTRY's directory is on, or nil outside a repository."
+  (herdr-directory-branch (herdr-entry-directory entry)))
+
+(defun herdr-status--trailing-columns (entry widths workspaces)
+  "Return the cells that follow ENTRY's session column, on WIDTHS.
+WORKSPACES resolves the workspace label.  The pane, workspace and branch
+keep their columns; the directory comes last, being the one field whose
+length varies from row to row."
+  (list (herdr-status--field-column 'pane (alist-get 'pane_id entry)
+                                    (nth 3 widths))
+        (herdr-status--field-column 'workspace
+                                    (herdr-status--workspace-shown entry workspaces)
+                                    (nth 4 widths))
+        (herdr-status--field-column 'branch (herdr-status--branch entry)
+                                    (nth 5 widths))
+        (when-let* ((directory (herdr-status--directory entry)))
+          (herdr-status--field-column 'directory directory
+                                      (string-width directory)
+                                      'herdr-status-path))))
 
 (defun herdr-status--kind-mark (entry)
   "Return the glyph and face marking ENTRY's harness kind, or nil."
@@ -647,11 +708,6 @@ agent this is as much as the tail of a name does."
   (when-let* ((cwd (herdr-entry-directory entry)))
     (abbreviate-file-name cwd)))
 
-(defun herdr-status--branch-column (entry)
-  "Return the git branch ENTRY's directory is on, or nil outside a repository."
-  (when-let* ((branch (herdr-directory-branch (herdr-entry-directory entry))))
-    (propertize branch 'font-lock-face 'herdr-status-meta)))
-
 (defun herdr-status--session-name (entry)
   "Return the name of the herdr session ENTRY lives on."
   (or (herdr-session-name (alist-get 'session entry)) "shared"))
@@ -663,20 +719,18 @@ agent this is as much as the tail of a name does."
 
 (defun herdr-status--row (entry widths workspaces)
   "Return the single line drawn for ENTRY.
-WIDTHS holds the label, kind, and session column widths, and WORKSPACES
-resolves the workspace label."
+WIDTHS holds the label, kind, session, pane, workspace and branch column
+widths, and WORKSPACES resolves the workspace label."
   (concat
    (herdr-status--attached-column entry)
    (herdr-status--state-column entry) " "
    (string-join
     (delq nil
-          (list (herdr-status--label-column entry (nth 0 widths))
-                (herdr-status--kind-column entry (nth 1 widths))
-                (herdr-status--session-column entry (nth 2 widths))
-                (herdr-status--location-column entry workspaces)
-                (when-let* ((directory (herdr-status--directory entry)))
-                  (propertize directory 'font-lock-face 'herdr-status-path))
-                (herdr-status--branch-column entry)))
+          (append
+           (list (herdr-status--label-column entry (nth 0 widths))
+                 (herdr-status--kind-column entry (nth 1 widths))
+                 (herdr-status--session-column entry (nth 2 widths)))
+           (herdr-status--trailing-columns entry widths workspaces)))
     "  ")))
 
 (defun herdr-status-agent-row (entry widths workspaces)
@@ -685,11 +739,19 @@ Sections other packages insert through `herdr-status-sections-functions'
 draw an agent on the same columns as the agent list with this."
   (herdr-status--row entry widths workspaces))
 
-(defun herdr-status--widths (entries)
-  "Return the column widths fitting ENTRIES."
+(defun herdr-status--widths (entries workspaces)
+  "Return the column widths fitting ENTRIES, labelled via WORKSPACES.
+Label, kind and session keep a floor; pane, workspace and branch take
+exactly the widest value, and zero when no entry has one."
   (list (herdr-status--name-width entries)
         (herdr-status--width entries (lambda (entry) (alist-get 'agent entry)) 6)
-        (herdr-status--width entries #'herdr-status--session-name 6)))
+        (herdr-status--width entries #'herdr-status--session-name 6)
+        (herdr-status--width entries (lambda (entry) (alist-get 'pane_id entry)) 0)
+        (herdr-status--width entries
+                             (lambda (entry)
+                               (herdr-status--workspace-shown entry workspaces))
+                             0)
+        (herdr-status--width entries #'herdr-status--branch 0)))
 
 (defconst herdr-status--detail-fields
   '(server_key session terminal_id pane_id workspace_id tab_id agent
@@ -1210,13 +1272,14 @@ With CACHED, redraw from the records the last fetch left instead."
                         (if herdr-status--project-root
                             (abbreviate-file-name herdr-status--project-root)
                           "Global")))
-    (let ((tabs (herdr-status--snapshot-index
-                 'tabs 'tab_id herdr-status--session-records))
-          (workspaces (herdr-status--snapshot-index
-                       'workspaces 'workspace_id herdr-status--session-records))
-          (widths (herdr-status--widths
-                   (append (herdr-status--agents herdr-status--entries)
-                           herdr-status--panes))))
+    (let* ((tabs (herdr-status--snapshot-index
+                  'tabs 'tab_id herdr-status--session-records))
+           (workspaces (herdr-status--snapshot-index
+                        'workspaces 'workspace_id herdr-status--session-records))
+           (widths (herdr-status--widths
+                    (append (herdr-status--agents herdr-status--entries)
+                            herdr-status--panes)
+                    workspaces)))
       (erase-buffer)
       (magit-insert-section (herdr-status-root)
         (run-hook-with-args 'herdr-status-sections-functions
@@ -1424,27 +1487,22 @@ the servers in scope report."
   "Return a function drawing one of ENTRIES the way its dashboard row reads.
 The state glyph goes in front of the name and the columns the dashboard
 shows go after it, in the faces the dashboard draws them in."
-  (let ((names (herdr-status--name-width entries))
-        (kinds (herdr-status--width entries
-                                    (lambda (entry) (alist-get 'agent entry)) 6))
-        (sessions (herdr-status--width entries #'herdr-status--session-name 6))
-        (workspaces (herdr-status--snapshot-index
-                     'workspaces 'workspace_id herdr-status--session-records)))
+  (let* ((workspaces (herdr-status--snapshot-index
+                      'workspaces 'workspace_id herdr-status--session-records))
+         (widths (herdr-status--widths entries workspaces)))
     (lambda (entry)
       (cons
        (concat (herdr-status--state-column entry) " ")
        (concat
-        (make-string (max 2 (- (+ names 2)
+        (make-string (max 2 (- (+ (nth 0 widths) 2)
                                (string-width (or (herdr--entry-label entry) ""))))
                      ?\s)
         (string-join
          (delq nil
-               (list (herdr-status--kind-column entry kinds)
-                     (herdr-status--session-column entry sessions)
-                     (herdr-status--location-column entry workspaces)
-                     (when-let* ((directory (herdr-status--directory entry)))
-                       (propertize directory
-                                   'font-lock-face 'herdr-status-path))))
+               (append
+                (list (herdr-status--kind-column entry (nth 1 widths))
+                      (herdr-status--session-column entry (nth 2 widths)))
+                (herdr-status--trailing-columns entry widths workspaces)))
          "  "))))))
 
 ;;;###autoload

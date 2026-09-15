@@ -175,7 +175,7 @@
 (ert-deftest herdr-status-renders-agent-state-ahead-of-the-name ()
   (herdr-status-tests--with-dashboard
     (goto-char (point-min))
-    (should (re-search-forward "^ +● api-review +✳ claude +alpha +%1" nil t))))
+    (should (re-search-forward "^ +● api-review +✳ claude +alpha +▣ %1" nil t))))
 
 (ert-deftest herdr-status-marks-each-agent-with-its-vendor-glyph ()
   (herdr-status-tests--with-dashboard
@@ -587,7 +587,7 @@
   (herdr-status-tests--with-dashboard
     (herdr-status-tests--expand)
     (let ((panes (herdr-status-tests--tail "Panes ")))
-      (should (string-match-p "^ +shell .*%9 · herdr.el" panes))
+      (should (string-match-p "^ +shell .*▣ %9 +▤ herdr.el" panes))
       (should (string-match-p "^   ⏺ The rebase landed clean\\." panes))
       (should-not (string-match-p "┃" panes))
       (should-not (string-match-p "workspace_id" panes)))))
@@ -763,9 +763,9 @@
 (ert-deftest herdr-status-rows-name-the-server-they-run-on ()
   (herdr-status-tests--with-dashboard
     (goto-char (point-min))
-    (should (re-search-forward "^ +● api-review +✳ claude +alpha +%1 · herdr\\.el" nil t))
+    (should (re-search-forward "^ +● api-review +✳ claude +alpha +▣ %1 +▤ herdr\\.el +⌂ /tmp/proj/$" nil t))
     (goto-char (point-min))
-    (should (re-search-forward "^ +● beta-work +✳ claude +beta +%3 · other" nil t))))
+    (should (re-search-forward "^ +● beta-work +✳ claude +beta +▣ %3 +⌂ /tmp/other/$" nil t))))
 
 (ert-deftest herdr-status-omits-the-server-column-for-a-lone-server ()
   (let ((herdr--recent-session-targets nil)
@@ -784,7 +784,7 @@
             (herdr-status-refresh)
             (goto-char (point-min))
             (should (re-search-forward
-                     "^ +● api-review +✳ claude +%1 · herdr\\.el" nil t))))
+                     "^ +● api-review +✳ claude +▣ %1 +▤ herdr\\.el" nil t))))
       (kill-buffer buffer))))
 
 (ert-deftest herdr-status-visits-the-pane-at-point ()
@@ -872,7 +872,7 @@
       (should (eq (get-text-property 0 'font-lock-face prefix)
                   'herdr-status-state-working))
       (should (string-match-p "✳ claude" suffix))
-      (should (string-match-p "%1 · herdr\\.el" suffix))
+      (should (string-match-p "▣ %1 +▤ herdr\\.el" suffix))
       (should (string-match-p "/tmp/proj/" suffix))
       (should (string-prefix-p "  " suffix)))))
 
@@ -1352,9 +1352,25 @@ Emacs releases the attachment first and the two go together."
             (herdr-status-refresh))
           (goto-char (point-min))
           (should (re-search-forward
-                   (concat "^ +● api-review .*" (regexp-quote (abbreviate-file-name repo))
-                           " +feat/branch-column$")
+                   (concat "^ +● api-review .*▣ %1 +▤ herdr\\.el +\uf126 feat/branch-column +⌂ "
+                           (regexp-quote (abbreviate-file-name repo)) "$")
                    nil t))
           (goto-char (point-min))
-          (should (re-search-forward "^ +. +docs .*/tmp/proj/$" nil t)))
+          (should (re-search-forward "^ +. +docs .*▣ %2 +▤ herdr\\.el +⌂ /tmp/proj/$" nil t)))
       (delete-directory root t))))
+
+(ert-deftest herdr-status-field-glyphs-fall-back-to-what-the-display-shows ()
+  (let ((herdr-status-field-glyphs '((branch "" "⎇" "@") (directory "⌂" ""))))
+    (cl-letf (((symbol-function 'char-displayable-p) (lambda (_char) t)))
+      (should (equal (herdr-status--field-glyph 'branch) "")))
+    (cl-letf (((symbol-function 'char-displayable-p)
+               (lambda (char) (not (memq char '(#xf126))))))
+      (should (equal (herdr-status--field-glyph 'branch) "⎇")))
+    (cl-letf (((symbol-function 'char-displayable-p)
+               (lambda (char) (< char 128))))
+      (should (equal (herdr-status--field-glyph 'branch) "@"))
+      (should (equal (herdr-status--field-glyph 'directory) ""))
+      (should (equal (herdr-status--field-column 'directory "/tmp/x/" 7) "/tmp/x/")))
+    (should (equal (herdr-status--field-glyph 'pane) ""))
+    (should (equal (herdr-status--field-column 'branch nil 4) "      "))
+    (should-not (herdr-status--field-column 'branch nil 0))))
