@@ -156,6 +156,14 @@ takes the solid bullet in its own colour."
   :type '(alist :key-type string :value-type string)
   :group 'herdr-status)
 
+(defcustom herdr-status-name-width nil
+  "How many columns the name may take before it is cut short.
+An agent named after the prompt it was given runs long enough to push
+the columns after it off the line.  Nil gives the name a third of the
+window instead, so a narrow one keeps what follows in view."
+  :type '(choice (const :tag "A third of the window" nil) natnum)
+  :group 'herdr-status)
+
 (defcustom herdr-status-preview-spacing 3
   "Pixels of air above a preview.
 The space is asked of the preview's first line as a total height, the
@@ -498,6 +506,24 @@ A state left out of the list sorts after the ones in it, by name."
         (if (cdr sort) (nreverse ordered) ordered))
     entries))
 
+(defun herdr-status--within-section-p (type)
+  "Return non-nil when point sits in a section of TYPE or under one."
+  (let ((section (magit-current-section)))
+    (catch 'found
+      (while section
+        (when (eq (oref section type) type)
+          (throw 'found t))
+        (setq section (oref section parent))))))
+
+(defun herdr-status--entries-in-scope ()
+  "Return the agents the part of the dashboard at point lists.
+Point in Recent offers the recently used agents, in the order they were
+used; anywhere else offers the agent list, which the project scope and
+the active filters have already narrowed."
+  (if (herdr-status--within-section-p 'herdr-status-recent)
+      (herdr-status-recent-agents)
+    (herdr-status--visible-agents)))
+
 (defun herdr-status--visible-agents ()
   "Return the agents left by the active filters, in the order asked for."
   (herdr-status--sorted
@@ -549,9 +575,25 @@ A pane running no agent has no state to report and is left blank there."
                       herdr-status-state-glyph)
                   'font-lock-face (herdr-status--state-face state)))))
 
+(defun herdr-status--name-width (entries)
+  "Return the columns ENTRIES' names take, never past what fits.
+The widest name wins where it fits; `herdr-status-name-width' is the
+ceiling, and nil makes that a third of the window the dashboard is in."
+  (min (herdr-status--width entries #'herdr--entry-label 8)
+       (or herdr-status-name-width
+           (max 12 (/ (if-let* ((window (get-buffer-window nil t)))
+                          (window-body-width window)
+                        (frame-width))
+                      3)))))
+
 (defun herdr-status--label-column (entry width)
-  "Return ENTRY's name padded to WIDTH, lit where Emacs holds its buffer."
-  (propertize (herdr-status--pad (herdr--entry-label entry) width)
+  "Return ENTRY's name in WIDTH columns, lit where Emacs holds its buffer.
+A name too long for WIDTH is cut short, since what follows it says which
+agent this is as much as the tail of a name does."
+  (propertize (herdr-status--pad
+               (truncate-string-to-width (or (herdr--entry-label entry) "")
+                                         width nil nil t)
+               width)
               'font-lock-face (if (herdr--entry-buffer entry)
                                   'herdr-status-label
                                 'herdr-status-label-quiet)))
@@ -639,7 +681,7 @@ draw an agent on the same columns as the agent list with this."
 
 (defun herdr-status--widths (entries)
   "Return the column widths fitting ENTRIES."
-  (list (herdr-status--width entries #'herdr--entry-label 8)
+  (list (herdr-status--name-width entries)
         (herdr-status--width entries (lambda (entry) (alist-get 'agent entry)) 6)
         (herdr-status--width entries #'herdr-status--session-name 6)))
 
@@ -951,17 +993,19 @@ only by the heading's own total."
                (symbol-name field)
                (number-to-string (length (alist-get field snapshot)))))))))))
 
+(defun herdr-status-recent-agents ()
+  "Return the dashboard's agents in most-recently-used order."
+  (delq nil
+        (mapcar (lambda (target)
+                  (cl-find target
+                           (herdr-status--agents herdr-status--entries)
+                           :key #'herdr--entry-target :test #'equal))
+                herdr--recent-session-targets)))
+
 (defun herdr-status--insert-recent (widths tabs workspaces)
   "Insert the recently used agents, most recent first.
 WIDTHS, TABS, and WORKSPACES are passed through to each row."
-  (let ((entries (delq nil
-                       (mapcar (lambda (target)
-                                 (cl-find target
-                                          (herdr-status--agents
-                                           herdr-status--entries)
-                                          :key #'herdr--entry-target
-                                          :test #'equal))
-                               herdr--recent-session-targets))))
+  (let ((entries (herdr-status-recent-agents)))
     (when entries
       (magit-insert-section (herdr-status-recent)
         (magit-insert-heading (format "Recent %d" (length entries)))
@@ -1071,7 +1115,8 @@ where memex.el is on the load path, and are unbound where it is not."
   "Major mode for the herdr status dashboard."
   :group 'herdr-status
   (setq-local revert-buffer-function
-              (lambda (&rest _) (herdr-status-refresh)))
+              (lambda (&rest _) (herdr-status-refresh))
+              herdr-entries-in-scope-function #'herdr-status--entries-in-scope)
   (when herdr-status-visibility-indicators
     (setq-local magit-section-visibility-indicators
                 herdr-status-visibility-indicators))
@@ -1335,6 +1380,55 @@ well, so the terminal and Emacs end up on the same agent."
   (let ((display-buffer-overriding-action
          '(display-buffer-use-some-window (inhibit-same-window . t))))
     (herdr-status-visit)))
+
+(defun herdr-status-switch-agents ()
+  "Return the running agents a switch reads from.
+A dashboard offers the agents it shows, so its filters and project scope
+narrow the prompt to what is on screen; anywhere else offers every agent
+the servers in scope report."
+  (herdr-status--agents (herdr-entries-in-scope)))
+
+(defun herdr-status-switch-affixation (entries)
+  "Return a function drawing one of ENTRIES the way its dashboard row reads.
+The state glyph goes in front of the name and the columns the dashboard
+shows go after it, in the faces the dashboard draws them in."
+  (let ((names (herdr-status--name-width entries))
+        (kinds (herdr-status--width entries
+                                    (lambda (entry) (alist-get 'agent entry)) 6))
+        (sessions (herdr-status--width entries #'herdr-status--session-name 6))
+        (workspaces (herdr-status--snapshot-index
+                     'workspaces 'workspace_id herdr-status--session-records)))
+    (lambda (entry)
+      (cons
+       (concat (herdr-status--state-column entry) " ")
+       (concat
+        (make-string (max 2 (- (+ names 2)
+                               (string-width (or (herdr--entry-label entry) ""))))
+                     ?\s)
+        (string-join
+         (delq nil
+               (list (herdr-status--kind-column entry kinds)
+                     (herdr-status--session-column entry sessions)
+                     (herdr-status--location-column entry workspaces)
+                     (when-let* ((directory (herdr-status--directory entry)))
+                       (propertize directory
+                                   'font-lock-face 'herdr-status-path))))
+         "  "))))))
+
+;;;###autoload
+(defun herdr-status-switch (entry &optional focus)
+  "Show the running agent ENTRY, read with completion.
+FOCUS, the prefix argument, moves herdr itself to the agent's pane
+instead, the way it does for `herdr-status-visit'."
+  (interactive
+   (let ((entries (herdr-status-switch-agents)))
+     (list (herdr-read-entry "Switch to agent: " entries
+                             :affixation (herdr-status-switch-affixation entries)
+                             :group nil)
+           current-prefix-arg)))
+  (if focus
+      (herdr-agent-switch (herdr--entry-target entry))
+    (herdr-visit entry)))
 
 (defun herdr-status-prompt (text)
   "Send TEXT to the agent at point."

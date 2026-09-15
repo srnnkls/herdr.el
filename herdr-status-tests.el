@@ -809,6 +809,106 @@
         (herdr-status-visit)
         (should (equal attached "beta"))))))
 
+(ert-deftest herdr-status-switch-reads-the-agents-the-dashboard-shows ()
+  (herdr-status-tests--with-dashboard
+    (should (equal (mapcar #'herdr--entry-label (herdr-status-switch-agents))
+                   '("api-review" "docs" "beta-work")))
+    (setq herdr-status--filters
+          (list (cons 'agent-kind
+                      (lambda (entry) (equal (alist-get 'agent entry) "codex")))))
+    (should (equal (mapcar #'herdr--entry-label (herdr-status-switch-agents))
+                   '("docs")))
+    (with-temp-buffer
+      (should (equal (mapcar #'herdr--entry-label (herdr-status-switch-agents))
+                     '("api-review" "docs" "beta-work"))))))
+
+(ert-deftest herdr-status-switch-reads-the-section-point-is-in ()
+  (herdr-status-tests--with-dashboard
+    (herdr--record-session-target '("/tmp/alpha.sock" . "t1"))
+    (herdr--record-session-target '("/tmp/beta.sock" . "t3"))
+    (herdr-status-refresh)
+    (goto-char (point-min))
+    (should (re-search-forward "^Recent 2" nil t))
+    (should (equal (mapcar #'herdr--entry-label (herdr-status-switch-agents))
+                   '("beta-work" "api-review")))
+    (goto-char (point-min))
+    (should (re-search-forward "^Agents 3" nil t))
+    (should (equal (mapcar #'herdr--entry-label (herdr-status-switch-agents))
+                   '("api-review" "docs" "beta-work")))
+    (setq herdr-status--filters
+          (list (cons 'agent-kind
+                      (lambda (entry) (equal (alist-get 'agent entry) "codex")))))
+    (should (equal (mapcar #'herdr--entry-label (herdr-status-switch-agents))
+                   '("docs")))))
+
+(ert-deftest herdr-status-cuts-a-name-too-long-for-the-column ()
+  (let ((herdr-status-name-width 12))
+    (herdr-status-tests--with-dashboard
+      (cl-letf (((symbol-function 'herdr-status-tests--entries)
+                 (lambda ()
+                   (list '((kind . "herdr") (session . "alpha")
+                           (server_key . "/tmp/alpha.sock")
+                           (agent . "claude") (agent_status . "working")
+                           (name . "close the gap to mmap, maybe advise him")
+                           (terminal_id . "t1") (pane_id . "%1")
+                           (workspace_id . "w1") (tab_id . "tab1")
+                           (cwd . "/tmp/proj/"))))))
+        (herdr-status-refresh))
+      (let ((agents (herdr-status-tests--section-text "Agents ")))
+        (should (string-match-p "close the g…" agents))
+        (should-not (string-match-p "maybe advise him" agents))
+        (should (string-match-p "✳ claude" agents))))))
+
+(ert-deftest herdr-status-switch-draws-candidates-like-dashboard-rows ()
+  (herdr-status-tests--with-dashboard
+    (let* ((entries (herdr-status-switch-agents))
+           (affix (herdr-status-switch-affixation entries))
+           (entry (cl-find "api-review" entries
+                           :key #'herdr--entry-label :test #'equal))
+           (parts (funcall affix entry))
+           (prefix (car parts))
+           (suffix (cdr parts)))
+      (should (equal (string-trim prefix) herdr-status-state-glyph))
+      (should (eq (get-text-property 0 'font-lock-face prefix)
+                  'herdr-status-state-working))
+      (should (string-match-p "✳ claude" suffix))
+      (should (string-match-p "%1 · herdr\\.el" suffix))
+      (should (string-match-p "/tmp/proj/" suffix))
+      (should (string-prefix-p "  " suffix)))))
+
+(ert-deftest herdr-read-entry-draws-an-affixation-when-given-one ()
+  (herdr-status-tests--with-dashboard
+    (let ((entries (herdr-status-switch-agents))
+          metadata)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt table &rest _)
+                   (setq metadata (cdr (funcall table "" nil 'metadata)))
+                   "api-review")))
+        (herdr-read-entry "Switch: " entries
+                          :affixation (lambda (_entry) (cons "<" ">"))
+                          :group nil))
+      (should (alist-get 'affixation-function metadata))
+      (should-not (alist-get 'annotation-function metadata))
+      (should-not (alist-get 'group-function metadata))
+      (should (equal (funcall (alist-get 'affixation-function metadata)
+                              '("api-review"))
+                     '(("api-review" "<" ">")))))))
+
+(ert-deftest herdr-status-switch-visits-the-agent-that-was-read ()
+  (herdr-status-tests--with-dashboard
+    (let (visited switched)
+      (cl-letf (((symbol-function 'herdr-visit)
+                 (lambda (entry) (setq visited entry) nil))
+                ((symbol-function 'herdr-agent-switch)
+                 (lambda (target) (setq switched target) nil)))
+        (let ((entry (cl-find "docs" (herdr-status-switch-agents)
+                              :key #'herdr--entry-label :test #'equal)))
+          (herdr-status-switch entry)
+          (should (equal (alist-get 'pane_id visited) "%2"))
+          (should-not switched)
+          (herdr-status-switch entry t)
+          (should (equal switched (herdr--entry-target entry))))))))
+
 (ert-deftest herdr-status-target-is-nil-outside-the-dashboard ()
   (with-temp-buffer
     (should-not (herdr-status-target-at-point))))

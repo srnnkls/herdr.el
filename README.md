@@ -175,12 +175,24 @@ buffer for it, then its state, name, harness, pane id, server,
 workspace, and working directory:
 
 ```text
-▌ ● busy    api-review   claude   %1   shared   herdr.el   ~/projects/herdr.el
+• ● busy    api-review   claude   %1   shared   herdr.el   ~/projects/herdr.el
   ● idle    docs         codex    %2   shared   herdr.el   ~/projects/herdr.el
 ```
 
-Pane rows carry the same marker. The server column appears once a second
-session is in play, the way the completion annotations do.
+Pane rows carry the same marker. Setting the glyph to nil drops the
+column, leaving the name's own colour to say which rows Emacs holds a
+buffer for. The server column appears once a second session is in play,
+the way the completion annotations do.
+
+A name wider than `herdr-status-name-width` is cut short, so an agent
+named after the prompt it was given cannot push the columns after it off
+the line. Nil, the default, gives the name a third of the window.
+
+`herdr-status-switch` reads a running agent with completion and shows it.
+Its candidates carry the same state glyph, harness mark, pane, workspace,
+and directory the rows do. Point in `Recent` offers the recently used
+agents; anywhere else offers the agent list, which the project scope and
+the active filters have already narrowed.
 
 The directory is `herdr-entry-directory`: herdr's `foreground_cwd` when it
 has one, falling back to the `cwd` the pane opened in. An agent that moves

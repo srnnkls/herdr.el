@@ -587,32 +587,49 @@ completion annotation, or nil.")
           (setq candidate (format "%s (%s)" candidate (herdr--entry-key entry))))
         (push (cons candidate entry) candidates)))))
 
-(cl-defun herdr-read-entry (prompt entries &key require-agent)
+(cl-defun herdr-read-entry (prompt entries &key require-agent affixation (group t))
   "Read one of ENTRIES with PROMPT and return its alist.
-REQUIRE-AGENT keeps only entries running that agent kind."
+REQUIRE-AGENT keeps only entries running that agent kind.
+AFFIXATION draws one entry as a cons of what goes before and after its
+name, standing in for the annotation.  GROUP nil offers the entries
+flat, which is what a list of one kind wants."
   (let* ((entries (if require-agent
                       (cl-remove-if-not
                        (lambda (entry) (equal (alist-get 'agent entry) require-agent))
                        entries)
                     entries))
          (candidates (herdr--candidates entries))
-         (annotation (lambda (candidate)
+         (metadata
+          (append
+           (if affixation
+               `((affixation-function
+                  . ,(lambda (choices)
+                       (mapcar
+                        (lambda (choice)
+                          (if-let* ((entry (cdr (assoc choice candidates)))
+                                    (parts (funcall affixation entry)))
+                              (list choice (car parts) (cdr parts))
+                            (list choice "" "")))
+                        choices))))
+             `((annotation-function
+                . ,(lambda (candidate)
+                     (when-let* ((entry (cdr (assoc candidate candidates))))
+                       (concat "   " (herdr--entry-annotation entry)))))))
+           (when group
+             `((group-function
+                . ,(lambda (candidate transform)
+                     (if transform
+                         candidate
                        (when-let* ((entry (cdr (assoc candidate candidates))))
-                         (concat "   " (herdr--entry-annotation entry)))))
-         (group (lambda (candidate transform)
-                  (if transform
-                      candidate
-                    (when-let* ((entry (cdr (assoc candidate candidates))))
-                      (or (alist-get 'kind entry) "herdr"))))))
+                         (or (alist-get 'kind entry) "herdr")))))))
+           '((category . herdr-entry)))))
     (unless candidates
       (user-error "No matching herdr %s" (or require-agent "sessions")))
     (let ((choice (completing-read
                    prompt
                    (lambda (string predicate action)
                      (if (eq action 'metadata)
-                         `(metadata (annotation-function . ,annotation)
-                                    (group-function . ,group)
-                                    (category . herdr-entry))
+                         (cons 'metadata metadata)
                        (complete-with-action action candidates string predicate)))
                    nil t)))
       (cdr (assoc choice candidates)))))
@@ -623,6 +640,16 @@ REQUIRE-AGENT keeps only entries running that agent kind."
   "Functions returning lists of session entries for `herdr-jump'.
 Entries are alists; `kind' names the group they appear under and
 `buffer' points at the Emacs buffer showing them, when one exists.")
+
+(defvar herdr-entries-in-scope-function #'herdr-sessions
+  "Function answering with the entries a command reads a target from.
+A dashboard binds this to the entries it shows, so a command reading a
+target offers what is on screen — the project it is scoped to, and what
+its filters left — rather than every session the servers report.")
+
+(defun herdr-entries-in-scope ()
+  "Return the session entries a command should read a target from."
+  (funcall herdr-entries-in-scope-function))
 
 (defun herdr--pane-labels ()
   "Return the manual label of every pane, keyed by pane id.

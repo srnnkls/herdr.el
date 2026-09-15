@@ -219,7 +219,7 @@ SESSION keeps only the agents on that herdr session."
                          (equal (herdr-herd--session-label
                                  (alist-get 'session entry))
                                 (herdr-herd--session-label session)))))
-              (herdr-sessions)))
+              (herdr-entries-in-scope)))
 
 (defun herdr-herd--session-label (session)
   "Return the name SESSION goes under, the shared one included."
