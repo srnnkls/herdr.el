@@ -266,7 +266,18 @@ alist.  Returns the socket path."
           (should (zerop (call-process "git" nil nil nil "worktree" "add" "-q"
                                        "-b" "feat/y" worktree)))
           (should (equal (herdr-default-buffer-name "claude" worktree)
-                         "*herdr: app@feat/y claude*")))
+                         "*herdr: app@feat/y claude*"))
+          (should (equal (herdr-directory-branch (expand-file-name "src" worktree))
+                         nil))
+          (make-directory (expand-file-name "src" worktree))
+          (should (equal (herdr-directory-branch (expand-file-name "src" worktree))
+                         "feat/y"))
+          (should (zerop (call-process "git" nil nil nil "checkout" "-q" "--detach")))
+          (let ((detached (herdr-directory-branch repo)))
+            (should (string-match-p "\\`[0-9a-f]\\{7\\}\\'" detached))
+            (should (equal detached
+                           (herdr--git-line repo "rev-parse" "--short=7" "HEAD"))))
+          (should-not (herdr-directory-branch root)))
       (delete-directory root t))))
 
 (ert-deftest herdr-buffer-names-make-room-for-repeated-labels ()

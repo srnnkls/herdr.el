@@ -271,10 +271,33 @@ SESSION defaults to `herdr-session'."
           (let ((line (string-trim (buffer-string))))
             (unless (string-empty-p line) line)))))))
 
+(defun herdr--git-head-file (directory)
+  "Return the HEAD file of the repository holding DIRECTORY, or nil.
+A linked worktree keeps a `.git' file naming its own git directory."
+  (when-let* (((and directory (file-directory-p directory)))
+              (root (locate-dominating-file directory ".git"))
+              (dot-git (expand-file-name ".git" root)))
+    (if (file-directory-p dot-git)
+        (expand-file-name "HEAD" dot-git)
+      (with-temp-buffer
+        (insert-file-contents-literally dot-git)
+        (when (looking-at "gitdir: *\\(.+\\)")
+          (expand-file-name "HEAD" (expand-file-name (match-string 1) root)))))))
+
 (defun herdr-directory-branch (directory)
-  "Return the git branch checked out in DIRECTORY, or its commit when detached."
-  (or (herdr--git-line directory "symbolic-ref" "--quiet" "--short" "HEAD")
-      (herdr--git-line directory "rev-parse" "--short" "HEAD")))
+  "Return the git branch checked out in DIRECTORY, or its commit when detached.
+Read straight from the repository's HEAD file, literally, rather than
+asked of git, so a dashboard can afford it once per row."
+  (when-let* ((head (herdr--git-head-file directory))
+              ((file-readable-p head)))
+    (with-temp-buffer
+      (insert-file-contents-literally head)
+      (let ((line (string-trim (buffer-substring (point-min) (line-end-position)))))
+        (cond
+         ((string-prefix-p "ref: refs/heads/" line)
+          (substring line (length "ref: refs/heads/")))
+         ((string-prefix-p "ref: " line) (substring line (length "ref: ")))
+         ((string-match-p "\\`[0-9a-f]\\{40,\\}\\'" line) (substring line 0 7)))))))
 
 (defun herdr-directory-project (directory)
   "Return the name of the project DIRECTORY belongs to.

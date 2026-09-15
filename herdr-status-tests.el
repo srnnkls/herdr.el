@@ -1333,3 +1333,28 @@ Emacs releases the attachment first and the two go together."
         (when herdr-status--timer
           (cancel-timer herdr-status--timer)
           (setq herdr-status--timer nil))))))
+
+(ert-deftest herdr-status-rows-name-the-branch-of-a-repository-directory ()
+  (let* ((root (make-temp-file "herdr-status-branch" t))
+         (repo (file-name-as-directory (expand-file-name "app" root))))
+    (make-directory (expand-file-name ".git" repo) t)
+    (with-temp-file (expand-file-name ".git/HEAD" repo)
+      (insert "ref: refs/heads/feat/branch-column\n"))
+    (unwind-protect
+        (herdr-status-tests--with-dashboard
+          (cl-letf (((symbol-function 'herdr-sessions)
+                     (lambda ()
+                       (mapcar (lambda (entry)
+                                 (if (equal (alist-get 'name entry) "api-review")
+                                     (cons (cons 'foreground_cwd repo) entry)
+                                   entry))
+                               (herdr-status-tests--entries)))))
+            (herdr-status-refresh))
+          (goto-char (point-min))
+          (should (re-search-forward
+                   (concat "^ +● api-review .*" (regexp-quote (abbreviate-file-name repo))
+                           " +feat/branch-column$")
+                   nil t))
+          (goto-char (point-min))
+          (should (re-search-forward "^ +. +docs .*/tmp/proj/$" nil t)))
+      (delete-directory root t))))

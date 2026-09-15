@@ -647,6 +647,11 @@ agent this is as much as the tail of a name does."
   (when-let* ((cwd (herdr-entry-directory entry)))
     (abbreviate-file-name cwd)))
 
+(defun herdr-status--branch-column (entry)
+  "Return the git branch ENTRY's directory is on, or nil outside a repository."
+  (when-let* ((branch (herdr-directory-branch (herdr-entry-directory entry))))
+    (propertize branch 'font-lock-face 'herdr-status-meta)))
+
 (defun herdr-status--session-name (entry)
   "Return the name of the herdr session ENTRY lives on."
   (or (herdr-session-name (alist-get 'session entry)) "shared"))
@@ -670,7 +675,8 @@ resolves the workspace label."
                 (herdr-status--session-column entry (nth 2 widths))
                 (herdr-status--location-column entry workspaces)
                 (when-let* ((directory (herdr-status--directory entry)))
-                  (propertize directory 'font-lock-face 'herdr-status-path))))
+                  (propertize directory 'font-lock-face 'herdr-status-path))
+                (herdr-status--branch-column entry)))
     "  ")))
 
 (defun herdr-status-agent-row (entry widths workspaces)
