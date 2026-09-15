@@ -14,6 +14,7 @@
 ;; the metadata herdr and its adapters report for it.
 ;;
 ;;   M-x herdr-status
+;;   M-x herdr-project-status
 ;;
 ;; `herdr-status-predicates' is the filter extension point.
 
@@ -284,10 +285,16 @@ A burst of events collapses into one redraw."
 ;;;; State
 
 (defvar-local herdr-status--session-records nil
-  "Server records collected by the last refresh.")
+  "Server records in the dashboard's scope at the last refresh.")
 
 (defvar-local herdr-status--entries nil
-  "Session entries collected by the last refresh.")
+  "Session entries in the dashboard's scope at the last refresh.")
+
+(defvar-local herdr-status--panes nil
+  "Agentless panes in the dashboard's scope at the last refresh.")
+
+(defvar-local herdr-status--project-root nil
+  "Project root limiting this dashboard, or nil for all projects.")
 
 (defvar-local herdr-status--filters nil
   "Active filters, each a cons of a name and a predicate.")
@@ -385,9 +392,9 @@ PROMPT asks for the value among those the dashboard currently shows."
   (let ((value (herdr-status--read-field prompt field herdr-status--entries)))
     (lambda (entry) (equal (alist-get field entry) value))))
 
-(defun herdr-status--project-predicate ()
-  "Return a predicate keeping agents rooted in the current project."
-  (let ((root (funcall herdr-project-root-function default-directory)))
+(defun herdr-status--project-predicate (&optional root)
+  "Return a predicate keeping entries in ROOT, defaulting to this project."
+  (let ((root (or root (funcall herdr-project-root-function default-directory))))
     (unless root
       (user-error "No project for %s" (abbreviate-file-name default-directory)))
     (lambda (entry)
@@ -909,7 +916,7 @@ only by the heading's own total."
                 'font-lock-face 'herdr-status-state-blocked)))
 
 (defun herdr-status--insert-sessions ()
-  "Insert one collapsible entry per known herdr session."
+  "Insert one collapsible entry per herdr session in the dashboard's scope."
   (magit-insert-section (herdr-status-sessions nil t)
     (magit-insert-heading
       (concat (propertize (format "Sessions %d" (length herdr-status--session-records))
@@ -997,8 +1004,7 @@ WIDTHS, TABS, and WORKSPACES are passed through to each row."
   "Insert the panes running no agent, labelled through WORKSPACES.
 WIDTHS holds the same column widths the agents are drawn on, so a pane
 lines up with them."
-  (let ((panes (herdr-status--orphan-panes herdr-status--session-records
-                                           herdr-status--entries)))
+  (let ((panes herdr-status--panes))
     (when panes
       (magit-insert-section (herdr-status-panes nil t)
         (magit-insert-heading (format "Panes %d" (length panes)))
@@ -1036,6 +1042,7 @@ where memex.el is on the load path, and are unbound where it is not."
   "h" #'herdr-herd-dispatch
   "t" #'herdr-status-toggle-details
   "g" #'herdr-status-refresh
+  "p" #'herdr-status-toggle-project
   "q" #'quit-window)
 
 (defun herdr-status--widen-fringe ()
@@ -1122,14 +1129,33 @@ show.")
           herdr-status--entries (herdr-status--collect-entries)
           herdr-status--details nil)
     (herdr--prune-session-targets herdr-status--entries)
+    (setq herdr-status--panes
+          (herdr-status--orphan-panes herdr-status--session-records
+                                      herdr-status--entries))
+    (when herdr-status--project-root
+      (let ((predicate (herdr-status--project-predicate herdr-status--project-root)))
+        (setq herdr-status--entries
+              (seq-filter predicate herdr-status--entries)
+              herdr-status--panes
+              (seq-filter predicate herdr-status--panes)))
+      (let ((servers (mapcar #'herdr--entry-server
+                             (append herdr-status--entries herdr-status--panes))))
+        (setq herdr-status--session-records
+              (seq-filter (lambda (server)
+                            (member (alist-get 'key server) servers))
+                          herdr-status--session-records))))
+    (setq-local header-line-format
+                (concat " Herdr · "
+                        (if herdr-status--project-root
+                            (abbreviate-file-name herdr-status--project-root)
+                          "Global")))
     (let ((tabs (herdr-status--snapshot-index
                  'tabs 'tab_id herdr-status--session-records))
           (workspaces (herdr-status--snapshot-index
                        'workspaces 'workspace_id herdr-status--session-records))
           (widths (herdr-status--widths
                    (append (herdr-status--agents herdr-status--entries)
-                           (herdr-status--orphan-panes herdr-status--session-records
-                                                       herdr-status--entries)))))
+                           herdr-status--panes))))
       (erase-buffer)
       (magit-insert-section (herdr-status-root)
         (run-hook-with-args 'herdr-status-sections-functions
@@ -1159,17 +1185,45 @@ show.")
   (message "Agent details %s"
            (if herdr-status-show-details "shown" "hidden")))
 
-;;;###autoload
-(defun herdr-status ()
-  "Show the herdr dashboard: servers, agents, recent agents, and panes."
-  (interactive)
-  (let ((buffer (get-buffer-create herdr-status-buffer-name)))
+(defun herdr-status--show (&optional project-root)
+  "Show the dashboard scoped to PROJECT-ROOT, or globally when nil."
+  (let ((directory (or project-root default-directory))
+        (buffer (get-buffer-create herdr-status-buffer-name)))
     (with-current-buffer buffer
       (unless (derived-mode-p 'herdr-status-mode)
         (herdr-status-mode))
+      (setq default-directory (file-name-as-directory (expand-file-name directory))
+            herdr-status--project-root project-root)
       (herdr-status-refresh))
     (let ((display-buffer-overriding-action herdr-status-display-action))
       (pop-to-buffer buffer))))
+
+;;;###autoload
+(defun herdr-status ()
+  "Show the global herdr dashboard across every project.
+Use `herdr-project-status' to show only the current project's entries."
+  (interactive)
+  (herdr-status--show))
+
+;;;###autoload
+(defun herdr-project-status ()
+  "Show the herdr dashboard for the current project.
+Scope agents, recent agents, herds, and panes to the project returned by
+`herdr-project-root-function'.  Signal a user error outside a project."
+  (interactive)
+  (let ((root (funcall herdr-project-root-function default-directory)))
+    (unless root
+      (user-error "No project for %s" (abbreviate-file-name default-directory)))
+    (herdr-status--show (file-name-as-directory (expand-file-name root)))))
+
+;;;###autoload
+(defun herdr-status-toggle-project ()
+  "Switch between the global and project dashboards.
+Outside a dashboard, open the current project's dashboard."
+  (interactive)
+  (if (and (derived-mode-p 'herdr-status-mode) herdr-status--project-root)
+      (herdr-status)
+    (herdr-project-status)))
 
 ;;;; Refreshing on herdr events
 
@@ -1450,6 +1504,10 @@ Every suffix here is bound directly in `herdr-status-mode-map' as well."
    ["List"
     ("f" "filter" herdr-status-filter)
     ("O" "sort" herdr-status-sort)
+    ("p" herdr-status-toggle-project
+     :description (lambda () (if herdr-status--project-root
+                                 "global view"
+                               "project view")))
     ("t" herdr-status-toggle-details
      :description herdr-status--details-description)
     ("g" "refresh" herdr-status-refresh)]
@@ -1460,8 +1518,8 @@ Every suffix here is bound directly in `herdr-status-mode-map' as well."
     ("s" "search" herdr-memex-search)
     ("S" "memex" herdr-memex-dispatch)]]
   [:class transient-row
-   ("?" "close" transient-quit-one)
-   ("q" "quit dashboard" quit-window)])
+          ("?" "close" transient-quit-one)
+          ("q" "quit dashboard" quit-window)])
 
 (provide 'herdr-status)
 ;;; herdr-status.el ends here

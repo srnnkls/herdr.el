@@ -151,9 +151,18 @@ Sections collapse with `TAB` and `S-TAB`, and `M-1` through `M-4` set the
 level for the whole buffer.  `herdr-status-left-fringe-width` widens the
 fringe the collapse arrows are drawn in, so they clear the headings.
 
+`M-x herdr-project-status` opens the same dashboard for the current project.
+Agents, Recent, Herds, and Panes follow `herdr-project-root-function` and
+each entry's working directory. Sessions shows health and totals only for
+servers hosting a matching agent or pane.
+`p` (`herdr-status-toggle-project`) switches between global and project
+views. The header shows the scope, which survives refreshes. Both entry
+commands capture the calling buffer's directory, so the project view
+follows the project you open it from. It requires a current project.
+
 | Section | Contents |
 | --- | --- |
-| `Sessions` | One entry per known session: reachability, socket, herdr version, protocol, and object counts |
+| `Sessions` | One entry per session in scope: reachability, socket, herdr version, protocol, and object counts |
 | `Recent` | Agents in most-recently-used order, omitted when none |
 | `Herds` | One collapsible entry per herd the listed agents name, omitted when none does |
 | `Agents` | The filterable list, headed by the visible-of-total count and the active filters |
@@ -212,6 +221,7 @@ redraw a live dashboard on a short idle delay, which
 | `s` | Search agent history, narrowed by the section at point |
 | `S` | Search menu |
 | `g` | Refresh |
+| `p` | Toggle global / project view |
 | `?` | `herdr-status-dispatch`, a menu of these same keys |
 
 Every action has a direct key; `?` opens a menu that mirrors them and

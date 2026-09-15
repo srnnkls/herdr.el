@@ -167,6 +167,8 @@
 
 (ert-deftest herdr-status-is-an-interactive-command ()
   (should (commandp 'herdr-status))
+  (should (commandp 'herdr-project-status))
+  (should (commandp 'herdr-status-toggle-project))
   (should (commandp 'herdr-status-refresh))
   (should (commandp 'herdr-status-filter)))
 
@@ -1028,6 +1030,145 @@ Emacs releases the attachment first and the two go together."
       (goto-char (point-min))
       (should (re-search-forward "^ +● api-review" nil t))
       (herdr-status-detach))))
+
+;;;; Project scope
+
+(defun herdr-status-tests--project-root (&optional directory)
+  "Return the fixture project holding DIRECTORY."
+  (seq-find (lambda (root) (herdr--directory-covers-p root directory))
+            '("/tmp/proj/nested/" "/tmp/proj/" "/tmp/other/")))
+
+(ert-deftest herdr-project-status-scopes-sections-and-preserves-recent-history ()
+  (let* ((herdr-project-root-function #'herdr-status-tests--project-root)
+         (snapshot (copy-tree (herdr-status-tests--snapshot "alpha"))))
+    (setf (alist-get 'panes snapshot)
+          (append (alist-get 'panes snapshot)
+                  '(((pane_id . "%10") (cwd . "/tmp/proj/")
+                     (foreground_cwd . "/tmp/other/"))
+                    ((pane_id . "%11") (cwd . "/tmp/proj/nested/")))))
+    (setf (alist-get 'foreground_cwd (nth 2 (alist-get 'panes snapshot)))
+          "/tmp/proj/src/")
+    (herdr-status-tests--with-herds
+        '(("api-review" . "herd:local") ("beta-work" . "herd:foreign"))
+      (herdr-status-tests--with-dashboard
+        (save-window-excursion
+          (let ((herdr-status-buffer-name (buffer-name))
+                (herdr-status-sections-functions
+                 (list (lambda (entries &rest _)
+                         (should (= (length entries) 2))))))
+            (setq default-directory "/tmp/proj/src/"
+                  herdr--recent-session-targets
+                  '(("/tmp/beta.sock" . "t3") ("/tmp/alpha.sock" . "t1")))
+            (cl-letf (((symbol-function 'herdr-snapshot)
+                       (lambda ()
+                         (if (equal herdr-session "alpha")
+                             snapshot
+                           (herdr-status-tests--snapshot herdr-session)))))
+              (herdr-project-status)
+              (herdr-status-refresh))
+            (should (string-match-p "/tmp/proj/" header-line-format))
+            (should (string-match-p "Agents 2" (buffer-string)))
+            (should (string-match-p "Recent 1" (buffer-string)))
+            (should (string-match-p "Herds 1" (buffer-string)))
+            (should (string-match-p "Panes 1" (buffer-string)))
+            (let ((sessions (herdr-status-tests--section-text "Sessions ")))
+              (should (string-match-p "Sessions 1" sessions))
+              (should (string-match-p "/tmp/alpha.sock" sessions))
+              (should-not (string-match-p "/tmp/beta.sock" sessions)))
+            (should-not (string-match-p "beta-work\\|foreign\\|%10\\|%11"
+                                        (buffer-string)))
+            (should (equal herdr--recent-session-targets
+                           '(("/tmp/beta.sock" . "t3")
+                             ("/tmp/alpha.sock" . "t1"))))))))))
+
+(ert-deftest herdr-project-status-captures-the-caller-and-toggles-repeatedly ()
+  (let ((herdr-project-root-function #'herdr-status-tests--project-root))
+    (herdr-status-tests--with-dashboard
+      (save-window-excursion
+        (let ((herdr-status-buffer-name (buffer-name)))
+          (setq default-directory "/tmp/other/")
+          (with-temp-buffer
+            (setq default-directory "/tmp/proj/src/")
+            (herdr-project-status))
+          (should (equal default-directory "/tmp/proj/"))
+          (should (string-match-p "Agents 2" (buffer-string)))
+          (should (string-match-p "Sessions 1" (buffer-string)))
+          (herdr-status-clear-filters)
+          (should (string-match-p "Agents 2" (buffer-string)))
+          (dotimes (_ 2)
+            (herdr-status-toggle-project)
+            (should (string-match-p "Global" header-line-format))
+            (should (string-match-p "Agents 3" (buffer-string)))
+            (should (string-match-p "Sessions 2" (buffer-string)))
+            (herdr-status-toggle-project)
+            (should (equal default-directory "/tmp/proj/"))
+            (should (string-match-p "Agents 2" (buffer-string)))
+            (should (string-match-p "Sessions 1" (buffer-string))))
+          (with-temp-buffer
+            (setq default-directory "/tmp/other/")
+            (herdr-project-status))
+          (should (string-match-p "Agents 1" (buffer-string)))
+          (should (string-match-p "beta-work" (buffer-string)))
+          (with-temp-buffer
+            (setq default-directory "/tmp/proj/src/")
+            (herdr-status))
+          (should (string-match-p "Global" header-line-format))
+          (herdr-status-toggle-project)
+          (should (string-match-p "Agents 2" (buffer-string))))))))
+
+(ert-deftest herdr-project-status-includes-a-session-with-only-a-matching-pane ()
+  (let* ((herdr-project-root-function #'herdr-status-tests--project-root)
+         (snapshot (copy-tree (herdr-status-tests--snapshot "beta")))
+         (pane (copy-tree '((pane_id . "%9") (cwd . "/tmp/proj/src/")
+                            (foreground_cwd)))))
+    (push pane (alist-get 'panes snapshot))
+    (herdr-status-tests--with-dashboard
+      (save-window-excursion
+        (let ((herdr-status-buffer-name (buffer-name)))
+          (setq default-directory "/tmp/proj/")
+          (cl-letf (((symbol-function 'herdr-sessions) (lambda () nil))
+                    ((symbol-function 'herdr-snapshot)
+                     (lambda ()
+                       (if (equal herdr-session "beta")
+                           snapshot
+                         (herdr-status-tests--snapshot herdr-session)))))
+            (herdr-project-status)
+            (let ((sessions (herdr-status-tests--section-text "Sessions ")))
+              (should (string-match-p "Sessions 1" sessions))
+              (should (string-match-p "/tmp/beta.sock" sessions))
+              (should-not (string-match-p "/tmp/alpha.sock" sessions)))
+            (setf (alist-get 'foreground_cwd pane) "/tmp/other/")
+            (herdr-status-refresh)
+            (should (string-match-p "Sessions 0" (buffer-string)))
+            (herdr-status-toggle-project)
+            (should (string-match-p "Sessions 2" (buffer-string)))))))))
+
+(ert-deftest herdr-project-status-scopes-the-readers-that-offer-a-target ()
+  (let ((herdr-project-root-function #'herdr-status-tests--project-root))
+    (herdr-status-tests--with-dashboard
+      (save-window-excursion
+        (let ((herdr-status-buffer-name (buffer-name)))
+          (setq default-directory "/tmp/proj/src/")
+          (herdr-project-status)
+          (should (equal (mapcar #'herdr--entry-label (herdr-entries-in-scope))
+                         '("api-review" "docs")))
+          (should (equal (mapcar #'herdr--entry-label (herdr-herd-live-agents))
+                         '("api-review" "docs")))
+          (should (equal (mapcar #'herdr--entry-label (herdr-status-switch-agents))
+                         '("api-review" "docs")))
+          (herdr-status-toggle-project)
+          (should (equal (mapcar #'herdr--entry-label (herdr-entries-in-scope))
+                         '("api-review" "docs" "beta-work"))))))))
+
+(ert-deftest herdr-project-status-rejects-a-missing-project-before-changing-view ()
+  (let ((herdr-project-root-function (lambda (&optional _) nil)))
+    (herdr-status-tests--with-dashboard
+      (let ((herdr-status-buffer-name (buffer-name))
+            (text (buffer-string)))
+        (should-error (herdr-project-status) :type 'user-error)
+        (should-error (herdr-status-toggle-project) :type 'user-error)
+        (should (equal text (buffer-string)))
+        (should (string-match-p "Global" header-line-format))))))
 
 (provide 'herdr-status-tests)
 ;;; herdr-status-tests.el ends here
