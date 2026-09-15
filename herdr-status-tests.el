@@ -824,12 +824,15 @@
 ;;;; Dispatch
 
 (defun herdr-status-tests--suffix-command (prefix key)
-  "Return the command PREFIX runs for KEY, or nil when it binds none."
+  "Return the command PREFIX runs for KEY, or nil when it binds none.
+Transient answers with either (CLASS . PLIST) or (LEVEL CLASS PLIST)
+depending on its version."
   (when-let* ((suffix (ignore-errors (transient-get-suffix prefix key))))
-    (plist-get (cdr suffix) :command)))
+    (or (plist-get (cdr suffix) :command)
+        (and (> (length suffix) 2) (plist-get (nth 2 suffix) :command)))))
 
 (ert-deftest herdr-status-dispatch-mirrors-the-keymap ()
-  (dolist (key '("RET" "o" "P" "R" "d" "x" "f" "O" "t" "h" "g" "q"))
+  (dolist (key '("RET" "o" "P" "R" "d" "x" "f" "O" "t" "h" "g" "p" "q"))
     (let ((bound (keymap-lookup herdr-status-mode-map key))
           (offered (herdr-status-tests--suffix-command 'herdr-status-dispatch key)))
       (should (commandp bound))
