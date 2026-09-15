@@ -190,10 +190,13 @@ anything, so they are drawn in `herdr-status-preview-status'."
   :type 'string
   :group 'herdr-status)
 
-(defcustom herdr-status-attached-glyph "▎"
+(defcustom herdr-status-attached-glyph "•"
   "String marking an agent or pane Emacs has a buffer for.
-Rows without a buffer are blank there, so it should be one column wide."
-  :type 'string
+Rows without a buffer are blank there, so it should be one column wide.
+Nil draws no marker column at all, leaving `herdr-status-label' and
+`herdr-status-label-quiet' to say which rows Emacs holds a buffer for."
+  :type '(choice (const :tag "None, the name's own colour says it" nil)
+                 (string :tag "Glyph"))
   :group 'herdr-status)
 
 (defcustom herdr-status-visibility-indicators nil
@@ -521,11 +524,16 @@ A state left out of the list sorts after the ones in it, by name."
     (concat text (make-string (max 0 (- width (string-width text))) ?\s))))
 
 (defun herdr-status--attached-column (entry)
-  "Return the marker saying whether Emacs has a buffer for ENTRY."
-  (if (herdr--entry-buffer entry)
-      (propertize herdr-status-attached-glyph
-                  'font-lock-face 'herdr-status-attached)
-    (make-string (string-width herdr-status-attached-glyph) ?\s)))
+  "Return the marker saying whether Emacs has a buffer for ENTRY.
+The marker carries the space separating it from the state glyph, so a nil
+`herdr-status-attached-glyph' takes the whole column back."
+  (cond
+   ((null herdr-status-attached-glyph) "")
+   ((herdr--entry-buffer entry)
+    (concat (propertize herdr-status-attached-glyph
+                        'font-lock-face 'herdr-status-attached)
+            " "))
+   (t (make-string (1+ (string-width herdr-status-attached-glyph)) ?\s))))
 
 (defun herdr-status--working-p (entry)
   "Return non-nil when ENTRY's agent is working."

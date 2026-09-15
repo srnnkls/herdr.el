@@ -726,7 +726,10 @@
                    (current-buffer)))))
       (herdr-status-refresh))
     (goto-char (point-min))
-    (should (re-search-forward "^▎● api-review" nil t))
+    (should (re-search-forward
+             (concat "^" (regexp-quote herdr-status-attached-glyph)
+                     " ● api-review")
+             nil t))
     (should (eq (get-text-property (match-beginning 0) 'font-lock-face)
                 'herdr-status-attached))
     (should (eq (get-text-property (- (point) 2) 'font-lock-face)
@@ -736,7 +739,26 @@
     (should (eq (get-text-property (- (point) 2) 'font-lock-face)
                 'herdr-status-label-quiet))
     (goto-char (point-min))
-    (should (re-search-forward "^▎ +shell" nil t))))
+    (should (re-search-forward
+             (concat "^" (regexp-quote herdr-status-attached-glyph) " +shell")
+             nil t))))
+
+(ert-deftest herdr-status-drops-the-marker-column-when-the-glyph-is-nil ()
+  (let ((herdr-status-attached-glyph nil))
+    (herdr-status-tests--with-dashboard
+      (cl-letf (((symbol-function 'herdr--entry-buffer)
+                 (lambda (entry)
+                   (when (equal (alist-get 'pane_id entry) "%1")
+                     (current-buffer)))))
+        (herdr-status-refresh))
+      (goto-char (point-min))
+      (should (re-search-forward "^● api-review" nil t))
+      (should (eq (get-text-property (- (point) 2) 'font-lock-face)
+                  'herdr-status-label))
+      (goto-char (point-min))
+      (should (re-search-forward "^○ docs" nil t))
+      (should (eq (get-text-property (- (point) 2) 'font-lock-face)
+                  'herdr-status-label-quiet)))))
 
 (ert-deftest herdr-status-rows-name-the-server-they-run-on ()
   (herdr-status-tests--with-dashboard
