@@ -1170,17 +1170,19 @@ the agent entries, the column widths, the tab index, and the workspace
 index the redraw computed, and inserts nothing when it has nothing to
 show.")
 
-(defun herdr-status--redraw ()
-  "Re-fetch and redraw the dashboard in the current buffer."
+(defun herdr-status--redraw (&optional cached)
+  "Re-fetch and redraw the dashboard in the current buffer.
+With CACHED, redraw from the records the last fetch left instead."
   (let ((herdr-status--refreshing t)
         (inhibit-read-only t)
         (line (line-number-at-pos))
         (starts (mapcar (lambda (window) (cons window (window-start window)))
                         (get-buffer-window-list nil nil t))))
     (setq herdr-status--collapsed-herds (herdr-status--collapsed-herds))
-    (setq herdr-status--session-records (herdr-status--collect-sessions)
-          herdr-status--entries (herdr-status--collect-entries)
-          herdr-status--details nil)
+    (unless cached
+      (setq herdr-status--session-records (herdr-status--collect-sessions)
+            herdr-status--entries (herdr-status--collect-entries)
+            herdr-status--details nil))
     (herdr--prune-session-targets herdr-status--entries)
     (setq herdr-status--panes
           (herdr-status--orphan-panes herdr-status--session-records
@@ -1295,6 +1297,30 @@ Outside a dashboard, open the current project's dashboard."
       (condition-case nil
           (herdr-status-refresh)
         (herdr-error nil)))))
+
+(defun herdr-status-cached-agents ()
+  "Return the agent entries this dashboard drew from its last fetch."
+  (herdr-status--agents herdr-status--entries))
+
+(defun herdr-status-redraw-cached (&optional ready-p)
+  "Redraw every live dashboard from its last fetched records, now.
+A change that lives only in Emacs needs no round trip to herdr, so this
+costs a few milliseconds where a fetched refresh costs hundreds and waits
+for idle time first.  With READY-P, a dashboard where it returns nil is
+scheduled for a fetched refresh instead.  Return non-nil when every
+dashboard redrew.  Honours `herdr-status-auto-refresh'."
+  (let ((complete t))
+    (when herdr-status-auto-refresh
+      (dolist (buffer (herdr-status--buffers))
+        (with-current-buffer buffer
+          (cond
+           (herdr-status--refreshing nil)
+           ((or (null ready-p) (funcall ready-p))
+            (herdr-status--redraw t))
+           (t
+            (setq complete nil)
+            (herdr-status-request-refresh))))))
+    complete))
 
 (defun herdr-status-request-refresh ()
   "Schedule a redraw of every live dashboard buffer.

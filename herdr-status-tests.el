@@ -1297,3 +1297,39 @@ Emacs releases the attachment first and the two go together."
 
 (provide 'herdr-status-tests)
 ;;; herdr-status-tests.el ends here
+
+(ert-deftest herdr-status-redraw-cached-renders-without-fetching ()
+  (let ((herdr-status-auto-refresh t)
+        (herdr-status--timer nil)
+        (fetches 0)
+        (stamp "cached-marker-absent"))
+    (herdr-status-tests--with-dashboard
+      (unwind-protect
+          (cl-letf* ((collect (symbol-function 'herdr-status--collect-entries))
+                     ((symbol-function 'herdr-status--collect-entries)
+                      (lambda () (cl-incf fetches) (funcall collect)))
+                     (herdr-status-sections-functions
+                      (list (lambda (&rest _) (insert stamp "\n")))))
+            (setq stamp "cached-marker-present")
+            (should (herdr-status-redraw-cached))
+            (should (= fetches 0))
+            (should (string-match-p "cached-marker-present"
+                                    (buffer-substring-no-properties
+                                     (point-min) (point-max))))
+            (should (seq-find (lambda (entry) (alist-get 'agent entry))
+                              (herdr-status-cached-agents)))
+            (setq stamp "cached-marker-later")
+            (should-not (herdr-status-redraw-cached (lambda () nil)))
+            (should-not (string-match-p "cached-marker-later"
+                                        (buffer-substring-no-properties
+                                         (point-min) (point-max))))
+            (should (timerp herdr-status--timer))
+            (should (= fetches 0))
+            (let ((herdr-status-auto-refresh nil))
+              (should (herdr-status-redraw-cached))
+              (should-not (string-match-p "cached-marker-later"
+                                          (buffer-substring-no-properties
+                                           (point-min) (point-max))))))
+        (when herdr-status--timer
+          (cancel-timer herdr-status--timer)
+          (setq herdr-status--timer nil))))))
