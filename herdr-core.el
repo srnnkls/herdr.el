@@ -275,6 +275,15 @@ whatever an entry carries."
           (file-truename socket)
         (expand-file-name basename (file-truename parent))))))
 
+(defun herdr-session-server-key (session)
+  "Return the canonical identity of the server SESSION is served by.
+A session designator and an explicit `herdr-socket-path' both name a
+server, and the designator is the one that answers here, so a caller
+holding a session never reads the socket another scope left behind."
+  (let ((herdr-session session)
+        (herdr-socket-path nil))
+    (herdr-server-key)))
+
 (defun herdr-global-args ()
   "Return the herdr CLI flags selecting the session Emacs talks to.
 A session flag carries the server's data directory as well as its

@@ -449,17 +449,18 @@ to a workspace, say - in one place.")
 
 (defun herdr-claim-buffer (buffer terminal-id &optional session)
   "Mark BUFFER as showing TERMINAL-ID on SESSION's server.
-SESSION defaults to the one in scope.  `herdr-buffer-functions' then
-sees the buffer."
+SESSION defaults to the server in scope, named after the session that
+answers on it, so what the buffer says it is and where it is reached
+cannot drift apart.  `herdr-buffer-functions' then sees the buffer."
   (when (buffer-live-p buffer)
-    (with-current-buffer buffer
-      (setq herdr-terminal-id terminal-id
-            herdr-terminal-session (or session herdr-session)
-            herdr-terminal-server-key (if session
-                                          (let ((herdr-session session)
-                                                (herdr-socket-path nil))
-                                            (herdr-server-key))
-                                        (herdr-server-key))))
+    (let* ((server (if session
+                       (herdr-session-server-key session)
+                     (herdr-server-key)))
+           (session (or session (herdr-session-for-socket server) herdr-session)))
+      (with-current-buffer buffer
+        (setq herdr-terminal-id terminal-id
+              herdr-terminal-session session
+              herdr-terminal-server-key server)))
     (run-hook-with-args 'herdr-buffer-functions buffer)
     buffer))
 
@@ -502,7 +503,7 @@ TAKEOVER claims input ownership, and DISPLAY shows the buffer when
 non-nil.  Returns the buffer."
   (let* ((herdr-session session)
          (herdr-socket-path nil)
-         (server (herdr-server-key))
+         (server (herdr-session-server-key session))
          (name (herdr--free-buffer-name (or label terminal-id) terminal-id
                                         server directory)))
     (when-let* ((existing (get-buffer name)))
@@ -917,6 +918,17 @@ naming the same session appear once."
   (let ((herdr-socket-path nil)
         (herdr-session session))
     (herdr-socket-file)))
+
+(defun herdr-session-for-socket (server-key)
+  "Return the session SERVER-KEY is the server of, or nil when none is.
+Only a session name reaches the command line, so a terminal held by the
+server it answers on has to be said the other way round before it can be
+attached."
+  (when server-key
+    (let ((key (file-truename (expand-file-name server-key))))
+      (seq-find (lambda (session)
+                  (equal key (herdr-session-server-key session)))
+                (herdr-all-sessions)))))
 
 (defun herdr-read-session (prompt &optional default)
   "Read a herdr session designator with PROMPT, offering DEFAULT.

@@ -377,6 +377,37 @@
                herdr-agent--subscriptions)
       (delete-directory root t))))
 
+(ert-deftest herdr-agent-adoption-attaches-on-the-server-it-was-found-on ()
+  "An agent adopted from an event carries no session of its own, and the
+scope in hand belongs to whichever server spoke last, so the terminal has
+to be reached through the server it was found on."
+  (let* ((herdr-agent-harnesses (herdr-agent-tests--with-adapter "claude" nil))
+         (root (make-temp-file "herdr-agent-adoption-route" t))
+         (server-key (expand-file-name "herdr.sock" root))
+         (routes nil)
+         (looked-up 'none)
+         (attachment nil)
+         session)
+    (unwind-protect
+        (cl-letf (((symbol-function 'herdr-session-for-socket)
+                   (lambda (key) (setq looked-up key) "nkls"))
+                  ((symbol-function 'herdr-attach-terminal)
+                   (cl-function
+                    (lambda (terminal-id &key session &allow-other-keys)
+                      (push session routes)
+                      (setq attachment
+                            (herdr-agent-tests--attachment terminal-id terminal-id))
+                      (car attachment)))))
+          (let ((herdr-session "cmw"))
+            (setq session
+                  (herdr-agent-adopt '((agent . "claude") (terminal_id . "term-route")
+                                       (cwd . "/tmp"))
+                                     :server-key server-key :display nil)))
+          (should (equal routes '("nkls")))
+          (should (equal looked-up (herdr-agent-session-server session)))
+          (herdr-agent-tests--detach session))
+      (delete-directory root t))))
+
 (ert-deftest herdr-agent-adoption-attaches-off-screen-when-asked ()
   (let* ((herdr-agent-harnesses (herdr-agent-tests--with-adapter "claude" nil))
          (root (make-temp-file "herdr-agent-adoption-display" t))

@@ -266,13 +266,22 @@ Return nil when KIND has no registered adapter."
            (unless (eq (herdr-agent-session-state session) 'starting)
              (herdr-agent-detach session))))))))
 
+(defun herdr-agent--route (session)
+  "Return the herdr session SESSION's terminal is reached through.
+The server SESSION was found on is what holds its terminal, so that is
+what names the route when the agent itself reported no session; only
+a server no session answers for falls back to the scope in hand."
+  (or (herdr-agent-session-route session)
+      (herdr-session-for-socket (herdr-agent-session-server session))
+      herdr-session))
+
 (defun herdr-agent--attach (session &optional display)
   "Attach SESSION's terminal and record its Emacs resources.
 DISPLAY shows the buffer once attached."
   (let ((buffer
          (herdr-attach-terminal
           (herdr-agent-session-terminal session)
-          :session (or (herdr-agent-session-route session) herdr-session)
+          :session (herdr-agent--route session)
           :label (herdr-agent-session-name session)
           :directory (herdr-agent-session-project session)
           :takeover herdr-attach-takeover :display display)))
@@ -291,7 +300,7 @@ DISPLAY shows the buffer once attached."
         (unless (and (buffer-live-p buffer) (processp process) (process-live-p process))
           (signal 'herdr-error (list "terminal attachment did not return a buffer and process")))
         (herdr-claim-buffer buffer (herdr-agent-session-terminal session)
-                            (herdr-agent-session-route session))
+                            (herdr-agent--route session))
         (setf (herdr-agent-session-buffer session) buffer
               (herdr-agent-session-attachment-process session) process)
         (herdr-agent--watch-attachment session)
