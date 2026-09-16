@@ -41,9 +41,11 @@ Ghostel attachment errors raise an Emacs warning with the session, terminal, and
 | message | Send a typed message plus the context at point to an agent. |
 | associate | Bind a primary agent to the current buffer, project, or workspace. |
 
-Use `herdr-agent-start`, `herdr-agent-continue`, and `herdr-agent-resume` from Lisp. `herdr-agent-stop` takes a composite `(server-key . terminal-id)` target. Existing work is available through `herdr-attach-agent`, `herdr-attach-pane`, `herdr-attach-session`, and `herdr-jump`.
+Use `herdr-agent-start`, `herdr-agent-continue`, and `herdr-agent-resume` from Lisp. `herdr-agent-stop` takes a composite `(server-key . terminal-id)` target. Existing work is available through `herdr-attach-agent`, `herdr-attach-pane`, `herdr-attach-session`, and `herdr-jump`. `herdr-attach-pane` offers only the panes running no agent, since `herdr-attach-agent` already offers the rest and draws them far better than a pane row can.
 
-`herdr-message-session` and its project, workspace, `last`, and `primary` variants read a message with completion over earlier messages and send it followed by a `---` barrier and the context at point: a `file:` or `buffer:` line with the line range, `mode:`, and the region or current line in a fenced block for file-visiting buffers, or whatever a provider on `herdr-send-context-functions` returns. `C-c '` in the minibuffer moves the draft to a `*herdr message*` buffer where `C-c C-c` sends and `C-c C-k` discards. `herdr-associate-agent`, `herdr-associate-project-agent`, and `herdr-associate-workspace-agent` bind a primary agent; `herdr-message-primary-session` and `herdr-send-primary-session` resolve buffer, then project, then workspace, and bind the project on first use when nothing is set. Functions on `herdr-message-compose-functions` receive the target, the message text, and the context string; the first prompt they return is sent instead of the barrier composition, so an integration can deliver the context through another channel.
+`herdr-message-session` and its project, workspace, `last`, and `primary` variants read a message and send it followed by a `---` barrier and the context at point: a `file:` or `buffer:` line with the line range, `mode:`, and the region or current line in a fenced block for file-visiting buffers, or whatever a provider on `herdr-send-context-functions` returns. The minibuffer asks for the message, with earlier messages on `M-p`; `C-c '` moves the draft to a `*herdr message*` buffer where `C-c C-c` sends and `C-c C-k` discards. Setting `herdr-message-read-function` to `herdr-message-read-field` writes the message in a [cera](https://github.com/srnnkls/cera) field directly under the region or line it is about instead, where `RET` sends and `C-c C-k` cancels; the field closes into the vendor mark of the harness it writes to, drawn from `herdr-status-harness-marks` in that harness's own colour, and a buffer a process streams into, such as a terminal, still asks in the minibuffer. Sending shows the agent's terminal beside the window you sent from, attaching it first when nothing shows it, unless `herdr-message-show-agent` is nil.
+
+`herdr-toggle-agent` shows the foreground agent of the current editor workspace, attaching it first when nothing shows it, and hides it when it is on screen; `herdr-message-foreground-session` messages that agent with the context at point. The foreground agent is the one used most recently from Emacs, which selecting an agent's window counts as, then the one herdr itself has focused, then the only one in the workspace. When none stands out, or with a prefix argument, both commands read the agent instead. Neither is bound; `s-c` and `s-m` are a natural pair. `herdr-associate-agent`, `herdr-associate-project-agent`, and `herdr-associate-workspace-agent` bind a primary agent; `herdr-message-primary-session` and `herdr-send-primary-session` resolve buffer, then project, then workspace, and bind the project on first use when nothing is set. Functions on `herdr-message-compose-functions` receive the target, the message text, and the context string; the first prompt they return is sent instead of the barrier composition, so an integration can deliver the context through another channel.
 
 `herdr-attach-session-workspace-policy` defaults to `mirror`, which preserves Herdr workspace groups. Set it to `merge` to accumulate entries with the same `herdr-workspace-label` in one editor workspace.
 
@@ -189,10 +191,25 @@ named after the prompt it was given cannot push the columns after it off
 the line. Nil, the default, gives the name a third of the window.
 
 `herdr-status-switch` reads a running agent with completion and shows it.
-Its candidates carry the same state glyph, harness mark, pane, workspace,
-and directory the rows do. Point in `Recent` offers the recently used
-agents; anywhere else offers the agent list, which the project scope and
-the active filters have already narrowed.
+Every command that picks an agent — it, `herdr-attach-agent`, the message
+and send commands, the transient — reads through `herdr-read-agent`, so
+they all offer the same rows: the state glyph, the name, and behind it
+the harness with its vendor mark, the branch, and where the agent works,
+given as its project and, for a linked worktree, `project:checkout`. The
+pane and workspace ids the dashboard shows are left out, since nobody
+picks an agent by them. A name longer than `herdr-read-agent-name-width`
+— by default the width the longest one needs, up to 40 percent of the
+frame — is cut short in the row alone and still matches in full. The
+agent reached for most recently leads, and the rest keep the order they
+were handed in, so a dashboard's own sort still decides among the agents
+nothing has been near. `R` renames what point stands for: an agent by
+its own name, a plain pane by the label its row reads by.
+
+Point inside a section offers what that section draws: one herd's
+members, a project's group, the recently used, or a section another
+package inserted. Point on a row means the section holding it. The agent
+list and the dashboard at large offer the agents the project scope and
+the active filters leave.
 
 The directory is `herdr-entry-directory`: herdr's `foreground_cwd` when it
 has one, falling back to the `cwd` the pane opened in. An agent that moves
@@ -247,7 +264,9 @@ into a workspace of its own choosing.
 
 Filters compose conjunctively and survive a refresh. `herdr-status-filter`
 offers harness, agent state, current project, current editor
-workspace, and attached-only. Every one of them is an entry in
+workspace, and attached-only. Harness and state offer the values the
+section at point shows, so filtering from inside a herd asks about that
+herd rather than about every agent the dashboard holds. Every one of them is an entry in
 `herdr-status-predicates`, which is also where a custom filter goes:
 
 ```elisp

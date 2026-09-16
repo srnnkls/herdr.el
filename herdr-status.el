@@ -111,29 +111,51 @@ reads as brown beside the other states, so the colour is its own."
   :group 'herdr-status)
 
 (defface herdr-status-harness-codex
-  '((((background dark)) :foreground "white")
-    (((background light)) :foreground "black")
+  '((((class color) (min-colors 88) (background dark)) :foreground "#ededed")
+    (((class color) (min-colors 88) (background light)) :foreground "#3c3c3c")
     (t :inherit default))
   "Face for the mark drawn beside a Codex agent."
   :group 'herdr-status)
 
-(defface herdr-status-harness-glyph
-  '((t :height 1.0))
-  "Face lending the vendor marks their size, over their own colour.
-A line is as tall as the tallest glyph on it, and nothing shrinks it
-again, so a mark scaled past 1.0 spreads the whole list."
+(defface herdr-status-nerd-glyph
+  '((t :height 0.75))
+  "Face lending every Nerd Font glyph its size, over its own colour.
+The patched glyphs are drawn larger than the text around them, so they
+are taken down to sit with it.  A line is as tall as the tallest glyph
+on it, and nothing shrinks it again, so a glyph scaled past 1.0 spreads
+the whole list."
+  :group 'herdr-status)
+
+(defcustom herdr-status-nerd-font 'auto
+  "Whether a glyph may be drawn from a Nerd Font.
+`auto' draws one on a graphical frame and leaves a terminal the Unicode
+shape behind it.  Emacs answers that a Private Use Area character is
+displayable whether or not a font holds it, so a graphical frame without
+a patched font draws tofu until this is set to nil.  Non-nil asks for
+the glyph on any display, and nil never draws one."
+  :type '(choice (const :tag "Where a font covers it" auto)
+                 (const :tag "Always" t)
+                 (const :tag "Never" nil))
   :group 'herdr-status)
 
 (defcustom herdr-status-harness-marks
-  '(("claude" "✳" . herdr-status-harness-claude)
-    ("codex" "⌬" . herdr-status-harness-codex))
+  '(("claude" ("\uec82" "✳") . herdr-status-harness-claude)
+    ("codex" ("\uec81" "⌬") . herdr-status-harness-codex))
   "Marks drawn before an agent's harness, keyed by that harness.
 Each entry gives the glyph and the face it is drawn in.  A harness
 without one is drawn blank, so harness names stay in the same column
 either way,
-and a glyph wider than one column pushes them out of it."
+and a glyph wider than one column pushes them out of it.
+
+A glyph may be a list of candidates in order of preference, of which the
+first the display can show is drawn: the vendor logos
+\\='nf-cod-claude\\=' and \\='nf-cod-openai\\=' come first and the
+Unicode marks behind them, and `herdr-status-nerd-font' says whether the
+logos are considered at all."
   :type '(alist :key-type string
-                :value-type (cons (string :tag "Glyph") (face :tag "Face")))
+                :value-type (cons (choice (string :tag "Glyph")
+                                          (repeat (string :tag "Candidate")))
+                                  (face :tag "Face")))
   :group 'herdr-status)
 
 (defcustom herdr-status-state-faces
@@ -150,28 +172,33 @@ a state herdr gains later still renders."
 (defcustom herdr-status-state-glyph "●"
   "String standing for an agent's state.
 Drawn in the state's own face, so the glyph carries the state on rows
-that show no other mark of it."
-  :type 'string
+that show no other mark of it.  A list gives candidates in order of
+preference, of which the first the display can show is drawn."
+  :type '(choice (string :tag "Glyph") (repeat (string :tag "Candidate")))
   :group 'herdr-status)
 
 (defcustom herdr-status-field-glyphs
-  '((pane "▣" "#")
-    (workspace "▤" "")
+  '((pane "\uea85" "▣" "#")
+    (workspace "\ueae3" "▤" "")
     (branch "\uf126" "\ue0a0" "⎇" "@")
-    (directory "⌂" ""))
+    (directory "\uea83" "/" ""))
   "Glyphs leading the fields that trail a row, keyed by field.
 Each entry lists candidates in order of preference and the first one the
-display can show is drawn, so a font without the Nerd Font branch glyphs
-falls back to the Unicode one and a terminal without any of them to `@'.
-An empty candidate draws the field bare."
+display can show is drawn, so a font without the Nerd Font glyphs falls
+back to the Unicode ones and a terminal without any of them to `@'.  An
+empty candidate draws the field bare, and `herdr-status-nerd-font' says
+whether the Nerd Font candidates are considered at all."
   :type '(alist :key-type symbol :value-type (repeat string))
   :group 'herdr-status)
 
 (defcustom herdr-status-state-glyphs '(("idle" . "○"))
   "Glyphs replacing `herdr-status-state-glyph', keyed by agent state.
 An agent waiting for work is drawn hollow; a state without an entry here
-takes the solid bullet in its own colour."
-  :type '(alist :key-type string :value-type string)
+takes the solid bullet in its own colour.  A value takes the same
+candidates `herdr-status-state-glyph' does."
+  :type '(alist :key-type string
+                :value-type (choice (string :tag "Glyph")
+                                    (repeat (string :tag "Candidate"))))
   :group 'herdr-status)
 
 (defcustom herdr-status-name-width nil
@@ -246,6 +273,29 @@ Nil keeps the frame's own width."
 (defcustom herdr-status-buffer-name "*herdr-status*"
   "Name of the dashboard buffer."
   :type 'string
+  :group 'herdr-status)
+
+(defun herdr-status-default-buffer-name ()
+  "Return `herdr-status-buffer-name', one dashboard for the whole Emacs."
+  herdr-status-buffer-name)
+
+(defun herdr-status-workspace-buffer-name ()
+  "Return a dashboard name belonging to the current editor workspace.
+Scope, filters, order and grouping are each local to their dashboard's
+buffer, so a workspace with a dashboard of its own keeps its own."
+  (if-let* ((label (herdr-current-workspace-label)))
+      (format "%s: %s*"
+              (string-remove-suffix "*" herdr-status-buffer-name) label)
+    herdr-status-buffer-name))
+
+(defcustom herdr-status-buffer-name-function #'herdr-status-default-buffer-name
+  "Function answering with the dashboard buffer a command should show.
+`herdr-status-workspace-buffer-name' gives every editor workspace a
+dashboard of its own, which is one fetch per dashboard per refresh."
+  :type '(choice (const :tag "One dashboard" herdr-status-default-buffer-name)
+                 (const :tag "One per editor workspace"
+                        herdr-status-workspace-buffer-name)
+                 function)
   :group 'herdr-status)
 
 (defcustom herdr-status-display-action
@@ -417,17 +467,25 @@ Each pane is returned stamped with its server key."
 
 (defun herdr-status--field-predicate (prompt field)
   "Return a predicate keeping entries whose FIELD matches a read value.
-PROMPT asks for the value among those the dashboard currently shows."
-  (let ((value (herdr-status--read-field prompt field herdr-status--entries)))
+PROMPT asks for the value among those the section at point shows, so
+filtering from inside a herd offers that herd's harnesses and states
+rather than every one the dashboard holds."
+  (let ((value (herdr-status--read-field prompt field
+                                         (herdr-status--entries-in-scope))))
     (lambda (entry) (equal (alist-get field entry) value))))
 
 (defun herdr-status--project-root (directory)
   "Return DIRECTORY's project root, or nil when it cannot be read.
-An agent left in a directory Emacs may not open - one moved to the trash,
-say - answers for no project rather than taking the dashboard down."
+A repository is one project however many checkouts of it are open, so a
+linked worktree answers with the checkout it was made from and scoping
+to a project takes its worktrees along.  Outside a repository the
+project is whatever `herdr-project-root-function' says.  An agent left
+in a directory Emacs may not open - one moved to the trash, say -
+answers for no project rather than taking the dashboard down."
   (when directory
     (condition-case nil
-        (funcall herdr-project-root-function directory)
+        (or (herdr-repository-root directory)
+            (funcall herdr-project-root-function directory))
       (file-error nil))))
 
 (defun herdr-status--project-predicate (&optional root)
@@ -576,23 +634,35 @@ A state left out of the list sorts after the ones in it, by name."
         (if (cdr sort) (nreverse ordered) ordered))
     entries))
 
-(defun herdr-status--within-section-p (type)
-  "Return non-nil when point sits in a section of TYPE or under one."
-  (let ((section (magit-current-section)))
-    (catch 'found
-      (while section
-        (when (eq (oref section type) type)
-          (throw 'found t))
-        (setq section (oref section parent))))))
+(defun herdr-status--section-agents (section)
+  "Return the agents the rows drawn under SECTION stand for, in their order.
+Every part of the dashboard is a set of its own - one herd's members, a
+project's group, the recently used - and this reads that set off what is
+on screen, so a section another package inserted answers like the rest."
+  (let (entries)
+    (cl-labels ((walk (node)
+                  (if (eq (eieio-oref node 'type) 'herdr-status-agent)
+                      (push (eieio-oref node 'value) entries)
+                    (mapc #'walk (eieio-oref node 'children)))))
+      (when section (walk section)))
+    (nreverse entries)))
 
 (defun herdr-status--entries-in-scope ()
   "Return the agents the part of the dashboard at point lists.
-Point in Recent offers the recently used agents, in the order they were
-used; anywhere else offers the agent list, which the project scope and
-the active filters have already narrowed."
-  (if (herdr-status--within-section-p 'herdr-status-recent)
-      (herdr-status-recent-agents)
-    (herdr-status--visible-agents)))
+A command reading agents means the section it was invoked over: one
+herd, one group, the recently used, or one another package inserted.
+Point on a row means the section holding it rather than that row alone.
+The agent list and the dashboard at large answer with the agents the
+project scope and the active filters leave, read afresh rather than off
+the screen, so a filter applies the moment it is added."
+  (let ((section (magit-current-section)))
+    (while (and section (eq (eieio-oref section 'type) 'herdr-status-agent))
+      (setq section (eieio-oref section 'parent)))
+    (or (and section
+             (not (memq (eieio-oref section 'type)
+                        '(herdr-status-root herdr-status-agents)))
+             (herdr-status--section-agents section))
+        (herdr-status--visible-agents))))
 
 (defun herdr-status--visible-agents ()
   "Return the agents left by the active filters, in the order asked for."
@@ -634,11 +704,13 @@ The marker carries the space separating it from the state glyph, so a nil
 (defun herdr-status--state-column (entry)
   "Return the glyph standing for ENTRY's state, in that state's face.
 A pane running no agent has no state to report and is left blank there."
-  (let ((state (herdr-status--state entry)))
+  (let* ((state (herdr-status--state entry))
+         (glyph (herdr-status-glyph
+                 (or (cdr (assoc state herdr-status-state-glyphs))
+                     herdr-status-state-glyph))))
     (if (not (alist-get 'agent entry))
-        (make-string (string-width herdr-status-state-glyph) ?\s)
-      (propertize (or (cdr (assoc state herdr-status-state-glyphs))
-                      herdr-status-state-glyph)
+        (make-string (string-width glyph) ?\s)
+      (propertize glyph
                   'font-lock-face (herdr-status--state-face state)))))
 
 (defun herdr-status--name-width (entries)
@@ -664,15 +736,58 @@ agent this is as much as the tail of a name does."
                                   'herdr-status-label
                                 'herdr-status-label-quiet)))
 
-(defun herdr-status--field-glyph (field)
-  "Return the glyph drawn before FIELD, or the empty string."
-  (let ((candidates (alist-get field herdr-status-field-glyphs)))
-    (or (seq-find (lambda (glyph)
-                    (or (string-empty-p glyph)
-                        (seq-every-p #'char-displayable-p glyph)))
-                  candidates)
+(defun herdr-status--nerd-glyph-p (glyph)
+  "Return non-nil if GLYPH is drawn from a Private Use Area a Nerd Font patches."
+  (seq-some (lambda (char)
+              (or (<= #xe000 char #xf8ff) (<= #xf0000 char #xffffd)))
+            glyph))
+
+(defun herdr-status--glyph-shown-p (glyph)
+  "Return non-nil if this display can draw GLYPH."
+  (and (or (not (herdr-status--nerd-glyph-p glyph))
+           (if (eq herdr-status-nerd-font 'auto)
+               (display-graphic-p)
+             herdr-status-nerd-font))
+       (seq-every-p #'char-displayable-p glyph)))
+
+(defun herdr-status--glyph-faces (glyph face)
+  "Return the faces GLYPH is drawn in, FACE among them.
+A glyph out of a Nerd Font is drawn larger than the text beside it, so
+it takes `herdr-status-nerd-glyph' over its own colour; a Unicode shape
+is already the size of the text and takes FACE alone."
+  (if (herdr-status--nerd-glyph-p glyph)
+      (cons 'herdr-status-nerd-glyph (ensure-list face))
+    face))
+
+(defun herdr-status--glyph-gap (glyph face)
+  "Return the space drawn after GLYPH in FACE.
+A patched glyph is drawn from a font of its own and scaled down, so it
+is not the width of a text column and the fields behind it would sit a
+fraction off the rows that have none.  The space takes back whatever the
+glyph does not use, which holds the pair at two columns however wide the
+glyph is drawn.  A terminal measures in whole columns and needs none of
+it."
+  (if (not (display-graphic-p))
+      " "
+    (let* ((shown (propertize glyph 'face (herdr-status--glyph-faces glyph face)))
+           (rest (- (* 2 (default-font-width)) (string-pixel-width shown))))
+      (if (> rest 0)
+          (propertize " " 'display (list 'space :width (list rest)))
+        " "))))
+
+(defun herdr-status-glyph (glyph)
+  "Return the string GLYPH is drawn as.
+GLYPH is one string or a list of candidates, of which the first the
+display can show wins.  Where none can, the last is drawn anyway: a
+column of tofu still says something was there."
+  (let ((candidates (if (listp glyph) glyph (list glyph))))
+    (or (seq-find #'herdr-status--glyph-shown-p candidates)
         (car (last candidates))
         "")))
+
+(defun herdr-status--field-glyph (field)
+  "Return the glyph drawn before FIELD, or the empty string."
+  (herdr-status-glyph (alist-get field herdr-status-field-glyphs)))
 
 (defun herdr-status--field-column (field value width &optional face)
   "Return VALUE behind FIELD's glyph, padded to WIDTH, in FACE.
@@ -680,25 +795,16 @@ A nil VALUE keeps the column's width in blanks so the rows stay aligned,
 and a zero WIDTH means no row has the field, so nothing is drawn."
   (unless (zerop width)
     (let* ((glyph (herdr-status--field-glyph field))
-           (lead (if (string-empty-p glyph) "" (concat glyph " "))))
+           (face (or face 'herdr-status-meta))
+           (lead (if (string-empty-p glyph)
+                     ""
+                   (concat (propertize glyph 'font-lock-face
+                                       (herdr-status--glyph-faces glyph face))
+                           (herdr-status--glyph-gap glyph face)))))
       (if value
-          (propertize (concat lead (herdr-status--pad value width))
-                      'font-lock-face (or face 'herdr-status-meta))
+          (concat lead (propertize (herdr-status--pad value width)
+                                   'font-lock-face face))
         (make-string (+ (string-width lead) width) ?\s)))))
-
-(defun herdr-status--workspace-shown (entry workspaces)
-  "Return the label WORKSPACES gives ENTRY's workspace, or nil.
-A worktree's workspace is named after its directory, so a label equal to
-the directory's own name is left out rather than said twice on one row."
-  (let ((label (herdr-status--workspace-label entry workspaces))
-        (directory (herdr-entry-directory entry)))
-    (unless (and label directory
-                 (member label
-                         (list (file-name-nondirectory
-                                (directory-file-name directory))
-                               (abbreviate-file-name
-                                (directory-file-name directory)))))
-      label)))
 
 (defun herdr-status--branch (entry)
   "Return the git branch ENTRY's directory is on, or nil outside a repository."
@@ -712,7 +818,7 @@ length varies from row to row."
   (list (herdr-status--field-column 'pane (alist-get 'pane_id entry)
                                     (nth 3 widths))
         (herdr-status--field-column 'workspace
-                                    (herdr-status--workspace-shown entry workspaces)
+                                    (herdr-status--workspace-label entry workspaces)
                                     (nth 4 widths))
         (herdr-status--field-column 'branch (herdr-status--branch entry)
                                     (nth 5 widths))
@@ -729,15 +835,26 @@ length varies from row to row."
   "Return the face ENTRY's harness is drawn in."
   (or (cdr (herdr-status--harness-mark entry)) 'herdr-status-meta))
 
+(defun herdr-status-mark (glyph face &optional property)
+  "Return GLYPH in FACE with the gap holding it to two columns.
+GLYPH is what `herdr-status-glyph' takes, one string or a list of
+candidates.  The glyph carries its faces under PROPERTY, `face' by
+default; a buffer that fontifies its own text passes `font-lock-face'."
+  (let ((glyph (herdr-status-glyph glyph)))
+    (concat (propertize glyph (or property 'face)
+                        (herdr-status--glyph-faces glyph face))
+            (herdr-status--glyph-gap glyph face))))
+
+(defun herdr-status-harness-glyph (harness &optional property)
+  "Return HARNESS's vendor mark and the gap holding it to two columns, or nil.
+The glyph carries its faces under PROPERTY, as `herdr-status-mark' takes it."
+  (when-let* ((mark (cdr (assoc harness herdr-status-harness-marks))))
+    (herdr-status-mark (car mark) (cdr mark) property)))
+
 (defun herdr-status--harness-column (entry width)
   "Return ENTRY's harness padded to WIDTH, behind its vendor mark."
-  (let ((mark (herdr-status--harness-mark entry))
-        (harness (alist-get 'agent entry)))
-    (concat (if mark
-                (propertize (car mark) 'font-lock-face
-                            (list 'herdr-status-harness-glyph (cdr mark)))
-              " ")
-            " "
+  (let ((harness (alist-get 'agent entry)))
+    (concat (or (herdr-status-harness-glyph harness 'font-lock-face) "  ")
             (propertize (herdr-status--pad harness width)
                         'font-lock-face (herdr-status--harness-face entry)))))
 
@@ -802,7 +919,7 @@ exactly the widest value, and zero when no entry has one."
         (herdr-status--width entries (lambda (entry) (alist-get 'pane_id entry)) 0)
         (herdr-status--width entries
                              (lambda (entry)
-                               (herdr-status--workspace-shown entry workspaces))
+                               (herdr-status--workspace-label entry workspaces))
                              0)
         (herdr-status--width entries #'herdr-status--branch 0)))
 
@@ -1234,6 +1351,7 @@ where memex.el is on the load path, and are unbound where it is not."
   "o" #'herdr-status-visit-other-window
   "P" #'herdr-status-prompt
   "R" #'herdr-status-rename
+  "K" #'herdr-status-close-pane
   "d" #'herdr-status-detach
   "x" #'herdr-status-stop
   "f" #'herdr-status-filter
@@ -1429,7 +1547,8 @@ Closes them when none of them is closed already."
 (defun herdr-status--show (&optional project-root)
   "Show the dashboard scoped to PROJECT-ROOT, or globally when nil."
   (let ((directory (or project-root default-directory))
-        (buffer (get-buffer-create herdr-status-buffer-name)))
+        (buffer (get-buffer-create
+                 (funcall herdr-status-buffer-name-function))))
     (with-current-buffer buffer
       (unless (derived-mode-p 'herdr-status-mode)
         (herdr-status-mode))
@@ -1600,39 +1719,96 @@ narrow the prompt to what is on screen; anywhere else offers every agent
 the servers in scope report."
   (herdr-status--agents (herdr-entries-in-scope)))
 
-(defun herdr-status-switch-affixation (entries)
-  "Return a function drawing one of ENTRIES the way its dashboard row reads.
-The state glyph goes in front of the name and the columns the dashboard
-shows go after it, in the faces the dashboard draws them in."
-  (let* ((workspaces (herdr-status--snapshot-index
-                      'workspaces 'workspace_id herdr-status--session-records))
-         (widths (herdr-status--widths entries workspaces)))
-    (lambda (entry)
-      (cons
-       (concat (herdr-status--state-column entry) " ")
-       (concat
-        (make-string (max 2 (- (+ (nth 0 widths) 2)
-                               (string-width (or (herdr--entry-label entry) ""))))
-                     ?\s)
-        (string-join
-         (delq nil
-               (append
-                (list (herdr-status--harness-column entry (nth 1 widths))
-                      (herdr-status--session-column entry (nth 2 widths)))
-                (herdr-status--trailing-columns entry widths workspaces)))
-         "  "))))))
+(defcustom herdr-read-agent-name-width 0.4
+  "How much of the frame an agent's name may take while one is read.
+A float is that share of the frame, an integer that many columns, and
+either way the names take only what the longest of them needs.  What is
+left over is cut, so the columns saying where an agent works stay in
+view however an agent was named."
+  :type '(choice (float :tag "Share of the frame")
+                 (natnum :tag "Columns"))
+  :group 'herdr-status)
+
+(defun herdr-status--agent-place (entry)
+  "Return where ENTRY works, as its project, or PROJECT:CHECKOUT.
+A linked worktree carries its repository's name as well as its own, so
+two checkouts of one project read apart; anything else is its own name."
+  (when-let* ((directory (herdr-entry-directory entry))
+              (own (file-name-nondirectory
+                    (directory-file-name (expand-file-name directory)))))
+    (let ((project (herdr-directory-project directory)))
+      (if (and project (not (equal project own)))
+          (concat project ":" own)
+        (or project own)))))
+
+(defun herdr-status--read-agent-width (entries)
+  "Return the columns ENTRIES' names may take while one is read."
+  (let ((ceiling (if (floatp herdr-read-agent-name-width)
+                     (max 12 (round (* (frame-width) herdr-read-agent-name-width)))
+                   herdr-read-agent-name-width)))
+    (min ceiling (herdr-status--width entries #'herdr--entry-label 8))))
+
+(defun herdr-status--shown-faces (string)
+  "Return STRING with its `font-lock-face' properties restated as `face'.
+The dashboard's columns are drawn for a font-locked buffer, and the
+minibuffer renders `face' while ignoring the other, so a row reused
+there arrives colourless without this."
+  (let ((shown (copy-sequence string))
+        (position 0))
+    (while (< position (length shown))
+      (let ((next (or (next-single-property-change position 'font-lock-face shown)
+                      (length shown)))
+            (face (get-text-property position 'font-lock-face shown)))
+        (when face (put-text-property position next 'face face shown))
+        (setq position next)))
+    shown))
+
+(defun herdr-status--read-agent-affixation (entries)
+  "Return the function drawing one of ENTRIES as a row to pick from.
+It is called with a candidate and its entry and answers with the name to
+show, what goes before it and what goes after.  The state leads, the
+name is cut to the width the longest one is allowed, and the harness,
+branch and working directory follow it in columns.  The pane and
+workspace the dashboard shows are left out: nobody picks an agent by
+them."
+  (let ((name (herdr-status--read-agent-width entries))
+        (harness (herdr-status--width entries
+                                      (lambda (entry) (alist-get 'agent entry)) 6))
+        (branch (herdr-status--width entries #'herdr-status--branch 0))
+        (session (herdr-status--width entries #'herdr-status--session-name 6))
+        (many (cdr (herdr-known-sessions))))
+    (lambda (candidate entry)
+      (let ((shown (truncate-string-to-width candidate name nil nil t)))
+        (list
+         shown
+         (herdr-status--shown-faces
+          (concat (herdr-status--attached-column entry)
+                  (herdr-status--state-column entry) " "))
+         (herdr-status--shown-faces
+          (concat
+           (make-string (max 2 (- (+ name 2) (string-width shown))) ?\s)
+           (string-join
+            (delq nil
+                  (list (herdr-status--harness-column entry harness)
+                        (when many
+                          (propertize (herdr-status--pad
+                                       (herdr-status--session-name entry) session)
+                                      'font-lock-face 'herdr-status-meta))
+                        (when (> branch 0)
+                          (propertize (herdr-status--pad
+                                       (herdr-status--branch entry) branch)
+                                      'font-lock-face 'herdr-status-meta))
+                        (when-let* ((place (herdr-status--agent-place entry)))
+                          (propertize place 'font-lock-face 'herdr-status-path))))
+            "  "))))))))
 
 ;;;###autoload
 (defun herdr-status-switch (entry &optional focus)
   "Show the running agent ENTRY, read with completion.
 FOCUS, the prefix argument, moves herdr itself to the agent's pane
 instead, the way it does for `herdr-status-visit'."
-  (interactive
-   (let ((entries (herdr-status-switch-agents)))
-     (list (herdr-read-entry "Switch to agent: " entries
-                             :affixation (herdr-status-switch-affixation entries)
-                             :group nil)
-           current-prefix-arg)))
+  (interactive (list (herdr-read-agent "Switch to agent: ")
+                     current-prefix-arg))
   (if focus
       (herdr-agent-switch (herdr--entry-target entry))
     (herdr-visit entry)))
@@ -1643,11 +1819,38 @@ instead, the way it does for `herdr-status-visit'."
   (herdr-agent-prompt (herdr-status--target-at-point) text)
   (herdr-status-refresh))
 
-(defun herdr-status-rename (name)
-  "Rename the agent at point to NAME."
-  (interactive (list (read-string "Agent name: ")))
-  (herdr-agent-rename (herdr-status--target-at-point) name)
+(defun herdr-status-rename (name &optional entry)
+  "Rename what point stands for to NAME, or ENTRY when one is given.
+An agent has a name of its own, which herdr's agent API sets.  A plain
+pane has the label its row reads by instead, and that is what is set."
+  (interactive
+   (let ((entry (herdr-status--attachable-at-point)))
+     (list (read-string (if (alist-get 'agent entry) "Agent name: " "Pane name: "))
+           entry)))
+  (let ((entry (or entry (herdr-status--attachable-at-point))))
+    (if (alist-get 'agent entry)
+        (herdr-agent-rename (herdr--entry-target entry) name)
+      (herdr-with-session (alist-get 'session entry)
+        (herdr-api-pane-rename (alist-get 'pane_id entry) :label name))))
   (herdr-status-refresh))
+
+(defun herdr-status-close-pane ()
+  "Close the pane at point, after confirmation.
+An agent in that pane goes with it; `herdr-status-stop' is the same
+close said from the agent's side, and `herdr-status-detach' is the one
+that lets go without closing anything."
+  (interactive)
+  (let* ((entry (herdr-status--attachable-at-point))
+         (label (or (herdr--entry-label entry) (alist-get 'pane_id entry))))
+    (when (yes-or-no-p (format "Close pane %s? " label))
+      (when-let* ((session (ignore-error user-error
+                             (herdr-agent-resolve-session
+                              (herdr--entry-target entry)))))
+        (herdr-agent-detach session))
+      (herdr-with-session (alist-get 'session entry)
+        (herdr-api-pane-close (alist-get 'pane_id entry)))
+      (herdr-status-refresh)
+      (message "Closed pane %s" label))))
 
 (defun herdr-status--attachment-at-point ()
   "Return the Emacs session attached to the agent at point, or nil."
@@ -1848,6 +2051,9 @@ Every suffix here is bound directly in `herdr-status-mode-map' as well."
     ("t" herdr-status-toggle-details
      :description herdr-status--details-description)
     ("g" "refresh" herdr-status-refresh)]
+   ["Pane"
+    ("R" "rename" herdr-status-rename)
+    ("K" "close" herdr-status-close-pane)]
    ["Herd"
     ("h" "herds" herdr-herd-dispatch)]
    ["Search"

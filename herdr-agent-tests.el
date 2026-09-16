@@ -187,14 +187,14 @@
       (should (equal (herdr-agent-read (cons server "terminal-1"))
                      "λ screen\nSubmit")))
     (should (equal (nreverse calls)
-                   `((,server "agent.read" ((source . "screen")
+                   `((,server "agent.read" ((source . "visible")
                                            (target . "terminal-2")
                                            (strip_ansi . t)))
-                     (,server "agent.read" ((source . "screen")
+                     (,server "agent.read" ((source . "visible")
                                            (target . "terminal-1")
                                            (strip_ansi . t)))
                      (,server "agent.list" nil)
-                     (,server "agent.read" ((source . "screen")
+                     (,server "agent.read" ((source . "visible")
                                            (target . "pane-1")
                                            (strip_ansi . t))))))))
 
@@ -2109,6 +2109,13 @@ to be reached through the server it was found on."
          (package-root (make-temp-file "herdr-agent-shadow-package" t))
          (shadow-directory (expand-file-name "herdr-0.0.0" package-root))
          (buffer (generate-new-buffer " *herdr-agent-clean-load*"))
+         (dependency-load-path
+          (cl-remove-if
+           (lambda (directory)
+             (or (not (stringp directory))
+                 (equal (file-name-as-directory directory)
+                        (file-name-as-directory root))))
+           load-path))
          status output)
     (unwind-protect
         (progn
@@ -2127,7 +2134,8 @@ to be reached through the server it was found on."
                   (concat
                    "(progn (require 'package) "
                    "(setq package-directory-list (cons %S package-directory-list)) "
-                   "(package-initialize) (setq load-path (cons %S (delete %S load-path))) "
+                   "(package-initialize) "
+                   "(setq load-path (cons %S (append '%S (delete %S load-path)))) "
                    "(global-set-key (kbd \"C-c h\") #'ignore) "
                    "(require 'herdr-transient) "
                    "(unless (eq (lookup-key global-map (kbd \"C-c h\")) #'ignore) "
@@ -2137,7 +2145,7 @@ to be reached through the server it was found on."
                    "(error \"Claude harness registration is not singular\")) "
                    "(when (or (featurep 'limen) (featurep 'websocket)) "
                    "(error \"Generic transient eagerly loaded an integration\")))")
-                  package-root root root))))
+                  package-root root dependency-load-path root))))
       (setq output (with-current-buffer buffer (buffer-string)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
@@ -2565,6 +2573,8 @@ to be reached through the server it was found on."
           (herdr-send-context-functions
            (list (lambda (entry) (format "context:%s" (alist-get 'name entry)))))
           (herdr-message-history nil)
+          (herdr-message-read-function #'herdr-message-read-minibuffer)
+          (herdr-message-show-agent nil)
           (herdr--recent-session-targets nil)
           (herdr--project-agents nil)
           (herdr--workspace-agents nil)
@@ -2574,12 +2584,14 @@ to be reached through the server it was found on."
      (cl-letf (((symbol-function 'herdr-sessions) (lambda () entries))
                ((symbol-function 'herdr-agent-prompt)
                 (lambda (target text) (push (list target text) prompts)))
+               ((symbol-function 'read-string)
+                (lambda (_prompt &optional _initial history &rest _)
+                  (push history message-reads)
+                  "do it"))
                ((symbol-function 'completing-read)
-                (lambda (prompt collection &rest _)
-                  (if (string-prefix-p "Message: " prompt)
-                      (progn (push collection message-reads) "do it")
-                    (push prompt agent-reads)
-                    "worktree"))))
+                (lambda (prompt &rest _)
+                  (push prompt agent-reads)
+                  "worktree")))
        ,@body)))
 
 (ert-deftest herdr-message-last-project-session-uses-the-mru-without-choosing ()
@@ -2595,7 +2607,99 @@ to be reached through the server it was found on."
     (should (equal herdr-message-history '("do it")))
     (herdr-message-project-session)
     (should (equal agent-reads '("Message agent: ")))
-    (should (equal (car message-reads) '("do it")))))
+    (should (equal message-reads '(herdr-message-history herdr-message-history)))))
+
+(ert-deftest herdr-message-read-writes-a-field-under-the-source-or-asks-in-the-minibuffer ()
+  (let ((herdr-message-history '("earlier"))
+        (herdr-message-read-function #'herdr-message-read-field)
+        (target '("/servers/a.sock" . "shared"))
+        (history-add-new-input t)
+        prompts fields reads)
+    (cl-letf (((symbol-function 'herdr-agent-prompt)
+               (lambda (target text) (push (list target text) prompts)))
+              ((symbol-function 'herdr-sessions) (lambda () nil))
+              ((symbol-function 'cera-read)
+               (lambda (table &optional initial bounds face)
+                 (should-not face)
+                 (push (list table initial bounds) fields)
+                 "from the field"))
+              ((symbol-function 'read-string)
+               (lambda (prompt &optional _initial history &rest _)
+                 (push (list prompt history history-add-new-input) reads)
+                 "from the minibuffer")))
+      (with-temp-buffer
+        (insert "alpha\nbeta\n")
+        (setq buffer-file-name "/tmp/herdr-field.el")
+        (let ((transient-mark-mode t))
+          (goto-char (point-min))
+          (set-mark (point))
+          (forward-line 1)
+          (setq mark-active t)
+          (herdr-message--read target "ctx")))
+      (with-temp-buffer
+        (insert "row")
+        (herdr-message--read target nil))
+      (with-temp-buffer
+        (let ((process (make-process :name "herdr-field-test"
+                                     :buffer (current-buffer)
+                                     :command '("cat") :noquery t)))
+          (unwind-protect
+              (herdr-message--read target nil)
+            (delete-process process)))))
+    (should (equal fields '((("from the field" "earlier") nil (1 . 4))
+                            (("earlier") nil (1 . 7)))))
+    (should (equal reads '(("Message: " herdr-message-history nil))))
+    (should (equal (nreverse prompts)
+                   `((,target "from the field\n\n---\nctx")
+                     (,target "from the field")
+                     (,target "from the minibuffer"))))
+    (should (equal herdr-message-history
+                   '("from the minibuffer" "from the field" "earlier")))))
+
+(ert-deftest herdr-message-send-shows-the-agent-without-selecting-it ()
+  (let ((herdr-message-history nil)
+        (herdr-message-read-function #'herdr-message-read-minibuffer)
+        (target '("/servers/a.sock" . "shared"))
+        (terminal (generate-new-buffer " *herdr shown terminal*"))
+        visits)
+    (unwind-protect
+        (cl-letf (((symbol-function 'herdr-agent-prompt) #'ignore)
+                  ((symbol-function 'herdr-sessions)
+                   (lambda ()
+                     '(((server_key . "/servers/a.sock") (terminal_id . "shared")
+                        (agent . "claude") (name . "shared")))))
+                  ((symbol-function 'herdr-visit)
+                   (lambda (entry) (push entry visits) nil))
+                  ((symbol-function 'read-string) (lambda (&rest _) "hello")))
+          (save-window-excursion
+            (delete-other-windows)
+            (let ((origin (selected-window)))
+              (herdr-message--read target nil)
+              (should (equal (alist-get 'name (car visits)) "shared"))
+              (with-current-buffer terminal
+                (setq herdr-terminal-id "shared"
+                      herdr-terminal-server-key "/servers/a.sock"))
+              (let ((process (make-process :name "herdr-shown" :buffer terminal
+                                           :command '("cat") :noquery t)))
+                (unwind-protect
+                    (progn
+                      (herdr-message--read target nil)
+                      (should (= (length visits) 1))
+                      (should (get-buffer-window terminal))
+                      (should (eq (selected-window) origin))
+                      (let ((windows (length (window-list))))
+                        (herdr-message--read target nil)
+                        (should (= (length (window-list)) windows)))
+                      (delete-other-windows)
+                      (with-current-buffer (herdr-message--edit target "draft" nil)
+                        (herdr-message-send))
+                      (should (get-buffer-window terminal))
+                      (delete-other-windows)
+                      (let ((herdr-message-show-agent nil))
+                        (herdr-message--read target nil)
+                        (should-not (get-buffer-window terminal))))
+                  (delete-process process))))))
+      (kill-buffer terminal))))
 
 (ert-deftest herdr-message-editor-sends-captured-context-or-cancels ()
   (let ((herdr-message-history nil)
@@ -2698,6 +2802,145 @@ to be reached through the server it was found on."
                         :type 'user-error)
           (should-error (call-interactively #'herdr-associate-workspace-agent)
                         :type 'user-error))))))
+
+(ert-deftest herdr-foreground-entry-prefers-mru-then-herdr-focus-then-any-agent ()
+  (let* ((entries (herdr-agent-tests--message-fixture))
+         (worktree (nth 0 entries))
+         (focused (cons '(focused . t) (nth 1 entries)))
+         (other (nth 2 entries))
+         (herdr--recent-session-targets nil))
+    (should-not (herdr-agent--foreground-entry entries))
+    (should-not (herdr-agent--foreground-entry nil))
+    (should-not (herdr-agent--foreground-entry nil t))
+    (should (eq (herdr-agent--foreground-entry entries t) worktree))
+    (should (eq (herdr-agent--foreground-entry (list worktree focused other))
+                focused))
+    (setq herdr--recent-session-targets
+          '(("/servers/gone.sock" . "gone") ("/servers/other.sock" . "other")))
+    (should (eq (herdr-agent--foreground-entry (list worktree focused other))
+                other))))
+
+(ert-deftest herdr-message-foreground-session-messages-the-foreground-agent-or-reads-one ()
+  (herdr-agent-tests--with-message-fixture
+    (setq herdr--recent-session-targets
+          '(("/servers/other.sock" . "other") ("/servers/main.sock" . "shared")))
+    (herdr-message-foreground-session)
+    (should-not agent-reads)
+    (should (equal (car prompts)
+                   '(("/servers/main.sock" . "shared")
+                     "do it\n\n---\ncontext:main")))
+    (herdr-message-foreground-session t)
+    (should (equal agent-reads '("Agent: ")))
+    (should (equal (car prompts)
+                   '(("/servers/worktree.sock" . "shared")
+                     "do it\n\n---\ncontext:worktree")))))
+
+(ert-deftest herdr-toggle-agent-hides-the-shown-agent-or-shows-the-foreground-one ()
+  (herdr-agent-tests--with-message-fixture
+    (let ((herdr-agent--buffers (make-hash-table :test #'eq))
+          (buffer (generate-new-buffer " *herdr toggle*"))
+          visits)
+      (unwind-protect
+          (cl-letf (((symbol-function 'herdr-visit)
+                     (lambda (entry) (push entry visits) nil)))
+            (save-window-excursion
+              (delete-other-windows)
+              (puthash buffer '("/servers/worktree.sock" . "shared")
+                       herdr-agent--buffers)
+              (set-window-buffer (split-window) buffer)
+              (should (= (length (window-list)) 2))
+              (herdr-toggle-agent)
+              (should (= (length (window-list)) 1))
+              (should-not visits)
+              (setq herdr--recent-session-targets
+                    '(("/servers/main.sock" . "shared")))
+              (herdr-toggle-agent)
+              (should (equal (alist-get 'name (car visits)) "main"))
+              (should-not agent-reads)
+              (herdr-toggle-agent t)
+              (should (equal agent-reads '("Agent: ")))
+              (should (equal (alist-get 'name (car visits)) "worktree"))))
+        (kill-buffer buffer)))))
+
+(ert-deftest herdr-agent-notes-the-selected-attachment-as-foreground ()
+  (let ((herdr-agent--buffers (make-hash-table :test #'eq))
+        (herdr--recent-session-targets '(("/servers/a.sock" . "old")))
+        (buffer (generate-new-buffer " *herdr foreground*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (herdr-agent--watch-buffer (herdr-agent--make-session :buffer buffer))
+          (should (memq #'herdr-agent--note-foreground
+                        (buffer-local-value 'window-state-change-functions
+                                            buffer)))
+          (puthash buffer '("/servers/a.sock" . "new") herdr-agent--buffers)
+          (let ((other (split-window)))
+            (set-window-buffer other buffer)
+            (herdr-agent--note-foreground other)
+            (should (equal herdr--recent-session-targets
+                           '(("/servers/a.sock" . "old"))))
+            (select-window other)
+            (herdr-agent--note-foreground other)
+            (should (equal herdr--recent-session-targets
+                           '(("/servers/a.sock" . "new")
+                             ("/servers/a.sock" . "old"))))
+            (setq herdr--recent-session-targets '(("/servers/a.sock" . "old")))
+            (cl-letf (((symbol-function 'old-selected-window)
+                       (lambda () (minibuffer-window)))
+                      ((symbol-function 'window-old-buffer)
+                       (lambda (_window) buffer)))
+              (herdr-agent--note-foreground other)
+              (should (equal herdr--recent-session-targets
+                             '(("/servers/a.sock" . "old")))))))
+      (kill-buffer buffer))))
+
+(ert-deftest herdr-agent-shown-window-prefers-the-selected-then-the-most-recent-agent ()
+  (let ((herdr-agent--buffers (make-hash-table :test #'eq))
+        (herdr--recent-session-targets nil)
+        (first (generate-new-buffer " *herdr shown first*"))
+        (second (generate-new-buffer " *herdr shown second*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (puthash first '("/servers/a.sock" . "first") herdr-agent--buffers)
+          (puthash second '("/servers/a.sock" . "second") herdr-agent--buffers)
+          (let* ((window-first (split-window))
+                 (window-second (split-window window-first)))
+            (set-window-buffer window-first first)
+            (set-window-buffer window-second second)
+            (should (memq (herdr-agent--shown-window)
+                          (list window-first window-second)))
+            (setq herdr--recent-session-targets '(("/servers/a.sock" . "second")))
+            (should (eq (herdr-agent--shown-window) window-second))
+            (select-window window-first)
+            (should (eq (herdr-agent--shown-window) window-first))))
+      (kill-buffer first)
+      (kill-buffer second))))
+
+(ert-deftest herdr-message-minibuffer-hand-off-opens-the-editor-without-sending ()
+  (let ((herdr-message-history nil)
+        (target '("/servers/a.sock" . "shared"))
+        prompts editor)
+    (cl-letf (((symbol-function 'herdr-agent-prompt)
+               (lambda (target text) (push (list target text) prompts)))
+              ((symbol-function 'herdr-sessions) (lambda () nil))
+              ((symbol-function 'minibuffer-contents) (lambda () "half"))
+              ((symbol-function 'read-string)
+               (lambda (&rest _)
+                 (funcall (catch 'exit (herdr-message-edit-from-minibuffer)))
+                 "half")))
+      (save-window-excursion
+        (with-temp-buffer
+          (herdr-message-read-minibuffer target "ctx"))
+        (setq editor (get-buffer "*herdr message*"))
+        (unwind-protect
+            (progn
+              (should (buffer-live-p editor))
+              (should (equal (with-current-buffer editor (buffer-string)) "half"))
+              (should-not prompts)
+              (with-current-buffer editor (herdr-message-send))
+              (should (equal prompts `((,target "half\n\n---\nctx")))))
+          (when (buffer-live-p editor) (kill-buffer editor)))))))
 
 (provide 'herdr-agent-tests)
 ;;; herdr-agent-tests.el ends here
