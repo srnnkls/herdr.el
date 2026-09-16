@@ -985,6 +985,35 @@ attachment; TIMEOUT-MS limits startup."
     (herdr-agent--with-server (herdr-agent-session-server session)
       (herdr-api-pane-send-text (herdr-agent-session-pane session) text))))
 
+(defun herdr-agent-paste (target text)
+  "Paste TEXT into TARGET's pane through `pane.send_input'.
+TEXT is passed unchanged, without an added submit key.  Bracketed-paste
+protection depends on the receiving terminal's mode; without it, newlines
+may submit input."
+  (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
+    (herdr-agent--with-server server-key
+      (herdr-agent--call-with-request-target
+       server-key terminal
+       (lambda (request-target)
+         (let ((pane (if-let* ((session (herdr-agent-find server-key terminal)))
+                         (herdr-agent-session-pane session)
+                       (alist-get 'pane_id
+                                  (alist-get 'agent
+                                             (herdr-api-agent-get request-target))))))
+           (herdr-api-pane-send-input pane :text text)))))))
+
+(defun herdr-agent-read (target)
+  "Return TARGET's current screen text with ANSI escapes stripped."
+  (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
+    (herdr-agent--with-server server-key
+      (herdr-agent--call-with-request-target
+       server-key terminal
+       (lambda (request-target)
+         (alist-get 'text
+                    (alist-get 'read
+                               (herdr-api-agent-read
+                                "screen" request-target :strip-ansi t))))))))
+
 (defun herdr-agent-prompt (target text)
   "Send TEXT to TARGET through herdr's agent API."
   (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
