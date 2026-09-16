@@ -18,9 +18,9 @@
 (require 'herdr-agent)
 (require 'herdr-status)
 
-(defun herdr-transient--kind ()
-  "Read a registered agent harness kind."
-  (completing-read "Agent kind: " (mapcar #'car herdr-agent-harnesses) nil t))
+(defun herdr-transient--harness ()
+  "Read a registered agent harness."
+  (completing-read "Harness: " (mapcar #'car herdr-agent-harnesses) nil t))
 
 (defun herdr-transient--name ()
   "Read an agent name."
@@ -28,17 +28,17 @@
 
 (defun herdr-transient--start (kind name)
   "Start KIND named NAME."
-  (interactive (list (herdr-transient--kind) (herdr-transient--name)))
+  (interactive (list (herdr-transient--harness) (herdr-transient--name)))
   (herdr-agent-start kind name))
 
 (defun herdr-transient--continue (kind name)
   "Continue KIND named NAME."
-  (interactive (list (herdr-transient--kind) (herdr-transient--name)))
+  (interactive (list (herdr-transient--harness) (herdr-transient--name)))
   (herdr-agent-continue kind name))
 
 (defun herdr-transient--resume (kind name reference)
   "Resume KIND named NAME from REFERENCE."
-  (interactive (list (herdr-transient--kind)
+  (interactive (list (herdr-transient--harness)
                      (herdr-transient--name)
                      (read-string "Session reference: ")))
   (herdr-agent-resume kind name reference))

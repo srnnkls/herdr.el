@@ -104,32 +104,33 @@ reads as brown beside the other states, so the colour is its own."
   "Face for an agent state herdr did not report."
   :group 'herdr-status)
 
-(defface herdr-status-kind-claude
+(defface herdr-status-harness-claude
   '((((class color) (min-colors 88)) :foreground "#d97757")
     (t :inherit warning))
   "Face for the mark drawn beside a Claude Code agent."
   :group 'herdr-status)
 
-(defface herdr-status-kind-codex
+(defface herdr-status-harness-codex
   '((((background dark)) :foreground "white")
     (((background light)) :foreground "black")
     (t :inherit default))
   "Face for the mark drawn beside a Codex agent."
   :group 'herdr-status)
 
-(defface herdr-status-kind-glyph
+(defface herdr-status-harness-glyph
   '((t :height 1.0))
   "Face lending the vendor marks their size, over their own colour.
 A line is as tall as the tallest glyph on it, and nothing shrinks it
 again, so a mark scaled past 1.0 spreads the whole list."
   :group 'herdr-status)
 
-(defcustom herdr-status-kind-marks
-  '(("claude" "✳" . herdr-status-kind-claude)
-    ("codex" "⌬" . herdr-status-kind-codex))
-  "Marks drawn before an agent's harness kind, keyed by that kind.
-Each entry gives the glyph and the face it is drawn in.  A kind without
-one is drawn blank, so kind names stay in the same column either way,
+(defcustom herdr-status-harness-marks
+  '(("claude" "✳" . herdr-status-harness-claude)
+    ("codex" "⌬" . herdr-status-harness-codex))
+  "Marks drawn before an agent's harness, keyed by that harness.
+Each entry gives the glyph and the face it is drawn in.  A harness
+without one is drawn blank, so harness names stay in the same column
+either way,
 and a glyph wider than one column pushes them out of it."
   :type '(alist :key-type string
                 :value-type (cons (string :tag "Glyph") (face :tag "Face")))
@@ -447,8 +448,8 @@ say - answers for no project rather than taking the dashboard down."
         (equal label (herdr-workspace-label cwd))))))
 
 (defvar herdr-status-predicates
-  `((agent-kind . ,(lambda ()
-                     (herdr-status--field-predicate "Agent kind: " 'agent)))
+  `((agent-harness . ,(lambda ()
+                     (herdr-status--field-predicate "Harness: " 'agent)))
     (agent-state . ,(lambda ()
                       (herdr-status--field-predicate "Agent state: "
                                                      'agent_status)))
@@ -475,7 +476,7 @@ no filter.  Adding an element makes a custom filter available to
 (defcustom herdr-status-sorts
   '(("state" . herdr-status--state-key)
     ("name" . herdr-status--label-key)
-    ("kind" . herdr-status--kind-key)
+    ("harness" . herdr-status--harness-key)
     ("pane" . herdr-status--pane-key)
     ("session" . herdr-status--session-name)
     ("directory" . herdr-status--directory-key))
@@ -499,7 +500,7 @@ Nil leaves the order herdr reports the agents in.")
   '(("project" . herdr-status--project-group)
     ("directory" . herdr-status--directory-key)
     ("session" . herdr-status--session-name)
-    ("kind" . herdr-status--kind-key)
+    ("harness" . herdr-status--harness-key)
     ("state" . herdr-status--state))
   "Units the agent list can be grouped by, named after what they group by.
 Each value is a function of one entry answering with the group it belongs
@@ -536,8 +537,8 @@ in.  An entry the function answers nil for is grouped under `none'.
   "Return ENTRY's name, downcased for ordering."
   (downcase (or (herdr--entry-label entry) "")))
 
-(defun herdr-status--kind-key (entry)
-  "Return ENTRY's harness kind."
+(defun herdr-status--harness-key (entry)
+  "Return ENTRY's harness."
   (or (alist-get 'agent entry) ""))
 
 (defun herdr-status--pane-key (entry)
@@ -720,25 +721,25 @@ length varies from row to row."
                                       (string-width directory)
                                       'herdr-status-path))))
 
-(defun herdr-status--kind-mark (entry)
-  "Return the glyph and face marking ENTRY's harness kind, or nil."
-  (cdr (assoc (alist-get 'agent entry) herdr-status-kind-marks)))
+(defun herdr-status--harness-mark (entry)
+  "Return the glyph and face marking ENTRY's harness, or nil."
+  (cdr (assoc (alist-get 'agent entry) herdr-status-harness-marks)))
 
-(defun herdr-status--kind-face (entry)
-  "Return the face ENTRY's harness kind is drawn in."
-  (or (cdr (herdr-status--kind-mark entry)) 'herdr-status-meta))
+(defun herdr-status--harness-face (entry)
+  "Return the face ENTRY's harness is drawn in."
+  (or (cdr (herdr-status--harness-mark entry)) 'herdr-status-meta))
 
-(defun herdr-status--kind-column (entry width)
-  "Return ENTRY's harness kind padded to WIDTH, behind its vendor mark."
-  (let ((mark (herdr-status--kind-mark entry))
-        (kind (alist-get 'agent entry)))
+(defun herdr-status--harness-column (entry width)
+  "Return ENTRY's harness padded to WIDTH, behind its vendor mark."
+  (let ((mark (herdr-status--harness-mark entry))
+        (harness (alist-get 'agent entry)))
     (concat (if mark
                 (propertize (car mark) 'font-lock-face
-                            (list 'herdr-status-kind-glyph (cdr mark)))
+                            (list 'herdr-status-harness-glyph (cdr mark)))
               " ")
             " "
-            (propertize (herdr-status--pad kind width)
-                        'font-lock-face (herdr-status--kind-face entry)))))
+            (propertize (herdr-status--pad harness width)
+                        'font-lock-face (herdr-status--harness-face entry)))))
 
 (defun herdr-status--width (entries function minimum)
   "Return the widest FUNCTION of ENTRIES, never below MINIMUM."
@@ -771,7 +772,7 @@ length varies from row to row."
 
 (defun herdr-status--row (entry widths workspaces)
   "Return the single line drawn for ENTRY.
-WIDTHS holds the label, kind, session, pane, workspace and branch column
+WIDTHS holds the label, harness, session, pane, workspace and branch column
 widths, and WORKSPACES resolves the workspace label."
   (concat
    (herdr-status--attached-column entry)
@@ -780,7 +781,7 @@ widths, and WORKSPACES resolves the workspace label."
     (delq nil
           (append
            (list (herdr-status--label-column entry (nth 0 widths))
-                 (herdr-status--kind-column entry (nth 1 widths))
+                 (herdr-status--harness-column entry (nth 1 widths))
                  (herdr-status--session-column entry (nth 2 widths)))
            (herdr-status--trailing-columns entry widths workspaces)))
     "  ")))
@@ -793,7 +794,7 @@ draw an agent on the same columns as the agent list with this."
 
 (defun herdr-status--widths (entries workspaces)
   "Return the column widths fitting ENTRIES, labelled via WORKSPACES.
-Label, kind and session keep a floor; pane, workspace and branch take
+Label, harness and session keep a floor; pane, workspace and branch take
 exactly the widest value, and zero when no entry has one."
   (list (herdr-status--name-width entries)
         (herdr-status--width entries (lambda (entry) (alist-get 'agent entry)) 6)
@@ -970,7 +971,7 @@ itself is drawn apart from the words around it."
           (prefix (if rule
                       (concat " "
                               (propertize rule 'font-lock-face
-                                          (herdr-status--kind-face entry))
+                                          (herdr-status--harness-face entry))
                               " ")
                     (make-string (+ 2 (string-width
                                        herdr-status-preview-rule))
@@ -1616,7 +1617,7 @@ shows go after it, in the faces the dashboard draws them in."
         (string-join
          (delq nil
                (append
-                (list (herdr-status--kind-column entry (nth 1 widths))
+                (list (herdr-status--harness-column entry (nth 1 widths))
                       (herdr-status--session-column entry (nth 2 widths)))
                 (herdr-status--trailing-columns entry widths workspaces)))
          "  "))))))
@@ -1705,10 +1706,10 @@ on, and attaching again picks it back up."
   (setq herdr-status--filters nil)
   (herdr-status-refresh))
 
-(defun herdr-status-filter-by-kind ()
-  "Keep only agents of one harness kind."
+(defun herdr-status-filter-by-harness ()
+  "Keep only agents of one harness."
   (interactive)
-  (herdr-status--push-filter 'agent-kind))
+  (herdr-status--push-filter 'agent-harness))
 
 (defun herdr-status-filter-by-state ()
   "Keep only agents in one state."
@@ -1788,7 +1789,7 @@ on, and attaching again picks it back up."
   [["Column"
     ("s" "state" (lambda () (interactive) (herdr-status-sort-by "state")))
     ("n" "name" (lambda () (interactive) (herdr-status-sort-by "name")))
-    ("k" "kind" (lambda () (interactive) (herdr-status-sort-by "kind")))]
+    ("h" "harness" (lambda () (interactive) (herdr-status-sort-by "harness")))]
    ["Where"
     ("p" "pane" (lambda () (interactive) (herdr-status-sort-by "pane")))
     ("S" "session" (lambda () (interactive) (herdr-status-sort-by "session")))
@@ -1803,7 +1804,7 @@ on, and attaching again picks it back up."
 (transient-define-prefix herdr-status-filter ()
   "Filter the herdr dashboard's agent list."
   [["Field"
-    ("k" "kind" herdr-status-filter-by-kind)
+    ("h" "harness" herdr-status-filter-by-harness)
     ("S" "state" herdr-status-filter-by-state)]
    ["Scope"
     ("p" "project" herdr-status-filter-by-project)

@@ -182,11 +182,11 @@
     (goto-char (point-min))
     (should (re-search-forward "✳ claude" nil t))
     (should (equal (get-text-property (match-beginning 0) 'font-lock-face)
-                   '(herdr-status-kind-glyph herdr-status-kind-claude)))
+                   '(herdr-status-harness-glyph herdr-status-harness-claude)))
     (goto-char (point-min))
     (should (re-search-forward "⌬ codex" nil t))
     (should (equal (get-text-property (match-beginning 0) 'font-lock-face)
-                   '(herdr-status-kind-glyph herdr-status-kind-codex)))))
+                   '(herdr-status-harness-glyph herdr-status-harness-codex)))))
 
 (ert-deftest herdr-status-leaves-magit-its-own-visibility-indicators ()
   (let ((magit-section-visibility-indicators
@@ -206,13 +206,13 @@
                      herdr-status-visibility-indicators))
       (should (> left-margin-width 0)))))
 
-(ert-deftest herdr-status-keeps-an-unmarked-kind-in-the-kind-column ()
-  (let ((herdr-status-kind-marks '(("claude" "✳" . herdr-status-kind-claude))))
-    (should (equal (herdr-status--kind-column '((agent . "codex")) 6)
+(ert-deftest herdr-status-keeps-an-unmarked-harness-in-its-column ()
+  (let ((herdr-status-harness-marks '(("claude" "✳" . herdr-status-harness-claude))))
+    (should (equal (herdr-status--harness-column '((agent . "codex")) 6)
                    "  codex "))
-    (should (equal (herdr-status--kind-column '((agent . "claude")) 6)
+    (should (equal (herdr-status--harness-column '((agent . "claude")) 6)
                    (concat (propertize "✳" 'font-lock-face
-                                       'herdr-status-kind-claude)
+                                       'herdr-status-harness-claude)
                            " claude")))))
 
 (ert-deftest herdr-status-rows-carry-pane-and-workspace-metadata ()
@@ -291,7 +291,7 @@
 (ert-deftest herdr-status-filters-compose-conjunctively ()
   (herdr-status-tests--with-dashboard
     (setq herdr-status--filters
-          (list (cons 'agent-kind
+          (list (cons 'agent-harness
                       (lambda (entry) (equal (alist-get 'agent entry) "claude")))
                 (cons 'agent-state
                       (lambda (entry)
@@ -446,7 +446,7 @@
 
 (ert-deftest herdr-status-draws-every-agent-inside-its-group ()
   (herdr-status-tests--with-dashboard
-    (herdr-status-group-by "kind")
+    (herdr-status-group-by "harness")
     (should (equal (mapcar (lambda (section)
                              (herdr--entry-label (oref section value)))
                            (herdr-status-tests--agent-sections))
@@ -472,7 +472,7 @@
 
 (ert-deftest herdr-status-groups-the-agents-by-the-unit-it-is-given ()
   (herdr-status-tests--with-dashboard
-    (herdr-status-group-by "kind")
+    (herdr-status-group-by "harness")
     (should (equal (herdr-status-tests--group-headings) '("claude" "codex")))
     (herdr-status-group-by "session")
     (should (equal (herdr-status-tests--group-headings) '("alpha" "beta")))
@@ -483,7 +483,7 @@
 
 (ert-deftest herdr-status-keeps-a-group-collapsed-across-a-refresh ()
   (herdr-status-tests--with-dashboard
-    (herdr-status-group-by "kind")
+    (herdr-status-group-by "harness")
     (let ((section (seq-find (lambda (section)
                                (and (eq (oref section type) 'herdr-status-group)
                                     (equal (oref section value) "claude")))
@@ -924,7 +924,7 @@
     (should (equal (mapcar #'herdr--entry-label (herdr-status-switch-agents))
                    '("api-review" "docs" "beta-work")))
     (setq herdr-status--filters
-          (list (cons 'agent-kind
+          (list (cons 'agent-harness
                       (lambda (entry) (equal (alist-get 'agent entry) "codex")))))
     (should (equal (mapcar #'herdr--entry-label (herdr-status-switch-agents))
                    '("docs")))
@@ -946,7 +946,7 @@
     (should (equal (mapcar #'herdr--entry-label (herdr-status-switch-agents))
                    '("api-review" "docs" "beta-work")))
     (setq herdr-status--filters
-          (list (cons 'agent-kind
+          (list (cons 'agent-harness
                       (lambda (entry) (equal (alist-get 'agent entry) "codex")))))
     (should (equal (mapcar #'herdr--entry-label (herdr-status-switch-agents))
                    '("docs")))))

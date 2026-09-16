@@ -87,11 +87,11 @@ A harness descriptor owns its display label and native start, continue, and resu
               (resume "--resume" :reference)))
 ```
 
-The Herdr server must support the registered kind.
+The Herdr server must support the registered harness.
 
 ## Adapter contract
 
-Optional integrations inject one adapter per registered harness kind:
+Optional integrations inject one adapter per registered harness:
 
 ```elisp
 (herdr-agent-adapter KIND)
@@ -246,7 +246,7 @@ or nil elsewhere, so an editor integration can add a binding that attaches
 into a workspace of its own choosing.
 
 Filters compose conjunctively and survive a refresh. `herdr-status-filter`
-offers harness kind, agent state, current project, current editor
+offers harness, agent state, current project, current editor
 workspace, and attached-only. Every one of them is an entry in
 `herdr-status-predicates`, which is also where a custom filter goes:
 
