@@ -400,6 +400,38 @@
       (should-not (string-match-p "protocol" text))
       (should-not (string-match-p "terminal_id" text)))))
 
+(defun herdr-status-tests--closed-agents ()
+  "Return the names of the agent rows drawn closed, in the order drawn."
+  (delq nil
+        (mapcar (lambda (section)
+                  (and (eq (oref section type) 'herdr-status-agent)
+                       (oref section hidden)
+                       (herdr--entry-label (oref section value))))
+                (herdr-status--sections magit-root-section))))
+
+(ert-deftest herdr-status-opens-the-rows-whose-state-asks-for-it ()
+  (herdr-status-tests--with-dashboard
+    (should (equal (herdr-status-tests--closed-agents) '("docs" "beta-work"))))
+  (let ((herdr-status-expanded-states nil))
+    (herdr-status-tests--with-dashboard
+      (should (equal (herdr-status-tests--closed-agents)
+                     '("api-review" "docs" "beta-work")))))
+  (let ((herdr-status-expanded-states '("working" "idle")))
+    (herdr-status-tests--with-dashboard
+      (should (equal (herdr-status-tests--closed-agents) '("beta-work"))))))
+
+(ert-deftest herdr-status-toggles-the-rows-its-states-name ()
+  (herdr-status-tests--with-dashboard
+    (should (equal (herdr-status-tests--closed-agents) '("docs" "beta-work")))
+    (herdr-status-toggle-expanded)
+    (should (equal (herdr-status-tests--closed-agents)
+                   '("api-review" "docs" "beta-work")))
+    (herdr-status-toggle-expanded)
+    (should (equal (herdr-status-tests--closed-agents) '("docs" "beta-work")))
+    (let ((herdr-status-expanded-states nil))
+      (herdr-status-toggle-expanded)
+      (should-not (herdr-status-tests--closed-agents)))))
+
 (ert-deftest herdr-status-expanding-an-instance-reveals-its-body ()
   (let ((herdr-status-show-details t))
    (herdr-status-tests--with-dashboard

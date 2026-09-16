@@ -574,10 +574,6 @@ The marker carries the space separating it from the state glyph, so a nil
             " "))
    (t (make-string (1+ (string-width herdr-status-attached-glyph)) ?\s))))
 
-(defun herdr-status--working-p (entry)
-  "Return non-nil when ENTRY's agent is working."
-  (equal (herdr-status--state entry) "working"))
-
 (defun herdr-status--state-column (entry)
   "Return the glyph standing for ENTRY's state, in that state's face.
 A pane running no agent has no state to report and is left blank there."
@@ -973,11 +969,19 @@ INDENT is how far the lines are set in."
   (when-let* ((status (herdr-status--adapter-status entry)))
     (herdr-status--insert-alist status (mapcar #'car entry) indent)))
 
+(defcustom herdr-status-expanded-states '("working")
+  "Agent states whose rows start expanded, showing the agent's preview.
+Rows in any other state start collapsed and open with `TAB'.  Nil starts
+every row collapsed."
+  :type '(repeat string)
+  :group 'herdr-status)
+
 (defun herdr-status--insert-agent (entry widths tabs workspaces)
   "Insert ENTRY as one collapsible row.
 WIDTHS aligns the columns, and TABS and WORKSPACES resolve its labels."
   (magit-insert-section (herdr-status-agent
-                         entry (not (herdr-status--working-p entry)))
+                         entry (not (member (herdr-status--state entry)
+                                            herdr-status-expanded-states)))
     (magit-insert-heading (herdr-status--row entry widths workspaces))
     (magit-insert-section-body
       (herdr-status--insert-body
@@ -1160,6 +1164,7 @@ where memex.el is on the load path, and are unbound where it is not."
   "f" #'herdr-status-filter
   "O" #'herdr-status-sort
   "h" #'herdr-herd-dispatch
+  "e" #'herdr-status-toggle-expanded
   "t" #'herdr-status-toggle-details
   "g" #'herdr-status-refresh
   "p" #'herdr-status-toggle-project
@@ -1298,6 +1303,33 @@ With CACHED, redraw from the records the last fetch left instead."
     (pcase-dolist (`(,window . ,start) starts)
       (when (window-live-p window)
         (set-window-start window (min start (point-max)) t)))))
+
+(defun herdr-status--expanded-sections ()
+  "Return the agent rows `herdr-status-expanded-states' speaks for.
+An empty list speaks for every agent row, so the toggle still has
+something to open once the states have been cleared."
+  (seq-filter
+   (lambda (section)
+     (and (eq (oref section type) 'herdr-status-agent)
+          (or (null herdr-status-expanded-states)
+              (member (herdr-status--state (oref section value))
+                      herdr-status-expanded-states))))
+   (herdr-status--sections magit-root-section)))
+
+(defun herdr-status-toggle-expanded ()
+  "Open every row `herdr-status-expanded-states' names, or close them all.
+Closes them when none of them is closed already."
+  (interactive)
+  (unless (derived-mode-p 'herdr-status-mode)
+    (user-error "Not a herdr status buffer"))
+  (let* ((sections (herdr-status--expanded-sections))
+         (closed (seq-some (lambda (section) (oref section hidden)) sections)))
+    (unless sections
+      (user-error "No agent row to open"))
+    (dolist (section sections)
+      (if closed (magit-section-show section) (magit-section-hide section)))
+    (message "%s %d agent row%s" (if closed "Opened" "Closed")
+             (length sections) (if (= 1 (length sections)) "" "s"))))
 
 (defun herdr-status-toggle-details ()
   "Show or hide the metadata under the expanded agents of this dashboard."
@@ -1700,6 +1732,7 @@ Every suffix here is bound directly in `herdr-status-mode-map' as well."
      :description (lambda () (if herdr-status--project-root
                                  "global view"
                                "project view")))
+    ("e" "open or close rows" herdr-status-toggle-expanded)
     ("t" herdr-status-toggle-details
      :description herdr-status--details-description)
     ("g" "refresh" herdr-status-refresh)]
