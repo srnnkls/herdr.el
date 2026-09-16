@@ -439,6 +439,37 @@
       (herdr-status-toggle-grouping)
       (should-not (herdr-status-tests--group-headings)))))
 
+(defun herdr-status-tests--agent-sections ()
+  "Return the agent rows drawn, in the order drawn."
+  (seq-filter (lambda (section) (eq (oref section type) 'herdr-status-agent))
+              (herdr-status--sections magit-root-section)))
+
+(ert-deftest herdr-status-draws-every-agent-inside-its-group ()
+  (herdr-status-tests--with-dashboard
+    (herdr-status-group-by "kind")
+    (should (equal (mapcar (lambda (section)
+                             (herdr--entry-label (oref section value)))
+                           (herdr-status-tests--agent-sections))
+                   '("api-review" "beta-work" "docs")))
+    (dolist (section (herdr-status-tests--agent-sections))
+      (should (eq (oref (oref section parent) type) 'herdr-status-group)))))
+
+(ert-deftest herdr-status-groups-an-agent-whose-directory-cannot-be-read ()
+  "A pane left in a directory Emacs may not open once emptied the list."
+  (let ((herdr-project-root-function
+         (lambda (&optional directory)
+           (if (equal directory "/tmp/other/")
+               (signal 'file-error (list "Opening directory"
+                                         "Operation not permitted"
+                                         directory))
+             "/tmp/proj/"))))
+    (should-error (funcall herdr-project-root-function "/tmp/other/")
+                  :type 'file-error)
+    (herdr-status-tests--with-dashboard
+      (herdr-status-group-by "project")
+      (should (equal (herdr-status-tests--group-headings) '("proj" "none")))
+      (should (= 3 (length (herdr-status-tests--agent-sections)))))))
+
 (ert-deftest herdr-status-groups-the-agents-by-the-unit-it-is-given ()
   (herdr-status-tests--with-dashboard
     (herdr-status-group-by "kind")

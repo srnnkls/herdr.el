@@ -420,14 +420,23 @@ PROMPT asks for the value among those the dashboard currently shows."
   (let ((value (herdr-status--read-field prompt field herdr-status--entries)))
     (lambda (entry) (equal (alist-get field entry) value))))
 
+(defun herdr-status--project-root (directory)
+  "Return DIRECTORY's project root, or nil when it cannot be read.
+An agent left in a directory Emacs may not open - one moved to the trash,
+say - answers for no project rather than taking the dashboard down."
+  (when directory
+    (condition-case nil
+        (funcall herdr-project-root-function directory)
+      (file-error nil))))
+
 (defun herdr-status--project-predicate (&optional root)
   "Return a predicate keeping entries in ROOT, defaulting to this project."
-  (let ((root (or root (funcall herdr-project-root-function default-directory))))
+  (let ((root (or root (herdr-status--project-root default-directory))))
     (unless root
       (user-error "No project for %s" (abbreviate-file-name default-directory)))
     (lambda (entry)
       (when-let* ((cwd (herdr-entry-directory entry))
-                  (entry-root (funcall herdr-project-root-function cwd)))
+                  (entry-root (herdr-status--project-root cwd)))
         (herdr--same-directory-p root entry-root)))))
 
 (defun herdr-status--workspace-predicate ()
@@ -483,7 +492,7 @@ Nil leaves the order herdr reports the agents in.")
 (defun herdr-status--project-group (entry)
   "Return the name of the project ENTRY works in."
   (when-let* ((cwd (herdr-entry-directory entry))
-              (root (funcall herdr-project-root-function cwd)))
+              (root (herdr-status--project-root cwd)))
     (file-name-nondirectory (directory-file-name root))))
 
 (defcustom herdr-status-groups
@@ -1230,8 +1239,8 @@ where memex.el is on the load path, and are unbound where it is not."
   "O" #'herdr-status-sort
   "h" #'herdr-herd-dispatch
   "e" #'herdr-status-toggle-expanded
-  "G" #'herdr-status-toggle-grouping
-  "u" #'herdr-status-group-by
+  "u" #'herdr-status-toggle-grouping
+  "U" #'herdr-status-group-by
   "t" #'herdr-status-toggle-details
   "g" #'herdr-status-refresh
   "p" #'herdr-status-toggle-project
@@ -1442,7 +1451,7 @@ Use `herdr-project-status' to show only the current project's entries."
 Scope agents, recent agents, herds, and panes to the project returned by
 `herdr-project-root-function'.  Signal a user error outside a project."
   (interactive)
-  (let ((root (funcall herdr-project-root-function default-directory)))
+  (let ((root (herdr-status--project-root default-directory)))
     (unless root
       (user-error "No project for %s" (abbreviate-file-name default-directory)))
     (herdr-status--show (file-name-as-directory (expand-file-name root)))))
@@ -1832,9 +1841,9 @@ Every suffix here is bound directly in `herdr-status-mode-map' as well."
                                  "global view"
                                "project view")))
     ("e" "open or close rows" herdr-status-toggle-expanded)
-    ("G" herdr-status-toggle-grouping
+    ("u" herdr-status-toggle-grouping
      :description (lambda () (if herdr-status--grouping "one list" "group")))
-    ("u" "group unit" herdr-status-group-by)
+    ("U" "group unit" herdr-status-group-by)
     ("t" herdr-status-toggle-details
      :description herdr-status--details-description)
     ("g" "refresh" herdr-status-refresh)]
