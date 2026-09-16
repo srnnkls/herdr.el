@@ -1367,10 +1367,11 @@ streams into the buffer."
 (defun herdr-message--field-prefix (target)
   "Return the mark drawn where the field closes into TARGET's message.
 It is the vendor mark `herdr-status' draws beside the agent, so the field
-carries the harness it is writing to in that harness's own colour.  Where
-`herdr-status' is not loaded, or the agent has no mark, the field is drawn
-bare."
-  (when (fboundp 'herdr-status-harness-glyph)
+carries the harness it is writing to in that harness's own colour.  The
+dashboard is loaded for it, and a harness without a mark, or a missing
+dashboard, draws the field bare."
+  (when (or (fboundp 'herdr-status-harness-glyph)
+            (require 'herdr-status nil t))
     (herdr-status-harness-glyph (herdr-message--target-harness target))))
 
 (defun herdr-message-read-field (target context)
