@@ -80,8 +80,12 @@
   :group 'herdr-status)
 
 (defface herdr-status-state-working
-  '((t :inherit warning))
-  "Face for an agent that is working."
+  '((((class color) (min-colors 88) (background light)) :foreground "#e8973a")
+    (((class color) (min-colors 88) (background dark)) :foreground "#f5a04a")
+    (t :inherit warning))
+  "Face for an agent that is working.
+A theme's `warning' is often the dull yellow of a compiler note, which
+reads as brown beside the other states, so the colour is its own."
   :group 'herdr-status)
 
 (defface herdr-status-state-blocked
@@ -329,10 +333,10 @@ A burst of events collapses into one redraw."
 (defvar-local herdr-status--previews nil
   "Output previews already fetched since the last refresh.")
 
-(defvar-local herdr-status--collapsed-herds nil
-  "Names of the herds collapsed in this dashboard.
+(defvar-local herdr-status--collapsed nil
+  "The herds and groups collapsed in this dashboard, as (TYPE . VALUE).
 A redraw re-expands every section, so this is what carries a collapsed
-herd across the refresh an agent event triggers.")
+one across the refresh an agent event triggers.")
 
 (defvar herdr-status--timer nil
   "Idle timer coalescing event-driven redraws.")
@@ -475,6 +479,49 @@ under.  `herdr-status-sort-by' offers these names."
 (defvar-local herdr-status--sort nil
   "The column the agent list is ordered by, and whether that is reversed.
 Nil leaves the order herdr reports the agents in.")
+
+(defun herdr-status--project-group (entry)
+  "Return the name of the project ENTRY works in."
+  (when-let* ((cwd (herdr-entry-directory entry))
+              (root (funcall herdr-project-root-function cwd)))
+    (file-name-nondirectory (directory-file-name root))))
+
+(defcustom herdr-status-groups
+  '(("project" . herdr-status--project-group)
+    ("directory" . herdr-status--directory-key)
+    ("session" . herdr-status--session-name)
+    ("kind" . herdr-status--kind-key)
+    ("state" . herdr-status--state))
+  "Units the agent list can be grouped by, named after what they group by.
+Each value is a function of one entry answering with the group it belongs
+in.  An entry the function answers nil for is grouped under `none'.
+`herdr-status-group-by' offers these names."
+  :type '(alist :key-type string :value-type function)
+  :group 'herdr-status)
+
+(defvar-local herdr-status--group-unit nil
+  "The unit the agent list groups by, or nil for the first one offered.")
+
+(defvar-local herdr-status--grouping nil
+  "Whether the agent list is drawn in groups rather than as one list.")
+
+(defun herdr-status-group-unit ()
+  "Return the unit the agent list groups by."
+  (or herdr-status--group-unit (car (car herdr-status-groups))))
+
+(defun herdr-status--grouped (entries)
+  "Return ENTRIES as an alist of group and members, in the order met."
+  (let ((key (alist-get (herdr-status-group-unit) herdr-status-groups
+                        nil nil #'equal))
+        (groups nil))
+    (dolist (entry entries)
+      (let* ((name (or (and key (funcall key entry)) "none"))
+             (cell (assoc name groups)))
+        (if cell
+            (setcdr cell (cons entry (cdr cell)))
+          (push (cons name (list entry)) groups))))
+    (mapcar (lambda (cell) (cons (car cell) (nreverse (cdr cell))))
+            (nreverse groups))))
 
 (defun herdr-status--label-key (entry)
   "Return ENTRY's name, downcased for ordering."
@@ -1018,6 +1065,12 @@ only by the heading's own total."
                         (if (cdr herdr-status--sort) " ↑" " ↓"))
                 'font-lock-face 'herdr-status-meta)))
 
+(defun herdr-status--group-summary ()
+  "Return the unit the agents are grouped by, rendered for their heading."
+  (when herdr-status--grouping
+    (propertize (format "  · in %s" (herdr-status-group-unit))
+                'font-lock-face 'herdr-status-meta)))
+
 (defun herdr-status--filter-summary ()
   "Return the active filters rendered for the agents heading."
   (when herdr-status--filters
@@ -1084,6 +1137,13 @@ WIDTHS, TABS, and WORKSPACES are passed through to each row."
         (dolist (entry entries)
           (herdr-status--insert-agent entry widths tabs workspaces))))))
 
+(defun herdr-status--members-heading (label members)
+  "Return the heading of a section holding MEMBERS under LABEL."
+  (concat (propertize label 'font-lock-face 'herdr-status-label)
+          (propertize (format "  · %d member%s" (length members)
+                              (if (= 1 (length members)) "" "s"))
+                      'font-lock-face 'herdr-status-meta)))
+
 (defun herdr-status--insert-herds (widths tabs workspaces)
   "Insert one collapsible section per herd the listed agents form.
 WIDTHS, TABS, and WORKSPACES draw a member on the same columns as the
@@ -1096,11 +1156,7 @@ agent list.  Nothing is drawn where no agent names a herd."
       (pcase-dolist (`(,herd . ,members) herds)
         (magit-insert-section (herdr-status-herd herd)
           (magit-insert-heading
-            (concat (propertize (herdr-herd-label herd)
-                                'font-lock-face 'herdr-status-label)
-                    (propertize (format "  · %d member%s" (length members)
-                                        (if (= 1 (length members)) "" "s"))
-                                'font-lock-face 'herdr-status-meta)))
+            (herdr-status--members-heading (herdr-herd-label herd) members))
           (magit-insert-section-body
             (dolist (entry members)
               (herdr-status--insert-agent entry widths tabs workspaces))))))))
@@ -1117,12 +1173,21 @@ WIDTHS, TABS, and WORKSPACES are passed through to each row."
                               (format "Agents %d/%d" (length visible) total))
                             'font-lock-face 'magit-section-heading)
                 (herdr-status--state-summary visible)
+                (herdr-status--group-summary)
                 (herdr-status--sort-summary)
                 (herdr-status--filter-summary)))
-      (if (null visible)
-          (insert "  No agent matches.\n")
+      (cond
+       ((null visible) (insert "  No agent matches.\n"))
+       (herdr-status--grouping
+        (pcase-dolist (`(,name . ,members) (herdr-status--grouped visible))
+          (magit-insert-section (herdr-status-group name)
+            (magit-insert-heading (herdr-status--members-heading name members))
+            (magit-insert-section-body
+              (dolist (entry members)
+                (herdr-status--insert-agent entry widths tabs workspaces))))))
+       (t
         (dolist (entry visible)
-          (herdr-status--insert-agent entry widths tabs workspaces))))))
+          (herdr-status--insert-agent entry widths tabs workspaces)))))))
 
 (defun herdr-status--insert-panes (widths workspaces)
   "Insert the panes running no agent, labelled through WORKSPACES.
@@ -1165,6 +1230,8 @@ where memex.el is on the load path, and are unbound where it is not."
   "O" #'herdr-status-sort
   "h" #'herdr-herd-dispatch
   "e" #'herdr-status-toggle-expanded
+  "G" #'herdr-status-toggle-grouping
+  "u" #'herdr-status-group-by
   "t" #'herdr-status-toggle-details
   "g" #'herdr-status-refresh
   "p" #'herdr-status-toggle-project
@@ -1219,22 +1286,30 @@ runs out of stack.")
   (cons section (mapcan #'herdr-status--sections
                         (copy-sequence (oref section children)))))
 
-(defun herdr-status--collapsed-herds ()
-  "Return the names of the herds collapsed in this dashboard."
+(defconst herdr-status--collapsible-types
+  '(herdr-status-herd herdr-status-group)
+  "Section types whose collapsed state outlives a redraw.")
+
+(defun herdr-status--collapsible-p (section)
+  "Return SECTION's (TYPE . VALUE) when its collapsed state is kept."
+  (when (memq (oref section type) herdr-status--collapsible-types)
+    (cons (oref section type) (oref section value))))
+
+(defun herdr-status--collapsed-sections ()
+  "Return the sections collapsed in this dashboard, as (TYPE . VALUE)."
   (when magit-root-section
     (delq nil
           (mapcar (lambda (section)
-                    (and (eq (oref section type) 'herdr-status-herd)
-                         (oref section hidden)
-                         (oref section value)))
+                    (and (oref section hidden)
+                         (herdr-status--collapsible-p section)))
                   (herdr-status--sections magit-root-section)))))
 
-(defun herdr-status--restore-collapsed-herds ()
-  "Collapse the herds that were collapsed before the redraw."
+(defun herdr-status--restore-collapsed-sections ()
+  "Collapse the herds and groups that were collapsed before the redraw."
   (dolist (section (herdr-status--sections magit-root-section))
-    (when (and (eq (oref section type) 'herdr-status-herd)
-               (member (oref section value) herdr-status--collapsed-herds))
-      (magit-section-hide section))))
+    (when-let* ((key (herdr-status--collapsible-p section)))
+      (when (member key herdr-status--collapsed)
+        (magit-section-hide section)))))
 
 (defvar herdr-status-sections-functions nil
   "Functions inserting sections at the top of the dashboard.
@@ -1251,7 +1326,7 @@ With CACHED, redraw from the records the last fetch left instead."
         (line (line-number-at-pos))
         (starts (mapcar (lambda (window) (cons window (window-start window)))
                         (get-buffer-window-list nil nil t))))
-    (setq herdr-status--collapsed-herds (herdr-status--collapsed-herds))
+    (setq herdr-status--collapsed (herdr-status--collapsed-sections))
     (unless cached
       (setq herdr-status--session-records (herdr-status--collect-sessions)
             herdr-status--entries (herdr-status--collect-entries)
@@ -1297,7 +1372,7 @@ With CACHED, redraw from the records the last fetch left instead."
         (herdr-status--insert-sessions))
       (let ((magit-section-cache-visibility nil))
         (magit-section-show magit-root-section))
-      (herdr-status--restore-collapsed-herds))
+      (herdr-status--restore-collapsed-sections))
     (goto-char (point-min))
     (forward-line (1- line))
     (pcase-dolist (`(,window . ,start) starts)
@@ -1659,6 +1734,30 @@ on, and attaching again picks it back up."
                 (cons column nil)))
   (herdr-status-refresh))
 
+(defun herdr-status-group-by (unit)
+  "Group the agent list by UNIT and draw the groups."
+  (interactive
+   (list (completing-read "Group by: " (mapcar #'car herdr-status-groups)
+                          nil t nil nil (herdr-status-group-unit))))
+  (unless (derived-mode-p 'herdr-status-mode)
+    (user-error "Not a herdr status buffer"))
+  (unless (assoc unit herdr-status-groups)
+    (user-error "No herdr status group unit named %s" unit))
+  (setq-local herdr-status--group-unit unit
+              herdr-status--grouping t)
+  (herdr-status-refresh))
+
+(defun herdr-status-toggle-grouping ()
+  "Draw the agent list in groups, or as the one flat list it is otherwise."
+  (interactive)
+  (unless (derived-mode-p 'herdr-status-mode)
+    (user-error "Not a herdr status buffer"))
+  (setq-local herdr-status--grouping (not herdr-status--grouping))
+  (herdr-status-refresh)
+  (message "Agents %s" (if herdr-status--grouping
+                           (format "grouped by %s" (herdr-status-group-unit))
+                         "in one list")))
+
 (defun herdr-status-sort-reverse ()
   "Turn the agent list's order around."
   (interactive)
@@ -1733,6 +1832,9 @@ Every suffix here is bound directly in `herdr-status-mode-map' as well."
                                  "global view"
                                "project view")))
     ("e" "open or close rows" herdr-status-toggle-expanded)
+    ("G" herdr-status-toggle-grouping
+     :description (lambda () (if herdr-status--grouping "one list" "group")))
+    ("u" "group unit" herdr-status-group-by)
     ("t" herdr-status-toggle-details
      :description herdr-status--details-description)
     ("g" "refresh" herdr-status-refresh)]

@@ -420,6 +420,53 @@
     (herdr-status-tests--with-dashboard
       (should (equal (herdr-status-tests--closed-agents) '("beta-work"))))))
 
+(defun herdr-status-tests--group-headings ()
+  "Return the label of every group section drawn, in the order drawn."
+  (delq nil
+        (mapcar (lambda (section)
+                  (and (eq (oref section type) 'herdr-status-group)
+                       (oref section value)))
+                (herdr-status--sections magit-root-section))))
+
+(ert-deftest herdr-status-draws-one-list-until-grouping-is-asked-for ()
+  (let ((herdr-project-root-function #'herdr-status-tests--project-root))
+    (herdr-status-tests--with-dashboard
+      (should-not (herdr-status-tests--group-headings))
+      (herdr-status-toggle-grouping)
+      (should (equal (herdr-status-tests--group-headings) '("proj" "other")))
+      (should (string-match-p "· in project"
+                              (herdr-status-tests--section-text "Agents ")))
+      (herdr-status-toggle-grouping)
+      (should-not (herdr-status-tests--group-headings)))))
+
+(ert-deftest herdr-status-groups-the-agents-by-the-unit-it-is-given ()
+  (herdr-status-tests--with-dashboard
+    (herdr-status-group-by "kind")
+    (should (equal (herdr-status-tests--group-headings) '("claude" "codex")))
+    (herdr-status-group-by "session")
+    (should (equal (herdr-status-tests--group-headings) '("alpha" "beta")))
+    (herdr-status-group-by "state")
+    (should (equal (herdr-status-tests--group-headings)
+                   '("working" "idle" "orbiting")))
+    (should-error (herdr-status-group-by "nonesuch") :type 'user-error)))
+
+(ert-deftest herdr-status-keeps-a-group-collapsed-across-a-refresh ()
+  (herdr-status-tests--with-dashboard
+    (herdr-status-group-by "kind")
+    (let ((section (seq-find (lambda (section)
+                               (and (eq (oref section type) 'herdr-status-group)
+                                    (equal (oref section value) "claude")))
+                             (herdr-status--sections magit-root-section))))
+      (magit-section-hide section))
+    (herdr-status-refresh)
+    (should (equal (mapcar #'car herdr-status--collapsed)
+                   '(herdr-status-group)))
+    (let ((section (seq-find (lambda (section)
+                               (and (eq (oref section type) 'herdr-status-group)
+                                    (equal (oref section value) "claude")))
+                             (herdr-status--sections magit-root-section))))
+      (should (oref section hidden)))))
+
 (ert-deftest herdr-status-toggles-the-rows-its-states-name ()
   (herdr-status-tests--with-dashboard
     (should (equal (herdr-status-tests--closed-agents) '("docs" "beta-work")))
