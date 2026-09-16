@@ -518,12 +518,23 @@ is the one already there."
                                  directory))))
     name))
 
+(defun herdr-live-directory (directory)
+  "Return DIRECTORY as a directory name Emacs can work in, or nil.
+A pane keeps reporting where its process sits even once nothing answers
+for it - a worktree removed, a checkout trashed - and a buffer holding
+one as its `default-directory' takes down everything that consults it,
+from the mode hooks that run on attach to every later command."
+  (when (and (stringp directory)
+             (not (string-empty-p directory))
+             (file-accessible-directory-p directory))
+    (file-name-as-directory (expand-file-name directory))))
+
 (cl-defun herdr-attach-terminal (terminal-id &key (session herdr-session)
                                              label directory takeover display)
   "Attach TERMINAL-ID on SESSION to an Emacs terminal buffer.
-LABEL names the buffer, DIRECTORY sets its `default-directory',
-TAKEOVER claims input ownership, and DISPLAY shows the buffer when
-non-nil.  Returns the buffer."
+LABEL names the buffer, DIRECTORY sets its `default-directory' when one
+still answers for it, TAKEOVER claims input ownership, and DISPLAY shows
+the buffer when non-nil.  Returns the buffer."
   (let* ((herdr-session session)
          (herdr-socket-path nil)
          (server (herdr-session-server-key session))
@@ -537,7 +548,12 @@ non-nil.  Returns the buffer."
         (setq herdr-terminal-id terminal-id
               herdr-terminal-session session
               herdr-terminal-server-key server)
-        (when directory (setq default-directory (file-name-as-directory directory))))
+        (if-let* ((live (herdr-live-directory directory)))
+            (setq default-directory live)
+          (when directory
+            (message "herdr: %s works in %s, which is gone"
+                     (or label terminal-id)
+                     (abbreviate-file-name directory)))))
       (setq buffer (herdr--terminal-exec buffer (car command) (cdr command)))
       (herdr-claim-buffer buffer terminal-id session)
       (when display (herdr-display-buffer buffer))
