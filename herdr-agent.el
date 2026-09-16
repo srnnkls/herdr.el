@@ -1327,7 +1327,9 @@ that nothing shows yet is attached.  The window sent from stays selected."
   (herdr-message--close))
 
 (defvar herdr-message--pending nil
-  "Target and context of the message being read in the minibuffer.")
+  "Target and context of the message being read, while it is being read.
+A completion source in the field, or a command in the minibuffer, reads
+the agent the message is going to from here.")
 
 (defvar herdr-message--edited nil
   "Non-nil once the draft being read moved to a `herdr-message-mode' buffer.")
@@ -1382,7 +1384,8 @@ cera or the minibuffer itself."
   (if (and (not (minibufferp))
            (not (get-buffer-process (current-buffer)))
            (or (fboundp 'cera-read) (require 'cera nil t)))
-      (let ((cera-input-prefix (herdr-message--field-prefix target)))
+      (let ((cera-input-prefix (herdr-message--field-prefix target))
+            (herdr-message--pending (cons target context)))
         (message "Message to %s" (herdr-message--target-label target))
         (herdr-message--show-target
          (herdr-message--send
