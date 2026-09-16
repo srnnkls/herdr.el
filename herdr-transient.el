@@ -46,7 +46,7 @@
 (defun herdr-transient--target ()
   "Return the agent at point in the dashboard, or read one."
   (or (herdr-status-target-at-point)
-      (let ((entry (herdr-read-entry "Agent target: " (herdr-entries-in-scope))))
+      (let ((entry (herdr-read-agent "Agent target: ")))
         (cons (alist-get 'server_key entry) (alist-get 'terminal_id entry)))))
 
 (defun herdr-transient--switch (target)

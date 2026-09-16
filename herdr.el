@@ -299,17 +299,36 @@ asked of git, so a dashboard can afford it once per row."
          ((string-prefix-p "ref: " line) (substring line (length "ref: ")))
          ((string-match-p "\\`[0-9a-f]\\{40,\\}\\'" line) (substring line 0 7)))))))
 
+(defvar herdr--repository-roots (make-hash-table :test #'equal)
+  "Repository root of each directory one was asked for.
+A directory does not change repository, and a dashboard asks once per
+row per refresh, which is a git subprocess each without this.")
+
+(defun herdr-repository-root (directory)
+  "Return the main checkout of the repository DIRECTORY belongs to, or nil.
+A linked worktree answers with the checkout it was made from, so every
+checkout of one repository is one project - which is what an editor
+holding a workspace per repository already means by the word."
+  (when (and directory (file-accessible-directory-p directory))
+    (let* ((key (file-name-as-directory (expand-file-name directory)))
+           (cached (gethash key herdr--repository-roots 'missing)))
+      (if (not (eq cached 'missing))
+          cached
+        (puthash key
+                 (when-let* ((common (herdr--git-line
+                                      directory "rev-parse" "--git-common-dir")))
+                   (directory-file-name
+                    (file-name-directory
+                     (directory-file-name (expand-file-name common key)))))
+                 herdr--repository-roots)))))
+
 (defun herdr-directory-project (directory)
   "Return the name of the project DIRECTORY belongs to.
 Inside a git repository that is the main checkout's directory name, so
 a linked worktree is named after the project rather than after itself.
 Elsewhere it is the `herdr-workspace-label' of DIRECTORY."
-  (if-let* ((common (herdr--git-line directory "rev-parse" "--git-common-dir")))
-      (file-name-nondirectory
-       (directory-file-name
-        (file-name-directory
-         (directory-file-name
-          (expand-file-name common (file-name-as-directory directory))))))
+  (if-let* ((root (herdr-repository-root directory)))
+      (file-name-nondirectory root)
     (herdr-workspace-label directory)))
 
 (defun herdr-default-buffer-name (label &optional directory)
@@ -629,8 +648,10 @@ completion annotation, or nil.")
 (cl-defun herdr-read-entry (prompt entries &key require-agent affixation (group t))
   "Read one of ENTRIES with PROMPT and return its alist.
 REQUIRE-AGENT keeps only entries running that agent kind.
-AFFIXATION draws one entry as a cons of what goes before and after its
-name, standing in for the annotation.  GROUP nil offers the entries
+AFFIXATION draws one entry, standing in for the annotation: it is called
+with a candidate and its entry and answers with the name to show and
+what goes before and after it.  A shortened name is only what the row
+shows, so the whole of it still matches.  GROUP nil offers the entries
 flat, which is what a list of one kind wants."
   (let* ((entries (if require-agent
                       (cl-remove-if-not
@@ -645,9 +666,8 @@ flat, which is what a list of one kind wants."
                   . ,(lambda (choices)
                        (mapcar
                         (lambda (choice)
-                          (if-let* ((entry (cdr (assoc choice candidates)))
-                                    (parts (funcall affixation entry)))
-                              (list choice (car parts) (cdr parts))
+                          (if-let* ((entry (cdr (assoc choice candidates))))
+                              (funcall affixation choice entry)
                             (list choice "" "")))
                         choices))))
              `((annotation-function
@@ -661,7 +681,9 @@ flat, which is what a list of one kind wants."
                          candidate
                        (when-let* ((entry (cdr (assoc candidate candidates))))
                          (or (alist-get 'kind entry) "herdr")))))))
-           '((category . herdr-entry)))))
+           '((display-sort-function . identity)
+             (cycle-sort-function . identity)
+             (category . herdr-entry)))))
     (unless candidates
       (user-error "No matching herdr %s" (or require-agent "sessions")))
     (let ((choice (completing-read
@@ -672,6 +694,30 @@ flat, which is what a list of one kind wants."
                        (complete-with-action action candidates string predicate)))
                    nil t)))
       (cdr (assoc choice candidates)))))
+
+(declare-function herdr-status--read-agent-affixation "herdr-status" (entries))
+(declare-function herdr-status-switch-agents "herdr-status" ())
+
+(defun herdr-read-agent (prompt &optional entries)
+  "Read one of the running agents with PROMPT and return its entry.
+ENTRIES defaults to the agents in scope, which inside a dashboard are
+the ones it shows.  Every command that picks an agent reads it here, so
+they all offer the same rows: the state, the name, and the harness,
+branch and working directory behind it, drawn in the dashboard's own
+faces.  A name too long for `herdr-read-agent-name-width' is cut short
+in the row alone and still matches in full.  The agent reached for most
+recently leads, so the one meant is usually the one already under the
+cursor.  Without the dashboard installed the plain annotation stands
+in."
+  (if (require 'herdr-status nil t)
+      (let ((entries (herdr-recent-first
+                      (or entries (herdr-status-switch-agents)))))
+        (herdr-read-entry prompt entries
+                          :affixation (herdr-status--read-agent-affixation entries)
+                          :group nil))
+    (herdr-read-entry prompt
+                      (herdr-recent-first (or entries (herdr-entries-in-scope)))
+                      :group nil)))
 
 ;;;; Sessions
 
@@ -769,6 +815,17 @@ Entries that already have an Emacs buffer win over bare ones."
           (cons target (delete target herdr--recent-session-targets))))
   target)
 
+(defun herdr-recent-first (entries)
+  "Return ENTRIES with the ones reached for most recently leading.
+What is left keeps the order it came in, so a dashboard's own sort still
+decides among the agents nothing has been near."
+  (let ((recent (delq nil
+                      (mapcar (lambda (target)
+                                (cl-find target entries
+                                         :key #'herdr--entry-target :test #'equal))
+                              herdr--recent-session-targets))))
+    (append recent (cl-remove-if (lambda (entry) (memq entry recent)) entries))))
+
 (defun herdr--prune-session-targets (entries)
   "Drop recent session targets that are absent from ENTRIES."
   (let ((targets (delq nil (mapcar #'herdr--entry-target entries))))
@@ -818,22 +875,32 @@ Gives `herdr-attach-functions' the first chance to claim ENTRY."
 ;;;###autoload
 (defun herdr-attach-agent (agent)
   "Attach the terminal of herdr AGENT to an Emacs buffer.
-Offers the agents of the session this directory routes to."
+Offers the agents of the session this directory routes to, read the way
+every other agent prompt reads them."
   (interactive (list (herdr-with-session (herdr-session-for)
-                       (herdr-read-entry "Attach herdr agent: " (herdr-agent-sessions)))))
+                       (herdr-read-agent "Attach herdr agent: "
+                                         (herdr-agent-sessions)))))
   (herdr-attach-entry agent))
 
 ;;;###autoload
 (defun herdr-attach-pane (pane)
   "Attach the terminal of herdr PANE to an Emacs buffer.
-Offers the panes of the session this directory routes to."
-  (interactive (list (herdr-with-session (herdr-session-for)
-                       (let ((session herdr-session))
-                         (herdr-read-entry
-                          "Attach herdr pane: "
-                          (mapcar (lambda (pane)
-                                    (append `((kind . "herdr") (session . ,session)) pane))
-                                  (herdr-panes)))))))
+Offers the plain panes of the session this directory routes to: the
+ones running no agent, which `herdr-attach-agent' already offers and
+draws far better than a pane row can."
+  (interactive
+   (list (herdr-with-session (herdr-session-for)
+           (let* ((session herdr-session)
+                  (panes (cl-remove-if (lambda (pane) (alist-get 'agent pane))
+                                       (herdr-panes))))
+             (unless panes
+               (user-error "Every pane on %s runs an agent; attach one of those"
+                           (or (herdr-session-name session) "the shared session")))
+             (herdr-read-entry
+              "Attach herdr pane: "
+              (mapcar (lambda (pane)
+                        (append `((kind . "herdr") (session . ,session)) pane))
+                      panes))))))
   (herdr-attach-entry pane))
 
 ;;;; Attaching a whole session
