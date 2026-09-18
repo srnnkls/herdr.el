@@ -181,6 +181,7 @@ preference, of which the first the display can show is drawn."
   '((pane "\uea85" "▣" "#")
     (workspace "\ueae3" "▤" "")
     (branch "\uf126" "\ue0a0" "⎇" "@")
+    (model "\ueb26" "◆" "*")
     (directory "\uea83" "/" ""))
   "Glyphs leading the fields that trail a row, keyed by field.
 Each entry lists candidates in order of preference and the first one the
@@ -537,6 +538,7 @@ no filter.  Adding an element makes a custom filter available to
     ("harness" . herdr-status--harness-key)
     ("pane" . herdr-status--pane-key)
     ("session" . herdr-status--session-name)
+    ("model" . herdr-status--model-key)
     ("directory" . herdr-status--directory-key))
   "Keys the agent list can be ordered by, named after the column they read.
 Each value is a function of one entry answering with the string it sorts
@@ -559,6 +561,7 @@ Nil leaves the order herdr reports the agents in.")
     ("directory" . herdr-status--directory-key)
     ("session" . herdr-status--session-name)
     ("harness" . herdr-status--harness-key)
+    ("model" . herdr-status--model)
     ("state" . herdr-status--state))
   "Units the agent list can be grouped by, named after what they group by.
 Each value is a function of one entry answering with the group it belongs
@@ -610,6 +613,10 @@ in.  An entry the function answers nil for is grouped under `none'.
 (defun herdr-status--directory-key (entry)
   "Return the directory ENTRY works in."
   (or (herdr-entry-directory entry) ""))
+
+(defun herdr-status--model-key (entry)
+  "Return the model ENTRY sorts under, the ones reporting none last."
+  (or (herdr-status--model entry) ""))
 
 (defcustom herdr-status-state-order '("working" "blocked" "idle" "done")
   "The order states sort in, the ones wanting attention first.
@@ -810,11 +817,27 @@ and a zero WIDTH means no row has the field, so nothing is drawn."
   "Return the git branch ENTRY's directory is on, or nil outside a repository."
   (herdr-directory-branch (herdr-entry-directory entry)))
 
+(defcustom herdr-status-model-token "model"
+  "Metadata token naming the model an agent is currently answering with.
+Herdr carries whatever a pane reports of itself, so the model arrives
+the way any other self-reported field does, and the column is blank for
+a harness that reports none."
+  :type 'string
+  :group 'herdr-status)
+
+(defun herdr-status--model (entry)
+  "Return the model ENTRY reports itself running, or nil."
+  (when-let* ((model (alist-get (intern herdr-status-model-token)
+                                (alist-get 'tokens entry)))
+              ((stringp model))
+              ((not (string-empty-p model))))
+    model))
+
 (defun herdr-status--trailing-columns (entry widths workspaces)
   "Return the cells that follow ENTRY's session column, on WIDTHS.
-WORKSPACES resolves the workspace label.  The pane, workspace and branch
-keep their columns; the directory comes last, being the one field whose
-length varies from row to row."
+WORKSPACES resolves the workspace label.  The pane, workspace, branch and
+model keep their columns; the directory comes last, being the one field
+whose length varies from row to row."
   (list (herdr-status--field-column 'pane (alist-get 'pane_id entry)
                                     (nth 3 widths))
         (herdr-status--field-column 'workspace
@@ -822,6 +845,8 @@ length varies from row to row."
                                     (nth 4 widths))
         (herdr-status--field-column 'branch (herdr-status--branch entry)
                                     (nth 5 widths))
+        (herdr-status--field-column 'model (herdr-status--model entry)
+                                    (nth 6 widths))
         (when-let* ((directory (herdr-status--directory entry)))
           (herdr-status--field-column 'directory directory
                                       (string-width directory)
@@ -911,8 +936,8 @@ draw an agent on the same columns as the agent list with this."
 
 (defun herdr-status--widths (entries workspaces)
   "Return the column widths fitting ENTRIES, labelled via WORKSPACES.
-Label, harness and session keep a floor; pane, workspace and branch take
-exactly the widest value, and zero when no entry has one."
+Label, harness and session keep a floor; pane, workspace, branch and
+model take exactly the widest value, and zero when no entry has one."
   (list (herdr-status--name-width entries)
         (herdr-status--width entries (lambda (entry) (alist-get 'agent entry)) 6)
         (herdr-status--width entries #'herdr-status--session-name 6)
@@ -921,7 +946,8 @@ exactly the widest value, and zero when no entry has one."
                              (lambda (entry)
                                (herdr-status--workspace-label entry workspaces))
                              0)
-        (herdr-status--width entries #'herdr-status--branch 0)))
+        (herdr-status--width entries #'herdr-status--branch 0)
+        (herdr-status--width entries #'herdr-status--model 0)))
 
 (defconst herdr-status--detail-fields
   '(server_key session terminal_id pane_id workspace_id tab_id agent
@@ -1357,6 +1383,8 @@ where memex.el is on the load path, and are unbound where it is not."
   "f" #'herdr-status-filter
   "O" #'herdr-status-sort
   "h" #'herdr-herd-dispatch
+  "n" #'herdr-status-new-agent
+  "N" #'herdr-status-new-agent-of-harness
   "e" #'herdr-status-toggle-expanded
   "u" #'herdr-status-toggle-grouping
   "U" #'herdr-status-group-by
@@ -1813,6 +1841,43 @@ instead, the way it does for `herdr-status-visit'."
       (herdr-agent-switch (herdr--entry-target entry))
     (herdr-visit entry)))
 
+(defcustom herdr-status-new-harness "claude"
+  "Harness a new agent runs when nothing at point names one."
+  :type 'string
+  :group 'herdr-status)
+
+(defun herdr-status--new-harness ()
+  "Return the harness a new agent runs without being asked for one.
+The row at point names one; away from a row `herdr-status-new-harness'
+does."
+  (or (alist-get 'agent (herdr-status-entry-at-point))
+      herdr-status-new-harness))
+
+(defun herdr-status-new-agent (&optional kind)
+  "Open a herdr pane and start KIND in it.
+The row at point says which directory to work in and which herdr session
+to open the pane on; away from a row the dashboard's own project scope
+answers.  KIND defaults to the harness at point, then to
+`herdr-status-new-harness'."
+  (interactive)
+  (let* ((entry (herdr-status-entry-at-point))
+         (kind (or kind (herdr-status--new-harness)))
+         (root (or (and entry (herdr-entry-directory entry))
+                   herdr-status--project-root
+                   default-directory))
+         (session (if entry (alist-get 'session entry) herdr-session)))
+    (herdr-with-session session
+      (herdr-agent-start kind nil :project-root root))
+    (herdr-status-refresh)
+    (message "Started %s in %s" kind (abbreviate-file-name root))))
+
+(defun herdr-status-new-agent-of-harness (kind)
+  "Open a herdr pane and start the harness KIND in it, read with completion."
+  (interactive
+   (list (completing-read "Harness: " (mapcar #'car herdr-agent-harnesses)
+                          nil t nil nil (herdr-status--new-harness))))
+  (herdr-status-new-agent kind))
+
 (defun herdr-status-prompt (text)
   "Send TEXT to the agent at point."
   (interactive (list (read-string "Prompt: ")))
@@ -2033,6 +2098,9 @@ Every suffix here is bound directly in `herdr-status-mode-map' as well."
     ("RET" "visit" herdr-status-visit)
     ("o" "other window" herdr-status-visit-other-window)]
    ["Agent"
+    ("n" herdr-status-new-agent
+     :description (lambda () (format "new %s" (herdr-status--new-harness))))
+    ("N" "new, choosing the harness" herdr-status-new-agent-of-harness)
     ("P" "prompt" herdr-status-prompt)
     ("R" "rename" herdr-status-rename)
     ("d" "detach, pane runs on" herdr-status-detach)
