@@ -1279,7 +1279,7 @@ another provider handle it.  `herdr-default-send-context' is the fallback.")
   (herdr-agent--send-session 'all nil))
 
 ;;;###autoload
-(defun herdr-send-last-session ()
+(defun herdr-send-recent-session ()
   "Send context at point to the last-used agent across all sessions."
   (interactive)
   (herdr-agent--send-session 'all t))
@@ -1291,7 +1291,7 @@ another provider handle it.  `herdr-default-send-context' is the fallback.")
   (herdr-agent--send-session 'project nil))
 
 ;;;###autoload
-(defun herdr-send-last-project-session ()
+(defun herdr-send-recent-project-session ()
   "Send context at point to the last-used agent in the current project."
   (interactive)
   (herdr-agent--send-session 'project t))
@@ -1303,7 +1303,7 @@ another provider handle it.  `herdr-default-send-context' is the fallback.")
   (herdr-agent--send-session 'workspace nil))
 
 ;;;###autoload
-(defun herdr-send-last-workspace-session ()
+(defun herdr-send-recent-workspace-session ()
   "Send context at point to the last-used agent in the current workspace."
   (interactive)
   (herdr-agent--send-session 'workspace t))
@@ -1312,7 +1312,7 @@ another provider handle it.  `herdr-default-send-context' is the fallback.")
 
 (defvar herdr-message-history nil
   "Messages sent to agents, most recent first.
-Completion candidates and minibuffer history for `herdr-message-session'.")
+Completion candidates and minibuffer history for `herdr-message-send-session'.")
 
 (defvar-local herdr-message--target nil
   "Agent target the current message buffer sends to.")
@@ -1339,14 +1339,14 @@ do about the agent the message goes to, reached through
 
 (defvar herdr-message-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c C-c") #'herdr-message-send)
+    (define-key map (kbd "C-c C-c") #'herdr-message-commit)
     (define-key map (kbd "C-c C-k") #'herdr-message-cancel)
     map)
   "Keymap for `herdr-message-mode'.")
 
 (define-derived-mode herdr-message-mode text-mode "Herdr-Message"
   "Major mode for composing a message to a herdr agent.
-\\<herdr-message-mode-map>\\[herdr-message-send] sends the message with the
+\\<herdr-message-mode-map>\\[herdr-message-commit] sends the message with the
 context captured when the buffer opened; \\[herdr-message-cancel] discards it.")
 
 (defun herdr-message--context (entry)
@@ -1441,7 +1441,7 @@ that nothing shows yet is attached.  The window sent from stays selected."
     (when configuration
       (set-window-configuration configuration))))
 
-(defun herdr-message-send ()
+(defun herdr-message-commit ()
   "Send the current message buffer to its agent."
   (interactive)
   (unless (derived-mode-p 'herdr-message-mode)
@@ -1568,37 +1568,37 @@ minibuffer moves the draft to a `herdr-message-mode' buffer instead."
     (herdr-message--read target (herdr-message--context entry))))
 
 ;;;###autoload
-(defun herdr-message-session ()
+(defun herdr-message-send-session ()
   "Message an agent selected from every session, with context at point."
   (interactive)
   (herdr-message--session 'all nil))
 
 ;;;###autoload
-(defun herdr-message-last-session ()
+(defun herdr-message-send-recent-session ()
   "Message the last-used agent across all sessions, with context at point."
   (interactive)
   (herdr-message--session 'all t))
 
 ;;;###autoload
-(defun herdr-message-project-session ()
+(defun herdr-message-send-project-session ()
   "Message a selected agent in the current project, with context at point."
   (interactive)
   (herdr-message--session 'project nil))
 
 ;;;###autoload
-(defun herdr-message-last-project-session ()
+(defun herdr-message-send-recent-project-session ()
   "Message the last-used agent in the current project, with context at point."
   (interactive)
   (herdr-message--session 'project t))
 
 ;;;###autoload
-(defun herdr-message-workspace-session ()
+(defun herdr-message-send-workspace-session ()
   "Message a selected agent in the current workspace, with context at point."
   (interactive)
   (herdr-message--session 'workspace nil))
 
 ;;;###autoload
-(defun herdr-message-last-workspace-session ()
+(defun herdr-message-send-recent-workspace-session ()
   "Message the last-used agent in the current workspace, with context at point."
   (interactive)
   (herdr-message--session 'workspace t))
@@ -1716,7 +1716,7 @@ workspace's bindings."
            :key #'herdr--entry-target :test #'equal))
 
 ;;;###autoload
-(defun herdr-message-primary-session ()
+(defun herdr-message-send-primary-session ()
   "Message the primary agent for the current buffer, with context at point.
 Without a binding, read an agent and bind it to the current project."
   (interactive)
