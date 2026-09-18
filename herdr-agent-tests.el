@@ -1390,17 +1390,17 @@ to be reached through the server it was found on."
               (setq session (herdr-agent-find server-key nil)
                     workspace-tab-count 1)
               (should session)
-              (let ((workspace-list-count (cl-count 'workspace-list operations))
-                    (workspace-close-count (cl-count 'workspace-close operations)))
+              (let ((workspace-list-count (cl-count 'workspace-list operations :test #'eq))
+                    (workspace-close-count (cl-count 'workspace-close operations :test #'eq)))
                 (should-error
                  (herdr-agent-start-session "claude" "review"
                                             :server-key server-key
                                             :project-root root))
-                (should (= (cl-count 'workspace-list operations)
+                (should (= (cl-count 'workspace-list operations :test #'eq)
                            (1+ workspace-list-count)))
-                (should (= (cl-count 'workspace-close operations)
+                (should (= (cl-count 'workspace-close operations :test #'eq)
                            workspace-close-count)))
-              (should (= (cl-count 'workspace-create operations) 2))
+              (should (= (cl-count 'workspace-create operations :test #'eq) 2))
               (should (= detach-count 2))
               (should (eq (herdr-agent-find server-key nil) session))
               (setq cleanup-fault nil)
@@ -2328,8 +2328,8 @@ to be reached through the server it was found on."
                        (or (memq entry '(project-root session-for))
                            (and (consp entry) (equal (cadr entry) "assigned"))))
                      trace))
-          (let ((project-position (cl-position 'project-root trace))
-                (session-position (cl-position 'session-for trace))
+          (let ((project-position (cl-position 'project-root trace :test #'eq))
+                (session-position (cl-position 'session-for trace :test #'eq))
                 (server-position (cl-position '(server-key "assigned") trace
                                              :test #'equal)))
             (should (and project-position session-position server-position
@@ -2851,16 +2851,66 @@ to be reached through the server it was found on."
               (should (= (length (window-list)) 2))
               (herdr-toggle-agent)
               (should (= (length (window-list)) 1))
-              (should-not visits)
-              (setq herdr--recent-session-targets
+              (should (buffer-live-p buffer))
+              (should-not shown)
+              ;; Two agents attached in this workspace: the one worked in last.
+              (setq attached '("worktree" "main")
+                    herdr--recent-session-targets
                     '(("/servers/main.sock" . "shared")))
               (herdr-toggle-agent)
-              (should (equal (alist-get 'name (car visits)) "main"))
+              (should (equal (alist-get 'name (car shown)) "main"))
               (should-not agent-reads)
-              (herdr-toggle-agent t)
-              (should (equal agent-reads '("Agent: ")))
-              (should (equal (alist-get 'name (car visits)) "worktree"))))
+              ;; None attached: the workspace's running agents are read,
+              ;; and only those - the agent in another workspace is not offered.
+              (setq attached nil)
+              (herdr-toggle-agent)
+              (should (equal agent-reads '("Show agent: ")))
+              (should (equal offered '("worktree" "main")))
+              (should (equal (alist-get 'name (car shown)) "worktree"))
+              ;; Nothing running anywhere: starting one is offered.
+              (let ((running entries))
+                (setq entries nil)
+                (herdr-toggle-agent)
+                (should started)
+                (should (equal (length shown) 2))
+                (setq entries running))
+              ;; A workspace named for no project of its own still offers
+              ;; the agents of the project at point rather than nothing.
+              (let ((herdr-current-workspace-label-function (lambda () "empty")))
+                (herdr-toggle-agent)
+                (should (equal offered '("worktree"))))))
         (kill-buffer buffer)))))
+
+(ert-deftest herdr-switch-agent-offers-the-workspace-then-everything ()
+  (herdr-agent-tests--with-message-fixture
+    (let (shown offered)
+      (cl-letf (((symbol-function 'herdr-agent--show-entry)
+                 (lambda (entry) (push entry shown) nil))
+                ((symbol-function 'herdr-read-agent)
+                 (lambda (prompt entries)
+                   (push prompt agent-reads)
+                   (setq offered (mapcar (lambda (e) (alist-get 'name e)) entries))
+                   (car entries))))
+        (herdr-switch-agent)
+        (should (equal offered '("worktree" "main")))
+        (should (equal (alist-get 'name (car shown)) "worktree"))
+        (herdr-switch-agent t)
+        (should (equal offered '("worktree" "main" "other")))
+        (let ((running entries))
+          (setq entries nil)
+          (should-error (herdr-switch-agent) :type 'user-error)
+          (setq entries running))))))
+
+(ert-deftest herdr-toggle-agent-reads-an-agent-of-the-workspace-when-asked ()
+  (herdr-agent-tests--with-message-fixture
+    (let (shown)
+      (cl-letf (((symbol-function 'herdr-agent--show-entry)
+                 (lambda (entry) (push entry shown) nil))
+                ((symbol-function 'herdr--entry-buffer) (lambda (_entry) nil)))
+        (ignore shown)
+        (herdr-toggle-agent t)
+        (should (equal agent-reads '("Show agent: ")))
+        (should (equal (alist-get 'name (car shown)) "worktree"))))))
 
 (ert-deftest herdr-agent-notes-the-selected-attachment-as-foreground ()
   (let ((herdr-agent--buffers (make-hash-table :test #'eq))
@@ -2869,10 +2919,11 @@ to be reached through the server it was found on."
     (unwind-protect
         (save-window-excursion
           (delete-other-windows)
-          (herdr-agent--watch-buffer (herdr-agent--make-session :buffer buffer))
+          (herdr-agent--watch-foreground buffer)
           (should (memq #'herdr-agent--note-foreground
                         (buffer-local-value 'window-state-change-functions
                                             buffer)))
+          (should (memq #'herdr-agent--watch-foreground herdr-buffer-functions))
           (puthash buffer '("/servers/a.sock" . "new") herdr-agent--buffers)
           (let ((other (split-window)))
             (set-window-buffer other buffer)
@@ -2916,6 +2967,28 @@ to be reached through the server it was found on."
             (should (eq (herdr-agent--shown-window) window-first))))
       (kill-buffer first)
       (kill-buffer second))))
+
+(ert-deftest herdr-agent-finds-an-attachment-the-lifecycle-never-indexed ()
+  (let ((herdr-agent--buffers (make-hash-table :test #'eq))
+        (herdr--recent-session-targets nil)
+        (buffer (generate-new-buffer " *herdr unindexed*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (should-not (herdr-agent-buffer-target buffer))
+          (with-current-buffer buffer
+            (setq herdr-terminal-id "term-1"
+                  herdr-terminal-server-key "/servers/a.sock"))
+          (should (equal (herdr-agent-buffer-target buffer)
+                         '("/servers/a.sock" . "term-1")))
+          (let ((window (split-window)))
+            (set-window-buffer window buffer)
+            (should (eq (herdr-agent--shown-window) window))
+            (select-window window)
+            (herdr-agent--note-foreground window)
+            (should (equal herdr--recent-session-targets
+                           '(("/servers/a.sock" . "term-1"))))))
+      (kill-buffer buffer))))
 
 (ert-deftest herdr-message-minibuffer-hand-off-opens-the-editor-without-sending ()
   (let ((herdr-message-history nil)

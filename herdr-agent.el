@@ -11,6 +11,7 @@
 (require 'cl-lib)
 (require 'herdr)
 
+(defvar cera-session-keymap)
 (declare-function cera-read "ext:cera"
                   (table &optional initial bounds source-face))
 (declare-function herdr-status-harness-glyph "herdr-status" (entry &optional property))
@@ -247,6 +248,17 @@ Return nil when KIND has no registered adapter."
     (setf (herdr-agent-session-buffer session) nil)
     (herdr-agent-detach session)))
 
+(defun herdr-agent-buffer-target (buffer)
+  "Return the composite target of the herdr terminal BUFFER shows, or nil.
+A session this Emacs started or adopted answers from the lifecycle
+index; a terminal attached on its own answers from the identity
+`herdr-claim-buffer' left on the buffer, which every attachment carries."
+  (when (buffer-live-p buffer)
+    (or (gethash buffer herdr-agent--buffers)
+        (when-let* ((terminal (buffer-local-value 'herdr-terminal-id buffer))
+                    (server (buffer-local-value 'herdr-terminal-server-key buffer)))
+          (cons server terminal)))))
+
 (defun herdr-agent--note-foreground (window)
   "Record WINDOW's agent as the most recently used one.
 Runs from `window-state-change-functions' during redisplay, where the
@@ -257,16 +269,24 @@ chosen in that minibuffer stays the most recent one."
              (or (not (eq (window-old-buffer window) (window-buffer window)))
                  (not (minibufferp (window-buffer (old-selected-window))))))
     (herdr--record-session-target
-     (gethash (window-buffer window) herdr-agent--buffers))))
+     (herdr-agent-buffer-target (window-buffer window)))))
 
-(defun herdr-agent--watch-buffer (session)
-  "Watch SESSION's attachment buffer.
-Selecting a window showing it makes its agent the foreground one."
-  (when-let* ((buffer (herdr-agent-session-buffer session)))
+(defun herdr-agent--watch-foreground (buffer)
+  "Make selecting BUFFER's window mark the agent it shows as the foreground one.
+Runs for every buffer that starts showing a herdr terminal, so an
+attachment this Emacs never took up the lifecycle of counts too."
+  (when (buffer-live-p buffer)
     (with-current-buffer buffer
-      (add-hook 'kill-buffer-hook #'herdr-agent--buffer-died nil t)
       (add-hook 'window-state-change-functions
                 #'herdr-agent--note-foreground nil t))))
+
+(add-hook 'herdr-buffer-functions #'herdr-agent--watch-foreground)
+
+(defun herdr-agent--watch-buffer (session)
+  "Watch SESSION's attachment buffer."
+  (when-let* ((buffer (herdr-agent-session-buffer session)))
+    (with-current-buffer buffer
+      (add-hook 'kill-buffer-hook #'herdr-agent--buffer-died nil t))))
 
 (defun herdr-agent--watch-attachment (session)
   "Detach SESSION when its terminal attachment exits."
@@ -1303,6 +1323,14 @@ Completion candidates and minibuffer history for `herdr-message-session'.")
 (defvar-local herdr-message--window-configuration nil
   "Window configuration to restore when the message buffer closes.")
 
+(defvar-keymap herdr-message-field-map
+  :doc "Keys an integration adds to the field a message is written in.
+The field's own keys stay in place, as does whatever keymap a caller
+already put in `cera-session-keymap': this map is composed in front of
+it rather than instead of it.  It is where a consumer puts what it can
+do about the agent the message goes to, reached through
+`herdr-message--pending'.")
+
 (defvar herdr-message-minibuffer-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c '") #'herdr-message-edit-from-minibuffer)
@@ -1492,6 +1520,10 @@ cera or the minibuffer itself."
            (not (get-buffer-process (current-buffer)))
            (or (fboundp 'cera-read) (require 'cera nil t)))
       (let ((cera-input-prefix (herdr-message--field-prefix target))
+            (cera-session-keymap
+             (if cera-session-keymap
+                 (make-composed-keymap herdr-message-field-map cera-session-keymap)
+               herdr-message-field-map))
             (herdr-message--pending (cons target context)))
         (message "Message to %s" (herdr-message--target-label target))
         (herdr-message--show-target
@@ -1743,7 +1775,7 @@ already standing in."
   (or (cl-loop for target in herdr--recent-session-targets
                thereis (cl-find target entries :key #'herdr--entry-target
                                 :test #'equal))
-      (cl-find t entries :key (lambda (entry) (alist-get 'focused entry)))
+      (seq-find (lambda (entry) (eq (alist-get 'focused entry) t)) entries)
       (and any (car entries))))
 
 (defun herdr-agent--foreground-or-read-entry (choose)
@@ -1767,14 +1799,14 @@ The selected window when it shows an agent, then the shown agent used
 most recently, then any shown agent."
   (let ((windows (seq-filter
                   (lambda (window)
-                    (gethash (window-buffer window) herdr-agent--buffers))
+                    (herdr-agent-buffer-target (window-buffer window)))
                   (window-list))))
     (or (car (memq (selected-window) windows))
         (cl-loop for target in herdr--recent-session-targets
                  thereis (seq-find
                           (lambda (window)
-                            (equal (gethash (window-buffer window)
-                                            herdr-agent--buffers)
+                            (equal (herdr-agent-buffer-target
+                                    (window-buffer window))
                                    target))
                           windows))
         (car windows))))
@@ -1785,27 +1817,166 @@ most recently, then any shown agent."
       (delete-window window)
     (switch-to-prev-buffer window 'bury)))
 
+(defcustom herdr-toggle-agent-display-action nil
+  "Display action `herdr-toggle-agent' shows an agent's terminal under.
+Nil leaves the placement to `display-buffer-alist', so whatever popup
+rule the editor already holds for herdr terminals decides where the
+agent lands and whether it takes focus."
+  :type '(choice (const :tag "Whatever the editor's rules say" nil) sexp)
+  :group 'herdr-agent)
+
+(defconst herdr-agent--nowhere '(display-buffer-no-window (allow-no-window . t))
+  "Display action putting a buffer nowhere.
+An attach shows what it attached on its own; suppressing that leaves the
+buffer to go out once, through the rules the editor keeps for it.")
+
+(defun herdr-agent-workspace-buffer-p (buffer)
+  "Return non-nil when BUFFER sits in the current editor workspace.
+A workspace package keeping a buffer list of its own is the one that
+knows: `persp-mode', which doom's workspaces are built on, is asked
+wherever it is loaded.  Without one every buffer is in the workspace
+there is."
+  (if (fboundp 'persp-contain-buffer-p)
+      (persp-contain-buffer-p buffer)
+    t))
+
+(defcustom herdr-agent-workspace-buffer-predicate #'herdr-agent-workspace-buffer-p
+  "Predicate saying whether a terminal buffer is in the current workspace.
+It is called with the buffer.  This is what decides which attached
+agents `herdr-toggle-agent' counts as being here, so an editor that
+groups buffers its own way answers for itself."
+  :type 'function
+  :group 'herdr-agent)
+
+(defun herdr-agent--workspace-entries (entries)
+  "Return the members of ENTRIES this workspace can be said to hold.
+The editor's workspace label picks them wherever an agent answers to
+it.  A workspace named for no project of its own, or holding several,
+falls back to the project at point and then to every agent running, so
+what is offered is the nearest thing rather than nothing."
+  (or (and (herdr-current-workspace-label)
+           (ignore-errors (herdr-agent--send-scope-entries entries 'workspace)))
+      (ignore-errors (herdr-agent--send-scope-entries entries 'project))
+      entries))
+
+(defun herdr-agent--attached-entries (entries)
+  "Return the members of ENTRIES this workspace already holds a buffer for.
+Membership is the editor's own, through
+`herdr-agent-workspace-buffer-predicate': an agent attached into this
+workspace is here whatever directory it works in.  The one reached for
+most recently leads, so a workspace with several answers with the one
+last worked in."
+  (herdr-recent-first
+   (seq-filter (lambda (entry)
+                 (when-let* ((buffer (herdr--entry-buffer entry)))
+                   (funcall herdr-agent-workspace-buffer-predicate buffer)))
+               entries)))
+
+(defun herdr-agent--focus-buffer (buffer)
+  "Show BUFFER, take the cursor to its prompt, and return its window.
+The editor's own rules place the window; taking the cursor there is not
+theirs to decide, since the point of showing an agent is to type at it."
+  (when-let* ((window (display-buffer buffer herdr-toggle-agent-display-action)))
+    (select-window window)
+    (herdr-terminal-goto-prompt buffer)
+    window))
+
+(defun herdr-agent--show-entry (entry)
+  "Show ENTRY's terminal and return the window it went to.
+The buffer goes out through `display-buffer', so the editor's own rules
+place it, and an entry nothing shows yet is attached without being put
+anywhere first rather than taking a window of herdr's choosing."
+  (when-let* ((buffer (or (herdr--entry-buffer entry)
+                          (let ((herdr-display-buffer-action herdr-agent--nowhere))
+                            (herdr-attach-entry entry))))
+              ((buffer-live-p buffer)))
+    (herdr--record-session-target (herdr--entry-target entry))
+    (herdr-agent--focus-buffer buffer)))
+
+(defun herdr-agent--start-in-workspace ()
+  "Start an agent where the current workspace works, after asking which.
+The workspace is left as it is: the agent opens in it rather than the
+editor moving to the agent."
+  (let* ((kind (completing-read "No agent here.  Start harness: "
+                                (mapcar #'car herdr-agent-harnesses) nil t))
+         (session (let ((herdr-display-buffer-action herdr-agent--nowhere))
+                    (herdr-agent-start
+                     kind nil
+                     :project-root (or (funcall herdr-project-root-function)
+                                       default-directory)
+                     :workspace (herdr-current-workspace-label))))
+         (buffer (and session (herdr-agent-session-buffer session))))
+    (when (buffer-live-p buffer)
+      (herdr-agent--focus-buffer buffer))))
+
 ;;;###autoload
 (defun herdr-toggle-agent (&optional choose)
-  "Hide the agent on screen, or show the foreground agent of the workspace.
-The foreground agent is the one used most recently from Emacs, then the
-one herdr has focused, then the only one there is.  When none stands
-out, or with CHOOSE, the prefix argument, one is read.  An agent nothing
-shows yet is attached first."
+  "Show this workspace's agent, or take the one on screen off it.
+A herdr terminal already on the frame is hidden: its window goes, its
+buffer stays, and nothing else moves.  Otherwise the workspace answers
+with the agent it has attached and worked in most recently, shown
+wherever the editor's own rules put a herdr terminal.  A workspace
+holding no attached agent reads one of the agents running in it, and a
+workspace running none offers to start one.  CHOOSE, the prefix
+argument, reads an agent whatever is on screen.
+
+The current workspace stays the current one throughout: nothing here
+switches to where an agent happens to live, and hiding one keeps its
+buffer and everything else about its window."
   (interactive "P")
   (if-let* ((window (and (not choose) (herdr-agent--shown-window))))
       (herdr-agent--hide-window window)
-    (herdr-visit (herdr-agent--foreground-or-read-entry choose))))
+    (let* ((all (herdr-agent--send-candidates))
+           (_ (herdr--prune-session-targets all))
+           (attached (unless choose (herdr-agent--attached-entries all)))
+           (entries (herdr-agent--workspace-entries all)))
+      (cond
+       (attached (herdr-agent--show-entry (car attached)))
+       (entries (herdr-agent--show-entry
+                 (herdr-read-agent "Show agent: " entries)))
+       (t (herdr-agent--start-in-workspace))))))
 
 ;;;###autoload
-(defun herdr-message-foreground-session (&optional choose)
-  "Message the foreground agent of the workspace, with context at point.
-The agent is resolved the way `herdr-toggle-agent' resolves it; CHOOSE,
-the prefix argument, reads one instead."
+(defun herdr-switch-agent (&optional all)
+  "Read one of this workspace's agents and show it at its prompt.
+The workspace's agents are the ones `herdr-toggle-agent' would reach
+for; ALL, the prefix argument, offers every agent running instead.  An
+agent nothing shows yet is attached, and either way the cursor ends up
+where the agent takes input."
+  (interactive "P")
+  (let* ((entries (herdr-agent--send-candidates))
+         (_ (herdr--prune-session-targets entries))
+         (pool (if all entries (herdr-agent--workspace-entries entries))))
+    (unless pool
+      (user-error "No herdr agent is running"))
+    (herdr-agent--show-entry
+     (herdr-read-agent (if all "Switch to agent: " "Switch to agent here: ")
+                       pool))))
+
+;;;###autoload
+(defun herdr-message-send (&optional choose)
+  "Write a message to the agent at hand, carrying the context at point.
+The agent is the foreground one of the workspace, resolved the way
+`herdr-toggle-agent' resolves it, which is what makes this the command
+to reach for; CHOOSE, the prefix argument, reads one instead.  The
+`herdr-message-send-...' commands name a scope to pick from rather than
+taking the agent already in front of you."
   (interactive "P")
   (let ((entry (herdr-agent--foreground-or-read-entry choose)))
     (herdr-message--read (herdr--entry-target entry)
                          (herdr-message--context entry))))
+
+;;;###autoload
+(defun herdr-send (&optional choose)
+  "Send the context at point to the agent at hand, writing nothing.
+The agent is resolved as `herdr-message-send' resolves it, and CHOOSE,
+the prefix argument, reads one instead.  Where that command opens a
+field to write in, this one sends the region or the current line as it
+stands."
+  (interactive "P")
+  (let ((entry (herdr-agent--foreground-or-read-entry choose)))
+    (herdr-agent-prompt (herdr--entry-target entry)
+                        (herdr-agent--send-context entry))))
 
 (provide 'herdr-agent)
 ;;; herdr-agent.el ends here
