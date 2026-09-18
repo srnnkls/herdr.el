@@ -34,6 +34,7 @@
 (require 'subr-x)
 (require 'herdr-core)
 (require 'herdr-api)
+(require 'herdr-terminal)
 
 (declare-function ghostel-exec "ext:ghostel" (buffer program &optional args identity))
 (declare-function ghostel--copy-all-text "ext:ghostel-module" (term))
@@ -532,6 +533,8 @@ cannot drift apart.  `herdr-buffer-functions' then sees the buffer."
                                 server-key)
                          (get-buffer-process buffer)))
                   (buffer-list)))))
+
+(defvar ghostel--cursor-char-pos)
 
 (defun herdr--free-buffer-name (label terminal-id &optional server-key directory)
   "Return a buffer name for LABEL that no other terminal answers to.

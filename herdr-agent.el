@@ -1034,15 +1034,121 @@ may submit input."
                                (herdr-api-agent-read
                                 "visible" request-target :strip-ansi t))))))))
 
+(defcustom herdr-agent-preserve-draft t
+  "Whether a draft in an agent's prompt survives a message sent to it.
+A message goes out through the daemon, which appends it to whatever the
+prompt already holds.  A terminal this Emacs holds and shows can be
+driven directly instead: what is in the prompt is read, cleared, and put
+back after the message, so a half-written line is not sent along with
+it.  Every other session takes the message the way it always did."
+  :type 'boolean
+  :group 'herdr)
+
+(defconst herdr-agent--prompt-blank "[ \t\u00a0]"
+  "A blank cell of a terminal screen, which a prompt pads itself with.")
+
+(defconst herdr-agent--prompt-filled "[^ \t\u00a0]"
+  "A cell of a terminal screen carrying something.")
+
+(defcustom herdr-agent-prompt-marker
+  (concat "\\`" herdr-agent--prompt-blank "*\\(?:❯\\|›\\|▌\\|>\\)"
+          herdr-agent--prompt-blank)
+  "What the beginning of an agent's input line looks like on screen.
+The draft is the text after the match, together with the lines below it
+up to `herdr-agent-prompt-rule'."
+  :type 'regexp
+  :group 'herdr)
+
+(defcustom herdr-agent-prompt-rule
+  (concat "\\`" herdr-agent--prompt-blank "*[─━—_-]\\{8,\\}"
+          herdr-agent--prompt-blank "*\\'")
+  "What closes the box an agent's input line sits in."
+  :type 'regexp
+  :group 'herdr)
+
+(defcustom herdr-agent-prompt-clear "\C-u"
+  "What is sent to empty an agent's input line."
+  :type 'string
+  :group 'herdr)
+
+(defcustom herdr-agent-prompt-submit "\r"
+  "What is sent to submit an agent's input line."
+  :type 'string
+  :group 'herdr)
+
+(defun herdr-agent--marker-width (line)
+  "Return how far into LINE the text after the prompt marker begins."
+  (and (string-match herdr-agent-prompt-marker line) (match-end 0)))
+
+(defun herdr-agent--screen-trim (line)
+  "Return LINE without the blank cells the screen padded it out with."
+  (replace-regexp-in-string (concat herdr-agent--prompt-blank "+\\'") "" line))
+
+(defun herdr-agent--screen-unindent (line width)
+  "Return LINE without the blanks the prompt indents it by, at most WIDTH."
+  (substring line (min width (or (string-match herdr-agent--prompt-filled line)
+                                 (length line)))))
+
+(defun herdr-agent-screen-draft (screen)
+  "Return the draft standing in the input line of SCREEN, or nil.
+Lines below the input line belong to the draft up to the rule closing
+its box.  A line that wrapped and one the agent was made to break look
+alike on a screen, and both are read as a break."
+  (when screen
+    (let* ((lines (split-string screen "\n"))
+           (index (cl-position-if #'herdr-agent--marker-width lines :from-end t)))
+      (when index
+        (let* ((rest (nthcdr index lines))
+               (width (herdr-agent--marker-width (car rest)))
+               (body (cons (substring (car rest) width)
+                           (seq-take-while
+                            (lambda (line)
+                              (not (string-match-p herdr-agent-prompt-rule line)))
+                            (cdr rest))))
+               (draft (herdr-agent--screen-trim
+                       (mapconcat
+                        (lambda (line)
+                          (herdr-agent--screen-trim
+                           (herdr-agent--screen-unindent line width)))
+                        body "\n"))))
+          (unless (string-empty-p draft) draft))))))
+
+(defun herdr-agent-draft (target)
+  "Return the draft standing in TARGET's prompt, or nil.
+Only a terminal this Emacs holds and shows can be read."
+  (when-let* ((buffer (herdr-terminal-buffer (cdr target) (car target))))
+    (herdr-agent-screen-draft (herdr-terminal-screen buffer))))
+
+(defun herdr-agent--prompt-locally (target text)
+  "Send TEXT to TARGET's own terminal, under the draft its prompt holds.
+Answers nil when the terminal is not this Emacs's to drive, or when its
+prompt holds nothing to keep, leaving TEXT to go out through the daemon.
+The terminal is shown first, since one off screen is not repainted and
+reads as it was rather than as it is.  The clear, the message, its
+submission and the draft are written in that order by one writer, so
+none of them waits on the agent reacting."
+  (when-let* ((buffer (herdr-terminal-buffer (cdr target) (car target))))
+    (unless (get-buffer-window buffer t) (display-buffer buffer))
+    (when-let* ((draft (herdr-agent-screen-draft (herdr-terminal-screen buffer)))
+                ((herdr-terminal-send herdr-agent-prompt-clear buffer)))
+      (herdr-terminal-paste text buffer)
+      (herdr-terminal-send herdr-agent-prompt-submit buffer)
+      (herdr-terminal-paste draft buffer)
+      t)))
+
 (defun herdr-agent-prompt (target text)
-  "Send TEXT to TARGET through herdr's agent API."
+  "Send TEXT to TARGET through herdr's agent API.
+A draft standing in the prompt of a terminal this Emacs holds is kept
+across the message when `herdr-agent-preserve-draft' allows it."
   (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
     (prog1
-        (herdr-agent--with-server server-key
-          (herdr-agent--call-with-request-target
-           server-key terminal
-           (lambda (request-target)
-             (herdr-api-agent-prompt request-target text))))
+        (or (and herdr-agent-preserve-draft
+                 (herdr-agent--prompt-locally (cons server-key terminal) text))
+            (herdr-agent--with-server server-key
+              (herdr-agent--call-with-request-target
+               server-key terminal
+               (lambda (request-target)
+                 (herdr-api-agent-prompt request-target text)))))
       (herdr--record-session-target (cons server-key terminal)))))
 
 (defvar herdr-send-context-functions nil

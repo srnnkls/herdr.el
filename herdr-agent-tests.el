@@ -2938,9 +2938,77 @@ to be reached through the server it was found on."
               (should (buffer-live-p editor))
               (should (equal (with-current-buffer editor (buffer-string)) "half"))
               (should-not prompts)
-              (with-current-buffer editor (herdr-message-send))
+              (with-current-buffer editor (herdr-message-commit))
               (should (equal prompts `((,target "half\n\n---\nctx")))))
           (when (buffer-live-p editor) (kill-buffer editor)))))))
+
+(defun herdr-agent-tests--box (&rest lines)
+  "Return a screen whose prompt box holds LINES."
+  (let ((rule (make-string 40 ?\u2500)))
+    (string-join (append (list "\u23fa a reply" "" rule)
+                         lines
+                         (list rule "  Opus 5 | herdr"))
+                 "\n")))
+
+(ert-deftest herdr-agent-reads-the-draft-standing-in-a-prompt ()
+  (should (equal (herdr-agent-screen-draft
+                  (herdr-agent-tests--box "\u276f keep me"))
+                 "keep me"))
+  (should (equal (herdr-agent-screen-draft
+                  (herdr-agent-tests--box "\u203a keep me  "))
+                 "keep me"))
+  (should (equal (herdr-agent-screen-draft
+                  (herdr-agent-tests--box "\u276f first line" "  second line"))
+                 "first line\nsecond line"))
+  (should (equal (herdr-agent-screen-draft
+                  (concat (herdr-agent-tests--box "\u276f an older line") "\n"
+                          (herdr-agent-tests--box "\u276f the live one")))
+                 "the live one")))
+
+(ert-deftest herdr-agent-a-prompt-parted-from-its-draft-by-a-hard-space-is-read ()
+  "Claude sets its marker off with a no-break space rather than a space."
+  (let ((hard "\u00a0"))
+    (should (equal (herdr-agent-screen-draft
+                    (herdr-agent-tests--box (concat "\u276f" hard "keep me" hard)))
+                   "keep me"))
+    (should-not (herdr-agent-screen-draft
+                 (herdr-agent-tests--box (concat "\u276f" hard hard))))))
+
+(ert-deftest herdr-agent-an-empty-prompt-holds-no-draft ()
+  (should-not (herdr-agent-screen-draft (herdr-agent-tests--box "\u276f ")))
+  (should-not (herdr-agent-screen-draft "a screen with no prompt at all"))
+  (should-not (herdr-agent-screen-draft nil)))
+
+(defmacro herdr-agent-tests--sending (screen &rest body)
+  "Run BODY with an attached terminal showing SCREEN, collecting what it took.
+A nil SCREEN stands for a session this Emacs holds no terminal for."
+  (declare (indent 1) (debug t))
+  `(let (written)
+     (cl-letf (((symbol-function 'herdr-terminal-buffer)
+                (lambda (&rest _) (and ,screen (current-buffer))))
+               ((symbol-function 'herdr-terminal-screen) (lambda (&rest _) ,screen))
+               ((symbol-function 'get-buffer-window) (lambda (&rest _) t))
+               ((symbol-function 'herdr-terminal-send)
+                (lambda (text &optional _buffer) (push (cons 'send text) written) t))
+               ((symbol-function 'herdr-terminal-paste)
+                (lambda (text &optional _buffer) (push (cons 'paste text) written) t)))
+       ,@body)
+     (nreverse written)))
+
+(ert-deftest herdr-agent-a-message-is-sent-under-the-draft-it-finds ()
+  (should (equal (herdr-agent-tests--sending
+                     (herdr-agent-tests--box "\u276f half a thought")
+                   (should (herdr-agent--prompt-locally '("local" . "w1:p1") "a message")))
+                 `((send . ,herdr-agent-prompt-clear)
+                   (paste . "a message")
+                   (send . ,herdr-agent-prompt-submit)
+                   (paste . "half a thought")))))
+
+(ert-deftest herdr-agent-a-prompt-with-nothing-in-it-is-left-to-the-daemon ()
+  (should-not (herdr-agent-tests--sending (herdr-agent-tests--box "\u276f ")
+                (should-not (herdr-agent--prompt-locally '("local" . "w1:p1") "a message"))))
+  (should-not (herdr-agent-tests--sending nil
+                (should-not (herdr-agent--prompt-locally '("local" . "w1:p1") "a message")))))
 
 (provide 'herdr-agent-tests)
 ;;; herdr-agent-tests.el ends here
