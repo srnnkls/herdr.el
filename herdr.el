@@ -419,6 +419,22 @@ fallback."
     (add-hook 'ghostel-exit-functions #'herdr--terminal-exited -90 t)
     (add-hook 'kill-buffer-hook #'herdr--terminal-closing -90 t)))
 
+(defcustom herdr-terminal-quiet-exit-regexps
+  '("\\`detached from "
+    "\\`server shut down: terminal [^ ]+ exited\\'")
+  "Regexps matching the CLI lines that end a terminal without a fault.
+An attachment ends when the pane it shows does, and the process behind
+that pane ending - an agent given \\[universal-argument] C-d, a shell
+told to exit - is the terminal running its course rather than anything
+going wrong.  A line matching none of these is reported."
+  :type '(repeat regexp)
+  :group 'herdr)
+
+(defun herdr--terminal-quiet-exit-p (line)
+  "Return non-nil when LINE ends a terminal without a fault."
+  (seq-some (lambda (regexp) (string-match-p regexp line))
+            herdr-terminal-quiet-exit-regexps))
+
 (defun herdr--terminal-error-reason (text)
   "Return the last Herdr CLI error line in TEXT, or nil."
   (save-match-data
@@ -428,7 +444,7 @@ fallback."
       (while (string-match "^herdr: \\([^\n]+\\)" text start)
         (setq start (match-end 0))
         (let ((line (string-trim (match-string 1 text))))
-          (setq reason (unless (string-prefix-p "detached from " line) line))))
+          (setq reason (unless (herdr--terminal-quiet-exit-p line) line))))
       reason)))
 
 (defun herdr--terminal-exited (buffer _event)

@@ -937,10 +937,27 @@ looks for a replacement buffer runs into."
       (insert "herdr: an earlier error\nherdr: detached from server\n")
       (herdr--terminal-exited (current-buffer) "finished\n")
       (should-not herdr--terminal-error-reported)
+      (insert "herdr: server shut down: terminal term-1 exited\n")
+      (herdr--terminal-exited (current-buffer) "finished\n")
+      (should-not herdr--terminal-error-reported)
       (insert "herdr: server shut down: terminal attach taken over\n")
       (herdr--terminal-closing)
       (herdr--terminal-exited (current-buffer) "deleted\n")
       (should-not herdr--terminal-error-reported))))
+
+(ert-deftest herdr-terminal-reason-keeps-a-fault-and-drops-a-plain-ending ()
+  (should-not (herdr--terminal-error-reason
+               "herdr: server shut down: terminal term_65ba exited\n"))
+  (should-not (herdr--terminal-error-reason "herdr: detached from server\n"))
+  (should (equal (herdr--terminal-error-reason
+                  "herdr: server shut down: terminal attach taken over\n")
+                 "server shut down: terminal attach taken over"))
+  (should (equal (herdr--terminal-error-reason
+                  "herdr: lost connection to server: broken pipe\n")
+                 "lost connection to server: broken pipe"))
+  (should-not (herdr--terminal-error-reason
+               (concat "herdr: lost connection to server: broken pipe\n"
+                       "herdr: server shut down: terminal term_65ba exited\n"))))
 
 (ert-deftest herdr-attach-entry-session-overrides-stale-socket-metadata ()
   (let ((herdr-session 'shared)
