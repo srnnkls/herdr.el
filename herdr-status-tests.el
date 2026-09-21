@@ -188,6 +188,57 @@
     (should (equal (get-text-property (match-beginning 0) 'font-lock-face)
                    'herdr-status-harness-codex))))
 
+(ert-deftest herdr-status-cuts-a-field-to-its-column-and-keeps-the-whole ()
+  (let ((herdr-status-column-widths '((branch . 10))))
+    (let* ((entries (list '((agent . "claude") (pane_id . "%1")
+                            (cwd . "/repo"))))
+           (long "feat/limen-agent-interface")
+           (workspaces (make-hash-table :test #'equal)))
+      (cl-letf (((symbol-function 'herdr-directory-branch) (lambda (_) long)))
+        (let* ((widths (herdr-status--widths entries workspaces))
+               (cell (herdr-status--field-column 'branch
+                                                 (herdr-status--branch (car entries))
+                                                 (nth 5 widths))))
+          (should (= (nth 5 widths) 10))
+          (should (string-match-p "feat/lime" cell))
+          (should-not (string-match-p "interface" cell))
+          (should (equal (get-text-property (1- (length cell))
+                                            'herdr-status-full cell)
+                         long))))))
+  (let ((herdr-status-column-widths nil))
+    (should-not (herdr-status-column-width 'branch))
+    (let ((cell (herdr-status--cut "feat/limen-agent-interface" 40)))
+      (should (equal cell "feat/limen-agent-interface"))
+      (should-not (get-text-property 0 'herdr-status-full cell)))))
+
+(ert-deftest herdr-status-echoes-the-field-point-stands-in ()
+  (let ((herdr-status-echo-cut-fields t)
+        (cut (herdr-status--cut "feat/limen-agent-interface" 10))
+        echoed)
+    (with-temp-buffer
+      (insert " " cut " ")
+      (goto-char 3)
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format &rest arguments)
+                   (setq echoed (apply #'format format arguments)))))
+        (herdr-status--echo-cut-field))
+      (should (equal echoed "feat/limen-agent-interface"))
+      (setq echoed nil)
+      (goto-char (point-min))
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format &rest arguments)
+                   (setq echoed (apply #'format format arguments)))))
+        (herdr-status--echo-cut-field))
+      (should-not echoed))))
+
+(ert-deftest herdr-status-marks-oh-my-pi-with-a-pi ()
+  (let ((mark (herdr-status-harness-glyph "omp")))
+    (should mark)
+    (should (equal (get-text-property 0 'face mark) 'herdr-status-harness-omp))
+    (should (member (substring mark 0 1) '("\U000F03FF" "\ue22c" "π"))))
+  (let ((herdr-status-nerd-font nil))
+    (should (string-prefix-p "π" (herdr-status-harness-glyph "omp")))))
+
 (ert-deftest herdr-status-leaves-magit-its-own-visibility-indicators ()
   (let ((magit-section-visibility-indicators
          '((magit-fringe-bitmap> . magit-fringe-bitmapv) ("…" . t))))
@@ -1560,13 +1611,13 @@ Emacs releases the attachment first and the two go together."
               (herdr-status-refresh))
             (goto-char (point-min))
             (should (re-search-forward
-                     (concat "^ +● api-review .*\uea85 %1 +\ueae3 herdr\\.el "
+                     (concat "^ +● api-review .*\ueae3 %1 +\uea85 herdr\\.el "
                              "+\uf126 feat/branch-column +\uea83 "
                              (regexp-quote (abbreviate-file-name repo)) "$")
                      nil t))
             (goto-char (point-min))
             (should (re-search-forward
-                     "^ +. +docs .*\uea85 %2 +\ueae3 herdr\\.el +\uea83 /tmp/proj/$"
+                     "^ +. +docs .*\ueae3 %2 +\uea85 herdr\\.el +\uea83 /tmp/proj/$"
                      nil t))))
       (delete-directory root t))))
 
@@ -1656,6 +1707,42 @@ Emacs releases the attachment first and the two go together."
            (columns (herdr-status--trailing-columns silent widths workspaces)))
       (should (zerop (nth 6 widths)))
       (should-not (nth 3 columns)))))
+
+(ert-deftest herdr-status-draws-the-context-window-an-agent-reports ()
+  (let* ((reported '((agent . "claude") (pane_id . "%1")
+                     (tokens . ((context . "136k/200k")))))
+         (blank '((agent . "codex") (pane_id . "%2")
+                  (tokens . ((context . "")))))
+         (silent '((agent . "pi") (pane_id . "%3")))
+         (workspaces (make-hash-table :test #'equal)))
+    (should (equal (herdr-status--context reported) "136k/200k"))
+    (should-not (herdr-status--context blank))
+    (should-not (herdr-status--context silent))
+    (let* ((entries (list reported silent))
+           (widths (herdr-status--widths entries workspaces))
+           (cells (string-join
+                   (delq nil (herdr-status--trailing-columns
+                              reported widths workspaces))
+                   "  ")))
+      (should (= (nth 7 widths) (string-width "136k/200k")))
+      (should (string-match-p "136k/200k" cells)))
+    (let ((widths (herdr-status--widths (list silent) workspaces)))
+      (should (zerop (nth 7 widths))))))
+
+(ert-deftest herdr-status-sorts-agents-by-the-share-of-their-window ()
+  (should (equal (herdr-status--context-key
+                  '((tokens . ((context . "136k/200k")))))
+                 "068"))
+  (should (equal (herdr-status--context-key
+                  '((tokens . ((context . "536k/1M")))))
+                 "054"))
+  (should (equal (herdr-status--context-key
+                  '((tokens . ((context . "940/200k")))))
+                 "000"))
+  (should (equal (herdr-status--context-key '((pane_id . "%1"))) ""))
+  (should (equal (herdr-status--context-key
+                  '((tokens . ((context . "half full")))))
+                 "")))
 
 (ert-deftest herdr-status-new-agent-takes-its-harness-and-place-from-point ()
   (herdr-status-tests--with-dashboard

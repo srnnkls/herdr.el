@@ -110,6 +110,12 @@ reads as brown beside the other states, so the colour is its own."
   "Face for the mark drawn beside a Claude Code agent."
   :group 'herdr-status)
 
+(defface herdr-status-harness-omp
+  '((((class color) (min-colors 88)) :foreground "#a78bfa")
+    (t :inherit font-lock-constant-face))
+  "Face for the mark drawn beside an Oh My Pi agent."
+  :group 'herdr-status)
+
 (defface herdr-status-harness-codex
   '((((class color) (min-colors 88) (background dark)) :foreground "#ededed")
     (((class color) (min-colors 88) (background light)) :foreground "#3c3c3c")
@@ -140,7 +146,8 @@ the glyph on any display, and nil never draws one."
 
 (defcustom herdr-status-harness-marks
   '(("claude" ("\uec82" "✳") . herdr-status-harness-claude)
-    ("codex" ("\uec81" "⌬") . herdr-status-harness-codex))
+    ("codex" ("\uec81" "⌬") . herdr-status-harness-codex)
+    ("omp" ("\U000F03FF" "\ue22c" "π") . herdr-status-harness-omp))
   "Marks drawn before an agent's harness, keyed by that harness.
 Each entry gives the glyph and the face it is drawn in.  A harness
 without one is drawn blank, so harness names stay in the same column
@@ -149,9 +156,9 @@ and a glyph wider than one column pushes them out of it.
 
 A glyph may be a list of candidates in order of preference, of which the
 first the display can show is drawn: the vendor logos
-\\='nf-cod-claude\\=' and \\='nf-cod-openai\\=' come first and the
-Unicode marks behind them, and `herdr-status-nerd-font' says whether the
-logos are considered at all."
+\\='nf-cod-claude\\=', \\='nf-cod-openai\\=' and \\='nf-md-pi\\=' come
+first and the Unicode marks behind them, and `herdr-status-nerd-font'
+says whether the logos are considered at all."
   :type '(alist :key-type string
                 :value-type (cons (choice (string :tag "Glyph")
                                           (repeat (string :tag "Candidate")))
@@ -178,10 +185,11 @@ preference, of which the first the display can show is drawn."
   :group 'herdr-status)
 
 (defcustom herdr-status-field-glyphs
-  '((pane "\uea85" "▣" "#")
-    (workspace "\ueae3" "▤" "")
+  '((pane "\ueae3" "▣" "#")
+    (workspace "\uea85" "▤" "")
     (branch "\uf126" "\ue0a0" "⎇" "@")
-    (model "\ueb26" "◆" "*")
+    (model "\U000F035B" "◆" "*")
+    (context "\U000F1278" "◔" "%")
     (directory "\uea83" "/" ""))
   "Glyphs leading the fields that trail a row, keyed by field.
 Each entry lists candidates in order of preference and the first one the
@@ -190,6 +198,16 @@ back to the Unicode ones and a terminal without any of them to `@'.  An
 empty candidate draws the field bare, and `herdr-status-nerd-font' says
 whether the Nerd Font candidates are considered at all."
   :type '(alist :key-type symbol :value-type (repeat string))
+  :group 'herdr-status)
+
+(defcustom herdr-status-column-widths '((workspace . 20) (branch . 20))
+  "How many columns a field may take before it is cut short, keyed by field.
+A field named here is cut to that width and carries what was cut in the
+echo area as point crosses it; a field left out takes the widest value
+its rows carry.  `herdr-status-name-width' rules the name, which is
+measured against the window rather than against its own rows."
+  :type '(alist :key-type symbol
+                :value-type (choice (const :tag "Whole" nil) natnum))
   :group 'herdr-status)
 
 (defcustom herdr-status-state-glyphs '(("idle" . "○"))
@@ -539,6 +557,7 @@ no filter.  Adding an element makes a custom filter available to
     ("pane" . herdr-status--pane-key)
     ("session" . herdr-status--session-name)
     ("model" . herdr-status--model-key)
+    ("context" . herdr-status--context-key)
     ("directory" . herdr-status--directory-key))
   "Keys the agent list can be ordered by, named after the column they read.
 Each value is a function of one entry answering with the string it sorts
@@ -617,6 +636,25 @@ in.  An entry the function answers nil for is grouped under `none'.
 (defun herdr-status--model-key (entry)
   "Return the model ENTRY sorts under, the ones reporting none last."
   (or (herdr-status--model entry) ""))
+
+(defconst herdr-status--context-scales '(("k" . 1000) ("M" . 1000000))
+  "What a figure's suffix multiplies it by.")
+
+(defun herdr-status--context-tokens (figure)
+  "Return the token count FIGURE stands for, or nil."
+  (when (and figure (string-match "\\`\\([0-9.]+\\)\\([kM]\\)?\\'" figure))
+    (* (string-to-number (match-string 1 figure))
+       (or (cdr (assoc (match-string 2 figure) herdr-status--context-scales))
+           1))))
+
+(defun herdr-status--context-key (entry)
+  "Return the share of its window ENTRY holds, the ones reporting none last."
+  (if-let* ((figures (split-string (or (herdr-status--context entry) "") "/"))
+            (held (herdr-status--context-tokens (car figures)))
+            (total (herdr-status--context-tokens (cadr figures)))
+            ((> total 0)))
+      (format "%03d" (round (/ (* 100.0 held) total)))
+    ""))
 
 (defcustom herdr-status-state-order '("working" "blocked" "idle" "done")
   "The order states sort in, the ones wanting attention first.
@@ -796,6 +834,17 @@ column of tofu still says something was there."
   "Return the glyph drawn before FIELD, or the empty string."
   (herdr-status-glyph (alist-get field herdr-status-field-glyphs)))
 
+(defun herdr-status--cut (value width)
+  "Return VALUE cut to WIDTH, carrying the whole of it when it was cut."
+  (if (<= (string-width value) width)
+      value
+    (propertize (truncate-string-to-width value width nil nil t)
+                'herdr-status-full value 'help-echo value)))
+
+(defun herdr-status-column-width (field)
+  "Return the columns FIELD may take, or nil when it may take what it has."
+  (cdr (assq field herdr-status-column-widths)))
+
 (defun herdr-status--field-column (field value width &optional face)
   "Return VALUE behind FIELD's glyph, padded to WIDTH, in FACE.
 A nil VALUE keeps the column's width in blanks so the rows stay aligned,
@@ -803,6 +852,7 @@ and a zero WIDTH means no row has the field, so nothing is drawn."
   (unless (zerop width)
     (let* ((glyph (herdr-status--field-glyph field))
            (face (or face 'herdr-status-meta))
+           (value (and value (herdr-status--cut value width)))
            (lead (if (string-empty-p glyph)
                      ""
                    (concat (propertize glyph 'font-lock-face
@@ -833,11 +883,27 @@ a harness that reports none."
               ((not (string-empty-p model))))
     model))
 
+(defcustom herdr-status-context-token "context"
+  "Metadata token naming how much of its context window an agent holds.
+Herdr carries whatever a pane reports of itself, so the figure arrives
+the way any other self-reported field does, and the column is blank for
+a harness that reports none."
+  :type 'string
+  :group 'herdr-status)
+
+(defun herdr-status--context (entry)
+  "Return the context window ENTRY reports itself holding, or nil."
+  (when-let* ((context (alist-get (intern herdr-status-context-token)
+                                  (alist-get 'tokens entry)))
+              ((stringp context))
+              ((not (string-empty-p context))))
+    context))
+
 (defun herdr-status--trailing-columns (entry widths workspaces)
   "Return the cells that follow ENTRY's session column, on WIDTHS.
-WORKSPACES resolves the workspace label.  The pane, workspace, branch and
-model keep their columns; the directory comes last, being the one field
-whose length varies from row to row."
+WORKSPACES resolves the workspace label.  The pane, workspace, branch,
+model and context keep their columns; the directory comes last, being
+the one field whose length varies from row to row."
   (list (herdr-status--field-column 'pane (alist-get 'pane_id entry)
                                     (nth 3 widths))
         (herdr-status--field-column 'workspace
@@ -847,9 +913,12 @@ whose length varies from row to row."
                                     (nth 5 widths))
         (herdr-status--field-column 'model (herdr-status--model entry)
                                     (nth 6 widths))
+        (herdr-status--field-column 'context (herdr-status--context entry)
+                                    (nth 7 widths))
         (when-let* ((directory (herdr-status--directory entry)))
           (herdr-status--field-column 'directory directory
-                                      (string-width directory)
+                                      (or (herdr-status-column-width 'directory)
+                                          (string-width directory))
                                       'herdr-status-path))))
 
 (defun herdr-status--harness-mark (entry)
@@ -883,12 +952,15 @@ The glyph carries its faces under PROPERTY, as `herdr-status-mark' takes it."
             (propertize (herdr-status--pad harness width)
                         'font-lock-face (herdr-status--harness-face entry)))))
 
-(defun herdr-status--width (entries function minimum)
-  "Return the widest FUNCTION of ENTRIES, never below MINIMUM."
-  (apply #'max minimum
-         (mapcar (lambda (entry)
-                   (string-width (or (funcall function entry) "")))
-                 entries)))
+(defun herdr-status--width (entries function minimum &optional field)
+  "Return the widest FUNCTION of ENTRIES, never below MINIMUM.
+FIELD names the column in `herdr-status-column-widths', which caps it."
+  (let ((widest (apply #'max minimum
+                       (mapcar (lambda (entry)
+                                 (string-width (or (funcall function entry) "")))
+                               entries)))
+        (cap (and field (herdr-status-column-width field))))
+    (if cap (min widest cap) widest)))
 
 (defun herdr-status--workspace-label (entry workspaces)
   "Return the label of ENTRY's workspace, looked up in WORKSPACES."
@@ -914,8 +986,8 @@ The glyph carries its faces under PROPERTY, as `herdr-status-mark' takes it."
 
 (defun herdr-status--row (entry widths workspaces)
   "Return the single line drawn for ENTRY.
-WIDTHS holds the label, harness, session, pane, workspace and branch column
-widths, and WORKSPACES resolves the workspace label."
+WIDTHS holds the label, harness, session, pane, workspace, branch, model
+and context column widths, and WORKSPACES resolves the workspace label."
   (concat
    (herdr-status--attached-column entry)
    (herdr-status--state-column entry) " "
@@ -936,18 +1008,22 @@ draw an agent on the same columns as the agent list with this."
 
 (defun herdr-status--widths (entries workspaces)
   "Return the column widths fitting ENTRIES, labelled via WORKSPACES.
-Label, harness and session keep a floor; pane, workspace, branch and
-model take exactly the widest value, and zero when no entry has one."
+Label, harness and session keep a floor; pane, workspace, branch, model
+and context take exactly the widest value, and zero when no entry has
+one."
   (list (herdr-status--name-width entries)
-        (herdr-status--width entries (lambda (entry) (alist-get 'agent entry)) 6)
-        (herdr-status--width entries #'herdr-status--session-name 6)
-        (herdr-status--width entries (lambda (entry) (alist-get 'pane_id entry)) 0)
+        (herdr-status--width entries (lambda (entry) (alist-get 'agent entry)) 6
+                             'harness)
+        (herdr-status--width entries #'herdr-status--session-name 6 'session)
+        (herdr-status--width entries (lambda (entry) (alist-get 'pane_id entry)) 0
+                             'pane)
         (herdr-status--width entries
                              (lambda (entry)
                                (herdr-status--workspace-label entry workspaces))
-                             0)
-        (herdr-status--width entries #'herdr-status--branch 0)
-        (herdr-status--width entries #'herdr-status--model 0)))
+                             0 'workspace)
+        (herdr-status--width entries #'herdr-status--branch 0 'branch)
+        (herdr-status--width entries #'herdr-status--model 0 'model)
+        (herdr-status--width entries #'herdr-status--context 0 'context)))
 
 (defconst herdr-status--detail-fields
   '(server_key session terminal_id pane_id workspace_id tab_id agent
@@ -1407,6 +1483,29 @@ where memex.el is on the load path, and are unbound where it is not."
       (set-window-margins window left-margin-width
                           (cdr (window-margins window))))))
 
+(defcustom herdr-status-echo-cut-fields t
+  "Whether a field cut to its column is echoed whole as point crosses it.
+The echo area is the room a column has not got.  Nil leaves the cut
+value to the mouse, which reads it from `help-echo' either way."
+  :type 'boolean
+  :group 'herdr-status)
+
+(defun herdr-status-field-at (position)
+  "Return the whole value of the field cut short at POSITION, or nil."
+  (or (get-text-property position 'herdr-status-full)
+      (and (> position (point-min))
+           (get-text-property (1- position) 'herdr-status-full))))
+
+(defun herdr-status--echo-cut-field ()
+  "Echo the whole value of the field point stands in, when it was cut."
+  (when (and herdr-status-echo-cut-fields
+             (not (or executing-kbd-macro
+                      (minibufferp)
+                      (current-message))))
+    (when-let* ((value (herdr-status-field-at (point))))
+      (let ((message-log-max nil))
+        (message "%s" value)))))
+
 (define-derived-mode herdr-status-mode magit-section-mode "Herdr"
   "Major mode for the herdr status dashboard."
   :group 'herdr-status
@@ -1420,7 +1519,8 @@ where memex.el is on the load path, and are unbound where it is not."
     (setq-local left-margin-width 2))
   (herdr-memex-install-keys)
   (add-hook 'window-configuration-change-hook
-            #'herdr-status--widen-fringe nil t))
+            #'herdr-status--widen-fringe nil t)
+  (add-hook 'post-command-hook #'herdr-status--echo-cut-field nil t))
 
 (defvar herdr-status--refreshing nil
   "Non-nil while a redraw is running anywhere.
@@ -1466,6 +1566,13 @@ runs out of stack.")
     (when-let* ((key (herdr-status--collapsible-p section)))
       (when (member key herdr-status--collapsed)
         (magit-section-hide section)))))
+
+(defvar herdr-status-refresh-hook nil
+  "Functions run in a dashboard buffer once it has been drawn.
+`herdr-status-cached-agents' answers with the entries it was drawn from,
+so what a hook wants of them costs no further request.  A hook that
+reaches herdr should leave the work to a timer rather than hold up the
+redraw.")
 
 (defvar herdr-status-sections-functions nil
   "Functions inserting sections at the top of the dashboard.
@@ -1533,7 +1640,8 @@ With CACHED, redraw from the records the last fetch left instead."
     (forward-line (1- line))
     (pcase-dolist (`(,window . ,start) starts)
       (when (window-live-p window)
-        (set-window-start window (min start (point-max)) t)))))
+        (set-window-start window (min start (point-max)) t)))
+    (run-hooks 'herdr-status-refresh-hook)))
 
 (defun herdr-status--expanded-sections ()
   "Return the agent rows `herdr-status-expanded-states' speaks for.
