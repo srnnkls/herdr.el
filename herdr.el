@@ -1,10 +1,10 @@
-;;; herdr.el --- Control herdr terminal workspaces from Emacs -*- lexical-binding: t; -*-
+;;; herdr.el --- Control persistent herdr terminal workspaces -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Sören Nikolaus
 
 ;; Author: Sören Nikolaus <soeren@code17.io>
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1"))
+;; Package-Requires: ((emacs "29.1") (transient "0.13.0") (magit-section "4.0.0"))
 ;; Keywords: terminals, tools, processes
 ;; URL: https://github.com/srnnkls/herdr.el
 
@@ -23,21 +23,28 @@
 ;;   M-x herdr-attach-agent   attach a running agent's terminal
 ;;   M-x herdr-attach-pane    attach any pane's terminal
 ;;
-;; Every API method has a wrapper in herdr-api.el; herdr-claude-code-ide.el
-;; bridges herdr and claude-code-ide sessions.
+;; Every API method has a wrapper in herdr-api.el.
 
 ;;; Code:
 
 (require 'cl-lib)
+
+(defconst herdr-version "0.1.0"
+  "Herdr package version.")
 (require 'subr-x)
 (require 'herdr-core)
 (require 'herdr-api)
+(require 'herdr-terminal)
 
-(declare-function ghostel-exec "ghostel" (buffer program &optional args identity))
-(declare-function eat-mode "eat" ())
-(declare-function eat-exec "eat" (buffer name command startfile switches))
-(declare-function vterm "vterm" (&optional buffer-name))
+(declare-function ghostel-exec "ext:ghostel" (buffer program &optional args identity))
+(declare-function ghostel--copy-all-text "ext:ghostel-module" (term))
+(defvar ghostel--term)
+(declare-function eat-mode "ext:eat" ())
+(declare-function eat-exec "ext:eat" (buffer name command startfile switches))
+(declare-function vterm "ext:vterm" (&optional buffer-name))
 (defvar vterm-shell)
+(defvar ghostel-mode-hook)
+(defvar ghostel-exit-functions)
 (defvar vterm-buffer-name)
 (defvar eat-term-name)
 
@@ -59,7 +66,9 @@ another client holds it."
   :group 'herdr)
 
 (defcustom herdr-buffer-name-function #'herdr-default-buffer-name
-  "Function mapping an attached terminal's label to an Emacs buffer name."
+  "Function naming the Emacs buffer of an attached terminal.
+Called with the terminal's label and the directory it works in, which
+may be nil."
   :type 'function
   :group 'herdr)
 
@@ -87,9 +96,8 @@ Nil shows them like any other buffer, which leaves the placement to
 
 (defcustom herdr-window-slot-base 100
   "First side-window slot attached terminals may claim.
-Other packages place their own side windows on low slots -
-claude-code-ide reserves blocks of 16 per project - and two buffers
-sharing a slot evict each other."
+Other packages should use distinct side-window slots to avoid
+replacing attached terminals."
   :type 'integer
   :group 'herdr)
 
@@ -138,6 +146,26 @@ name of the one owning the directory, so the two line up."
   "Return the herdr workspace label DIRECTORY's sessions belong in."
   (funcall herdr-workspace-label-function directory))
 
+(defun herdr-default-current-workspace-label ()
+  "Return the workspace label for the current buffer's project."
+  (let* ((directory (or (and buffer-file-name
+                             (file-name-directory buffer-file-name))
+                        default-directory))
+         (project (condition-case nil
+                      (funcall herdr-project-root-function directory)
+                    (file-error nil))))
+    (herdr-workspace-label (or project directory))))
+
+(defcustom herdr-current-workspace-label-function
+  #'herdr-default-current-workspace-label
+  "Function returning the current editor workspace label."
+  :type 'function
+  :group 'herdr)
+
+(defun herdr-current-workspace-label ()
+  "Return the current editor workspace label."
+  (funcall herdr-current-workspace-label-function))
+
 (defun herdr-workspace-id (label)
   "Return the id of the herdr workspace labelled LABEL, or nil."
   (when label
@@ -146,22 +174,40 @@ name of the one owning the directory, so the two line up."
                              (equal (alist-get 'label workspace) label))
                            (herdr-workspaces)))))
 
+(defvar herdr--open-tab-cleanup-failed-function nil)
+
 (cl-defun herdr-open-tab (&key cwd label workspace env focus)
   "Open a tab labelled LABEL in the herdr workspace labelled WORKSPACE.
-Creates that workspace when it does not exist yet, and labels the tab
-it comes with rather than leaving an empty one behind.  Without a
-WORKSPACE the tab goes to the focused workspace, or to a new one when
-the session has none.  The reply carries `root_pane' and `tab'."
+CWD is its working directory.  Creates that workspace when it does not
+exist yet, and labels the tab it comes with rather than leaving an empty
+one behind.  Without a WORKSPACE the tab goes to the focused workspace,
+or to a new one when the session has none.  The reply carries
+`root_pane' and `tab'."
   (let ((id (herdr-workspace-id workspace)))
     (if (or id (and (not workspace) (herdr-workspaces)))
         (herdr-api-tab-create :cwd cwd :label label :env env
                               :workspace-id id :focus focus)
       (let ((created (herdr-api-workspace-create
                       :cwd cwd :label (or workspace label) :env env :focus focus)))
-        (when-let* ((label label)
-                    (tab (alist-get 'tab created)))
-          (herdr-api-tab-rename label (alist-get 'tab_id tab)))
-        created))))
+        (condition-case err
+            (progn
+              (when-let* ((label label)
+                          (tab (alist-get 'tab created)))
+                (herdr-api-tab-rename label (alist-get 'tab_id tab)))
+              created)
+          (error
+           (when-let* ((workspace-id
+                        (or (alist-get 'workspace_id (alist-get 'workspace created))
+                            (alist-get 'workspace_id (alist-get 'tab created))
+                            (alist-get 'workspace_id (alist-get 'root_pane created))
+                            (when-let* ((tab-id (alist-get 'tab_id (alist-get 'tab created))))
+                              (car (split-string tab-id ":" t))))))
+             (condition-case nil
+                 (herdr-api-workspace-close workspace-id)
+               (error
+                (when herdr--open-tab-cleanup-failed-function
+                  (funcall herdr--open-tab-cleanup-failed-function created)))))
+           (signal (car err) (cdr err))))))))
 
 (defun herdr-pane-text (pane-id &optional source lines)
   "Return terminal output of PANE-ID.
@@ -184,24 +230,24 @@ or `detection'.  LINES limits how many lines are returned."
                        (list "no terminal backend: install ghostel, vterm or eat"))))
     herdr-terminal-backend))
 
-(defun herdr-attach-command (terminal-id &optional takeover)
-  "Return the command list attaching to TERMINAL-ID.
-TAKEOVER claims input ownership from any other attached client."
-  `(,herdr-executable ,@(herdr-global-args)
+(defun herdr-attach-command (terminal-id &optional takeover session)
+  "Return the command attaching TERMINAL-ID with TAKEOVER on SESSION.
+SESSION defaults to `herdr-session'."
+  `(,herdr-executable "--session" ,(or (herdr-session-name session) "default")
                       "terminal" "attach" ,terminal-id
                       ,@(when takeover '("--takeover"))))
 
 (defun herdr--terminal-exec (buffer program args)
   "Run PROGRAM with ARGS inside BUFFER and return the buffer used."
-  (let ((process-environment (herdr-process-environment)))
-    (herdr--terminal-exec-1 buffer program args)))
+  (herdr--terminal-exec-1 buffer program args))
 
 (defun herdr--terminal-exec-1 (buffer program args)
   "Run PROGRAM with ARGS inside BUFFER using the configured backend."
   (pcase (herdr--backend)
     ('ghostel
      (require 'ghostel)
-     (ghostel-exec buffer program args)
+     (let ((ghostel-mode-hook (cons #'herdr--watch-ghostel-exit ghostel-mode-hook)))
+       (ghostel-exec buffer program args))
      buffer)
     ('vterm
      (require 'vterm)
@@ -217,9 +263,84 @@ TAKEOVER claims input ownership from any other attached client."
          (eat-exec buffer (buffer-name buffer) program nil args)))
      buffer)))
 
-(defun herdr-default-buffer-name (label)
-  "Return the Emacs buffer name for an attached terminal named LABEL."
-  (format "*herdr: %s*" label))
+(defun herdr--git-line (directory &rest arguments)
+  "Return the single line git prints for ARGUMENTS in DIRECTORY, or nil."
+  (when (and directory (file-directory-p directory))
+    (let ((default-directory (file-name-as-directory directory)))
+      (with-temp-buffer
+        (when (eq 0 (ignore-errors (apply #'process-file "git" nil t nil arguments)))
+          (let ((line (string-trim (buffer-string))))
+            (unless (string-empty-p line) line)))))))
+
+(defun herdr--git-head-file (directory)
+  "Return the HEAD file of the repository holding DIRECTORY, or nil.
+A linked worktree keeps a `.git' file naming its own git directory."
+  (when-let* (((and directory (file-directory-p directory)))
+              (root (locate-dominating-file directory ".git"))
+              (dot-git (expand-file-name ".git" root)))
+    (if (file-directory-p dot-git)
+        (expand-file-name "HEAD" dot-git)
+      (with-temp-buffer
+        (insert-file-contents-literally dot-git)
+        (when (looking-at "gitdir: *\\(.+\\)")
+          (expand-file-name "HEAD" (expand-file-name (match-string 1) root)))))))
+
+(defun herdr-directory-branch (directory)
+  "Return the git branch checked out in DIRECTORY, or its commit when detached.
+Read straight from the repository's HEAD file, literally, rather than
+asked of git, so a dashboard can afford it once per row."
+  (when-let* ((head (herdr--git-head-file directory))
+              ((file-readable-p head)))
+    (with-temp-buffer
+      (insert-file-contents-literally head)
+      (let ((line (string-trim (buffer-substring (point-min) (line-end-position)))))
+        (cond
+         ((string-prefix-p "ref: refs/heads/" line)
+          (substring line (length "ref: refs/heads/")))
+         ((string-prefix-p "ref: " line) (substring line (length "ref: ")))
+         ((string-match-p "\\`[0-9a-f]\\{40,\\}\\'" line) (substring line 0 7)))))))
+
+(defvar herdr--repository-roots (make-hash-table :test #'equal)
+  "Repository root of each directory one was asked for.
+A directory does not change repository, and a dashboard asks once per
+row per refresh, which is a git subprocess each without this.")
+
+(defun herdr-repository-root (directory)
+  "Return the main checkout of the repository DIRECTORY belongs to, or nil.
+A linked worktree answers with the checkout it was made from, so every
+checkout of one repository is one project - which is what an editor
+holding a workspace per repository already means by the word."
+  (when (and directory (file-accessible-directory-p directory))
+    (let* ((key (file-name-as-directory (expand-file-name directory)))
+           (cached (gethash key herdr--repository-roots 'missing)))
+      (if (not (eq cached 'missing))
+          cached
+        (puthash key
+                 (when-let* ((common (herdr--git-line
+                                      directory "rev-parse" "--git-common-dir")))
+                   (directory-file-name
+                    (file-name-directory
+                     (directory-file-name (expand-file-name common key)))))
+                 herdr--repository-roots)))))
+
+(defun herdr-directory-project (directory)
+  "Return the name of the project DIRECTORY belongs to.
+Inside a git repository that is the main checkout's directory name, so
+a linked worktree is named after the project rather than after itself.
+Elsewhere it is the `herdr-workspace-label' of DIRECTORY."
+  (if-let* ((root (herdr-repository-root directory)))
+      (file-name-nondirectory root)
+    (herdr-workspace-label directory)))
+
+(defun herdr-default-buffer-name (label &optional directory)
+  "Return the buffer name for a terminal named LABEL working in DIRECTORY.
+The name leads with the project and its git branch, so the terminal
+reads as *herdr: app@main LABEL*."
+  (let ((place (when directory
+                 (concat (herdr-directory-project directory)
+                         (when-let* ((branch (herdr-directory-branch directory)))
+                           (concat "@" branch))))))
+    (format "*herdr: %s*" (string-join (delq nil (list place label)) " "))))
 
 ;;;; Windows
 
@@ -240,7 +361,12 @@ TAKEOVER claims input ownership from any other attached client."
   "Show BUFFER and return its window.
 Attached terminals go to their own slot of the `herdr-window-side'
 side window, so several of them sit next to each other instead of
-replacing one another."
+replacing one another.
+
+`display-buffer-in-side-window' dedicates that window to the terminal on
+its own, weakly.  Dedicating it strongly instead keeps `\[kill-buffer]'
+from finding the window another buffer, which is an error rather than a
+fallback."
   (cond
    (herdr-display-buffer-action (display-buffer buffer herdr-display-buffer-action))
    ((not herdr-use-side-window)
@@ -263,9 +389,7 @@ replacing one another."
                    `((window-height . ,herdr-window-height)))
                (window-parameters . ((no-delete-other-windows . t))))))
            (window (display-buffer buffer)))
-      (when window
-        (set-window-dedicated-p window t)
-        (select-window window))
+      (when window (select-window window))
       window))))
 
 (defvar-local herdr-terminal-id nil
@@ -276,6 +400,106 @@ replacing one another."
   "Session designator of the herdr server this buffer's terminal lives on.")
 (put 'herdr-terminal-session 'permanent-local t)
 
+(defvar-local herdr-terminal-server-key nil
+  "Canonical server key of the herdr terminal this buffer shows.")
+(put 'herdr-terminal-server-key 'permanent-local t)
+
+(defvar-local herdr--terminal-closing nil
+  "Non-nil while deliberately closing this terminal attachment.")
+
+(defvar-local herdr--terminal-error-reported nil
+  "Non-nil after this attachment's CLI error has been reported.")
+
+(defun herdr--terminal-closing ()
+  "Suppress exit diagnostics during deliberate buffer cleanup."
+  (setq herdr--terminal-closing t))
+
+(defun herdr--watch-ghostel-exit ()
+  "Capture Herdr errors before Ghostel deletes this terminal buffer."
+  (when herdr-terminal-id
+    (add-hook 'ghostel-exit-functions #'herdr--terminal-exited -90 t)
+    (add-hook 'kill-buffer-hook #'herdr--terminal-closing -90 t)))
+
+(defcustom herdr-terminal-quiet-exit-regexps
+  '("\\`detached from "
+    "\\`server shut down: terminal [^ ]+ exited\\'")
+  "Regexps matching the CLI lines that end a terminal without a fault.
+An attachment ends when the pane it shows does, and the process behind
+that pane ending - an agent given \\[universal-argument] C-d, a shell
+told to exit - is the terminal running its course rather than anything
+going wrong.  A line matching none of these is reported."
+  :type '(repeat regexp)
+  :group 'herdr)
+
+(defun herdr--terminal-quiet-exit-p (line)
+  "Return non-nil when LINE ends a terminal without a fault."
+  (seq-some (lambda (regexp) (string-match-p regexp line))
+            herdr-terminal-quiet-exit-regexps))
+
+(defun herdr--terminal-error-reason (text)
+  "Return the last Herdr CLI error line in TEXT, or nil."
+  (save-match-data
+    (let ((start 0)
+          (case-fold-search nil)
+          reason)
+      (while (string-match "^herdr: \\([^\n]+\\)" text start)
+        (setq start (match-end 0))
+        (let ((line (string-trim (match-string 1 text))))
+          (setq reason (unless (herdr--terminal-quiet-exit-p line) line))))
+      reason)))
+
+(defun herdr--terminal-exited (buffer _event)
+  "Retain BUFFER's Herdr CLI error before backend exit cleanup."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (unless (or herdr--terminal-closing herdr--terminal-error-reported)
+        (let* ((output (or (and (bound-and-true-p ghostel--term)
+                                (fboundp 'ghostel--copy-all-text)
+                                (ghostel--copy-all-text ghostel--term))
+                           (buffer-substring-no-properties (point-min) (point-max))))
+               (text (substring output (max 0 (- (length output) 16384))))
+               (reason (herdr--terminal-error-reason text)))
+          (when reason
+            (setq herdr--terminal-error-reported t)
+            (let ((summary (format "Herdr %s / %s: %s"
+                                   (or (herdr-session-name herdr-terminal-session) "default")
+                                   herdr-terminal-id reason))
+                  (socket herdr-terminal-server-key)
+                  (diagnostics (get-buffer-create "*herdr-errors*")))
+              (with-current-buffer diagnostics
+                (unless (derived-mode-p 'special-mode) (special-mode))
+                (let ((inhibit-read-only t))
+                  (goto-char (point-max))
+                  (insert (format "%s\n%s\nSocket: %s\n\n%s\n\n"
+                                  (format-time-string "%FT%T%z") summary socket text))))
+              (display-warning 'herdr
+                               (format "%s; output retained in %s"
+                                       summary (buffer-name diagnostics))
+                               :error))))))))
+
+(defcustom herdr-report-focus-loss nil
+  "Whether attached terminals report Emacs focus loss to their process.
+Herdr's own client also reports focus for the pane, but only speaks
+again when its focus changes, so a focus-out from Emacs leaves the
+process believing nobody is looking.  Nil drops the focus-out: Emacs
+reports focus-in only, and the process otherwise follows herdr."
+  :type 'boolean
+  :group 'herdr)
+
+(defvar ghostel--focus-state)
+
+(defun herdr--ghostel-focus-event (function term gained)
+  "Call FUNCTION with TERM and GAINED unless it reports focus loss to herdr.
+Resets `ghostel--focus-state' for a dropped focus-out so the next
+focus-in still goes through."
+  (if (or gained herdr-report-focus-loss (not herdr-terminal-id))
+      (funcall function term gained)
+    (setq ghostel--focus-state nil)
+    nil))
+
+(with-eval-after-load 'ghostel
+  (advice-add 'ghostel--focus-event :around #'herdr--ghostel-focus-event))
+
 (defvar herdr-buffer-functions nil
   "Functions called with each buffer that starts showing a herdr terminal.
 Runs for plain attachments and for the buffers other integrations build
@@ -284,51 +508,92 @@ to a workspace, say - in one place.")
 
 (defun herdr-claim-buffer (buffer terminal-id &optional session)
   "Mark BUFFER as showing TERMINAL-ID on SESSION's server.
-SESSION defaults to the one in scope.  `herdr-buffer-functions' then
-sees the buffer."
+SESSION defaults to the server in scope, named after the session that
+answers on it, so what the buffer says it is and where it is reached
+cannot drift apart.  `herdr-buffer-functions' then sees the buffer."
   (when (buffer-live-p buffer)
-    (with-current-buffer buffer
-      (setq herdr-terminal-id terminal-id
-            herdr-terminal-session (or session herdr-session)))
+    (let* ((server (if session
+                       (herdr-session-server-key session)
+                     (herdr-server-key)))
+           (session (or session (herdr-session-for-socket server) herdr-session)))
+      (with-current-buffer buffer
+        (setq herdr-terminal-id terminal-id
+              herdr-terminal-session session
+              herdr-terminal-server-key server)))
     (run-hook-with-args 'herdr-buffer-functions buffer)
     buffer))
 
-(defun herdr-terminal-buffer (terminal-id)
-  "Return the live buffer showing TERMINAL-ID, if there is one."
+(defun herdr-terminal-buffer (terminal-id &optional server-key)
+  "Return the live buffer showing TERMINAL-ID on SERVER-KEY, if there is one."
   (when terminal-id
-    (cl-find-if (lambda (buffer)
-                  (and (equal (buffer-local-value 'herdr-terminal-id buffer) terminal-id)
-                       (get-buffer-process buffer)))
-                (buffer-list))))
+    (let ((server-key (or server-key (herdr-server-key))))
+      (cl-find-if (lambda (buffer)
+                    (and (equal (buffer-local-value 'herdr-terminal-id buffer) terminal-id)
+                         (equal (buffer-local-value 'herdr-terminal-server-key buffer)
+                                server-key)
+                         (get-buffer-process buffer)))
+                  (buffer-list)))))
 
-(defun herdr--free-buffer-name (label terminal-id)
+(defvar ghostel--cursor-char-pos)
+
+(defun herdr--free-buffer-name (label terminal-id &optional server-key directory)
   "Return a buffer name for LABEL that no other terminal answers to.
-Tab labels repeat across herdr workspaces, so a taken name gets a
-counter.  Signals when TERMINAL-ID is the one already there."
-  (let ((name (funcall herdr-buffer-name-function label))
+SERVER-KEY identifies the server terminal identity belongs to and
+DIRECTORY is where the terminal works.  Tab labels repeat across herdr
+workspaces, so a taken name gets a counter.  Signals when TERMINAL-ID
+is the one already there."
+  (let ((name (funcall herdr-buffer-name-function label directory))
+        (server-key (or server-key (herdr-server-key)))
         (counter 1))
     (while (when-let* ((buffer (get-buffer name))
                        ((get-buffer-process buffer)))
-             (when (equal (buffer-local-value 'herdr-terminal-id buffer) terminal-id)
+             (when (and (equal (buffer-local-value 'herdr-terminal-id buffer) terminal-id)
+                        (equal (buffer-local-value 'herdr-terminal-server-key buffer)
+                               server-key))
                (user-error "Buffer %s is already attached" name))
              (setq name (funcall herdr-buffer-name-function
-                                 (format "%s<%d>" label (cl-incf counter))))))
+                                 (format "%s<%d>" label (cl-incf counter))
+                                 directory))))
     name))
 
-(cl-defun herdr-attach-terminal (terminal-id &key label directory takeover display)
-  "Attach herdr terminal TERMINAL-ID to an Emacs terminal buffer.
-LABEL names the buffer, DIRECTORY sets its `default-directory',
-TAKEOVER claims input ownership, and DISPLAY shows the buffer when
-non-nil.  Returns the buffer."
-  (let ((name (herdr--free-buffer-name (or label terminal-id) terminal-id)))
+(defun herdr-live-directory (directory)
+  "Return DIRECTORY as a directory name Emacs can work in, or nil.
+A pane keeps reporting where its process sits even once nothing answers
+for it - a worktree removed, a checkout trashed - and a buffer holding
+one as its `default-directory' takes down everything that consults it,
+from the mode hooks that run on attach to every later command."
+  (when (and (stringp directory)
+             (not (string-empty-p directory))
+             (file-accessible-directory-p directory))
+    (file-name-as-directory (expand-file-name directory))))
+
+(cl-defun herdr-attach-terminal (terminal-id &key (session herdr-session)
+                                             label directory takeover display)
+  "Attach TERMINAL-ID on SESSION to an Emacs terminal buffer.
+LABEL names the buffer, DIRECTORY sets its `default-directory' when one
+still answers for it, TAKEOVER claims input ownership, and DISPLAY shows
+the buffer when non-nil.  Returns the buffer."
+  (let* ((herdr-session session)
+         (herdr-socket-path nil)
+         (server (herdr-session-server-key session))
+         (name (herdr--free-buffer-name (or label terminal-id) terminal-id
+                                        server directory)))
     (when-let* ((existing (get-buffer name)))
       (kill-buffer existing))
     (let ((buffer (get-buffer-create name))
-          (command (herdr-attach-command terminal-id takeover)))
+          (command (herdr-attach-command terminal-id takeover session)))
       (with-current-buffer buffer
-        (when directory (setq default-directory (file-name-as-directory directory))))
+        (setq herdr-terminal-id terminal-id
+              herdr-terminal-session session
+              herdr-terminal-server-key server)
+        (if-let* ((live (herdr-live-directory directory)))
+            (setq default-directory live)
+          (when directory
+            (message "herdr: %s works in %s, which is gone"
+                     (or label terminal-id)
+                     (abbreviate-file-name directory)))))
       (setq buffer (herdr--terminal-exec buffer (car command) (cdr command)))
-      (herdr-claim-buffer buffer terminal-id)
+      (herdr-claim-buffer buffer terminal-id session)
       (when display (herdr-display-buffer buffer))
       buffer)))
 
@@ -342,6 +607,17 @@ non-nil.  Returns the buffer."
       (alist-get 'agent entry)
       (alist-get 'pane_id entry)))
 
+(defun herdr-entry-directory (entry)
+  "Return the directory pane or agent ENTRY is working in.
+Herdr reports both where the pane was opened and where its foreground
+process actually sits, and an agent that moves itself — into a worktree,
+say — only moves the latter."
+  (let ((foreground (alist-get 'foreground_cwd entry))
+        (start (alist-get 'cwd entry)))
+    (cond ((and (stringp foreground) (not (string-empty-p foreground)))
+           foreground)
+          ((and (stringp start) (not (string-empty-p start))) start))))
+
 (defvar herdr-entry-annotation-functions nil
   "Functions adding annotation fields to a session entry.
 Each is called with the entry and returns a string to append to the
@@ -352,13 +628,15 @@ completion annotation, or nil.")
   (let ((buffer (alist-get 'buffer entry)))
     (if (buffer-live-p buffer)
         buffer
-      (herdr-terminal-buffer (alist-get 'terminal_id entry)))))
+      (herdr-terminal-buffer (alist-get 'terminal_id entry)
+                             (alist-get 'server_key entry)))))
 
 (defun herdr--entry-key (entry)
   "Return the identity ENTRY is deduplicated by."
-  (or (alist-get 'terminal_id entry)
-      (alist-get 'pane_id entry)
-      (herdr--entry-label entry)))
+  (cons (or (alist-get 'server_key entry) (herdr-server-key))
+        (or (alist-get 'terminal_id entry)
+            (alist-get 'pane_id entry)
+            (herdr--entry-label entry))))
 
 (defun herdr--entry-session-label (entry)
   "Return the session ENTRY lives on, once more than one is in play."
@@ -371,7 +649,7 @@ completion annotation, or nil.")
    (delq nil (append (list (herdr--entry-session-label entry)
                            (alist-get 'agent entry)
                            (alist-get 'agent_status entry)
-                           (when-let* ((cwd (alist-get 'cwd entry)))
+                           (when-let* ((cwd (herdr-entry-directory entry)))
                              (abbreviate-file-name cwd)))
                      (mapcar (lambda (fn) (funcall fn entry))
                              herdr-entry-annotation-functions)))
@@ -386,59 +664,139 @@ completion annotation, or nil.")
           (setq candidate (format "%s (%s)" candidate (herdr--entry-key entry))))
         (push (cons candidate entry) candidates)))))
 
-(cl-defun herdr-read-entry (prompt entries &key require-agent)
+(cl-defun herdr-read-entry (prompt entries &key require-agent affixation (group t))
   "Read one of ENTRIES with PROMPT and return its alist.
-REQUIRE-AGENT keeps only entries running that agent kind."
+REQUIRE-AGENT keeps only entries running that agent kind.
+AFFIXATION draws one entry, standing in for the annotation: it is called
+with a candidate and its entry and answers with the name to show and
+what goes before and after it.  A shortened name is only what the row
+shows, so the whole of it still matches.  GROUP nil offers the entries
+flat, which is what a list of one kind wants."
   (let* ((entries (if require-agent
                       (cl-remove-if-not
                        (lambda (entry) (equal (alist-get 'agent entry) require-agent))
                        entries)
                     entries))
          (candidates (herdr--candidates entries))
-         (annotation (lambda (candidate)
+         (metadata
+          (append
+           (if affixation
+               `((affixation-function
+                  . ,(lambda (choices)
+                       (mapcar
+                        (lambda (choice)
+                          (if-let* ((entry (cdr (assoc choice candidates))))
+                              (funcall affixation choice entry)
+                            (list choice "" "")))
+                        choices))))
+             `((annotation-function
+                . ,(lambda (candidate)
+                     (when-let* ((entry (cdr (assoc candidate candidates))))
+                       (concat "   " (herdr--entry-annotation entry)))))))
+           (when group
+             `((group-function
+                . ,(lambda (candidate transform)
+                     (if transform
+                         candidate
                        (when-let* ((entry (cdr (assoc candidate candidates))))
-                         (concat "   " (herdr--entry-annotation entry)))))
-         (group (lambda (candidate transform)
-                  (if transform
-                      candidate
-                    (when-let* ((entry (cdr (assoc candidate candidates))))
-                      (or (alist-get 'kind entry) "herdr"))))))
+                         (or (alist-get 'kind entry) "herdr")))))))
+           '((display-sort-function . identity)
+             (cycle-sort-function . identity)
+             (category . herdr-entry)))))
     (unless candidates
       (user-error "No matching herdr %s" (or require-agent "sessions")))
     (let ((choice (completing-read
                    prompt
                    (lambda (string predicate action)
                      (if (eq action 'metadata)
-                         `(metadata (annotation-function . ,annotation)
-                                    (group-function . ,group)
-                                    (category . herdr-entry))
+                         (cons 'metadata metadata)
                        (complete-with-action action candidates string predicate)))
                    nil t)))
       (cdr (assoc choice candidates)))))
+
+(declare-function herdr-status--read-agent-affixation "herdr-status" (entries))
+(declare-function herdr-status-switch-agents "herdr-status" ())
+
+(defun herdr-read-agent (prompt &optional entries)
+  "Read one of the running agents with PROMPT and return its entry.
+ENTRIES defaults to the agents in scope, which inside a dashboard are
+the ones it shows.  Every command that picks an agent reads it here, so
+they all offer the same rows: the state, the name, and the harness,
+branch and working directory behind it, drawn in the dashboard's own
+faces.  A name too long for `herdr-read-agent-name-width' is cut short
+in the row alone and still matches in full.  The agent reached for most
+recently leads, so the one meant is usually the one already under the
+cursor.  Without the dashboard installed the plain annotation stands
+in."
+  (if (require 'herdr-status nil t)
+      (let ((entries (herdr-recent-first
+                      (or entries (herdr-status-switch-agents)))))
+        (herdr-read-entry prompt entries
+                          :affixation (herdr-status--read-agent-affixation entries)
+                          :group nil))
+    (herdr-read-entry prompt
+                      (herdr-recent-first (or entries (herdr-entries-in-scope)))
+                      :group nil)))
 
 ;;;; Sessions
 
 (defvar herdr-session-functions '(herdr-agent-sessions)
   "Functions returning lists of session entries for `herdr-jump'.
 Entries are alists; `kind' names the group they appear under and
-`buffer' points at the Emacs buffer showing them, when one exists.
-herdr-claude-code-ide.el adds the claude-code-ide sessions here.")
+`buffer' points at the Emacs buffer showing them, when one exists.")
+
+(defvar herdr-entries-in-scope-function #'herdr-sessions
+  "Function answering with the entries a command reads a target from.
+A dashboard binds this to the entries it shows, so a command reading a
+target offers what is on screen — the project it is scoped to, and what
+its filters left — rather than every session the servers report.")
+
+(defun herdr-entries-in-scope ()
+  "Return the session entries a command should read a target from."
+  (funcall herdr-entries-in-scope-function))
+
+(defun herdr--pane-labels ()
+  "Return the manual label of every pane, keyed by pane id.
+Herdr reports an agent without the label of the pane it occupies, and
+the label is where a pane records durable state of its own."
+  (let ((labels (make-hash-table :test #'equal)))
+    (dolist (pane (herdr-panes) labels)
+      (when-let* ((label (alist-get 'label pane)))
+        (puthash (alist-get 'pane_id pane) label labels)))))
 
 (defun herdr-agent-sessions ()
-  "Return the agents of the herdr session in scope as session entries."
-  (mapcar (lambda (agent)
-            (append `((kind . "herdr") (session . ,herdr-session)) agent))
-          (herdr-agents)))
+  "Return the agents of the herdr session in scope as session entries.
+Each carries `pane_label', the manual label of the pane it occupies."
+  (let ((labels (herdr--pane-labels)))
+    (mapcar (lambda (agent)
+              (append `((kind . "herdr")
+                        (session . ,herdr-session)
+                        (server_key . ,(herdr-server-key))
+                        (pane_label . ,(gethash (alist-get 'pane_id agent) labels)))
+                      agent))
+            (herdr-agents))))
 
 (defun herdr--session-entries ()
-  "Return the entries of every session in `herdr-known-sessions'.
+  "Return the entries of every session in `herdr-all-sessions'.
 Sessions whose server does not answer are skipped rather than started."
   (apply #'append
-         (mapcar (lambda (session)
-                   (herdr-with-session session
-                     (when (herdr-available-p)
-                       (apply #'append (mapcar #'funcall herdr-session-functions)))))
-                 (herdr-known-sessions))))
+         (mapcar
+          (lambda (session)
+            (let ((herdr-socket-path (if (equal session herdr-session)
+                                         herdr-socket-path
+                                       nil))
+                  (herdr-session (or session herdr-session)))
+              (when (herdr-available-p)
+                (let ((entries (apply #'append (mapcar #'funcall herdr-session-functions))))
+                  (mapcar (lambda (entry)
+                            (let ((entry (copy-tree entry)))
+                              (if (assq 'server_key entry)
+                                  (when (null (alist-get 'server_key entry))
+                                    (setf (alist-get 'server_key entry) (herdr-server-key)))
+                                (setf (alist-get 'server_key entry) (herdr-server-key)))
+                              entry))
+                          entries)))))
+          (herdr-all-sessions))))
 
 (defun herdr-sessions ()
   "Return every running session, one entry per terminal.
@@ -456,65 +814,136 @@ Entries that already have an Emacs buffer win over bare ones."
           (puthash key entry seen)))))
     (mapcar (lambda (key) (gethash key seen)) (nreverse order))))
 
+(defvar herdr--recent-session-targets nil
+  "Session targets ordered from most to least recently used.")
+
+(defun herdr--entry-server (entry)
+  "Return the canonical server key ENTRY belongs to."
+  (or (alist-get 'server_key entry) (herdr-server-key)))
+
+(defun herdr--entry-target (entry)
+  "Return ENTRY's composite server and terminal target, or nil."
+  (when-let* ((server-key (alist-get 'server_key entry))
+              (terminal-id (alist-get 'terminal_id entry)))
+    (cons server-key terminal-id)))
+
+(defun herdr--record-session-target (target)
+  "Move composite session TARGET to the front of the recent list."
+  (when target
+    (setq herdr--recent-session-targets
+          (cons target (delete target herdr--recent-session-targets))))
+  target)
+
+(defun herdr-recent-first (entries)
+  "Return ENTRIES with the ones reached for most recently leading.
+What is left keeps the order it came in, so a dashboard's own sort still
+decides among the agents nothing has been near."
+  (let ((recent (delq nil
+                      (mapcar (lambda (target)
+                                (cl-find target entries
+                                         :key #'herdr--entry-target :test #'equal))
+                              herdr--recent-session-targets))))
+    (append recent (cl-remove-if (lambda (entry) (memq entry recent)) entries))))
+
+(defun herdr--prune-session-targets (entries)
+  "Drop recent session targets that are absent from ENTRIES."
+  (let ((targets (delq nil (mapcar #'herdr--entry-target entries))))
+    (setq herdr--recent-session-targets
+          (cl-remove-if-not (lambda (target) (member target targets))
+                            herdr--recent-session-targets))))
+
 (defun herdr-visit (entry)
   "Show ENTRY and return its buffer.
 An entry that nothing shows yet is attached first, on the server it
 came from."
-  (if-let* ((buffer (herdr--entry-buffer entry)))
-      (progn (pop-to-buffer buffer) buffer)
-    (herdr-with-session (alist-get 'session entry)
-      (herdr-attach-entry entry))))
+  (let ((buffer
+         (if-let* ((buffer (herdr--entry-buffer entry)))
+             (progn (pop-to-buffer buffer) buffer)
+           (herdr-with-session (alist-get 'session entry)
+             (herdr-attach-entry entry)))))
+    (when (and buffer (alist-get 'agent entry))
+      (herdr--record-session-target (herdr--entry-target entry)))
+    buffer))
 
 ;;;; Commands
 
-(defvar herdr-attach-functions nil
+(autoload 'herdr-agent-attach-entry "herdr-agent")
+(defvar herdr-attach-functions '(herdr-agent-attach-entry)
   "Functions that may claim an entry before it is attached as a terminal.
 Each is called with the pane or agent alist and returns the buffer it
 opened, or nil to let the next one try.  The plain terminal attach runs
-only when all of them decline.  herdr-claude-code-ide.el uses this to
-open claude agents as claude-code-ide sessions.")
+only when all of them decline.")
 
-(defun herdr-attach-entry (entry)
-  "Attach pane or agent ENTRY and return the buffer showing it.
+(defun herdr-attach-entry (entry &optional session)
+  "Attach ENTRY on SESSION and return the buffer showing it.
+SESSION defaults to ENTRY's session, then `herdr-session'.
 Gives `herdr-attach-functions' the first chance to claim ENTRY."
-  (herdr-with-session (alist-get 'session entry)
+  (let* ((herdr-session (or session (alist-get 'session entry) herdr-session))
+         (herdr-socket-path nil)
+         (entry (copy-tree entry)))
+    (setf (alist-get 'session entry) herdr-session
+          (alist-get 'server_key entry) (herdr-server-key))
     (or (run-hook-with-args-until-success 'herdr-attach-functions entry)
         (herdr-attach-terminal (alist-get 'terminal_id entry)
+                               :session herdr-session
                                :label (herdr--entry-label entry)
-                               :directory (alist-get 'cwd entry)
+                               :directory (herdr-entry-directory entry)
                                :takeover herdr-attach-takeover
                                :display t))))
 
 ;;;###autoload
 (defun herdr-attach-agent (agent)
   "Attach the terminal of herdr AGENT to an Emacs buffer.
-Offers the agents of the session this directory routes to."
+Offers the agents of the session this directory routes to, read the way
+every other agent prompt reads them."
   (interactive (list (herdr-with-session (herdr-session-for)
-                       (herdr-read-entry "Attach herdr agent: " (herdr-agent-sessions)))))
+                       (herdr-read-agent "Attach herdr agent: "
+                                         (herdr-agent-sessions)))))
   (herdr-attach-entry agent))
 
 ;;;###autoload
 (defun herdr-attach-pane (pane)
   "Attach the terminal of herdr PANE to an Emacs buffer.
-Offers the panes of the session this directory routes to."
-  (interactive (list (herdr-with-session (herdr-session-for)
-                       (let ((session herdr-session))
-                         (herdr-read-entry
-                          "Attach herdr pane: "
-                          (mapcar (lambda (pane)
-                                    (append `((kind . "herdr") (session . ,session)) pane))
-                                  (herdr-panes)))))))
+Offers the plain panes of the session this directory routes to: the
+ones running no agent, which `herdr-attach-agent' already offers and
+draws far better than a pane row can."
+  (interactive
+   (list (herdr-with-session (herdr-session-for)
+           (let* ((session herdr-session)
+                  (panes (cl-remove-if (lambda (pane) (alist-get 'agent pane))
+                                       (herdr-panes))))
+             (unless panes
+               (user-error "Every pane on %s runs an agent; attach one of those"
+                           (or (herdr-session-name session) "the shared session")))
+             (herdr-read-entry
+              "Attach herdr pane: "
+              (mapcar (lambda (pane)
+                        (append `((kind . "herdr") (session . ,session)) pane))
+                      panes))))))
   (herdr-attach-entry pane))
 
 ;;;; Attaching a whole session
 
 (defcustom herdr-workspace-open-function nil
-  "Function opening the editor workspace mirroring a herdr workspace.
+  "Function opening an editor workspace for a herdr workspace group.
 Called with the workspace alist and the directory its panes work in,
-before `herdr-attach-session' attaches that workspace's terminals.  Nil
-attaches everything wherever you are."
+before `herdr-attach-session' attaches that group's terminals.  Its
+return value is bound to `herdr-attach-session-workspace' while those
+terminals are attached.  Nil attaches everything wherever you are."
   :type '(choice (const :tag "Attach where you are" nil) function)
   :group 'herdr)
+
+(defcustom herdr-attach-session-workspace-policy 'mirror
+  "How full herdr sessions are grouped into editor workspaces.
+`mirror' preserves each herdr workspace as a separate group.  `merge'
+combines entries whose working directories have the same
+`herdr-workspace-label'."
+  :type '(choice (const :tag "Mirror herdr workspaces" mirror)
+                 (const :tag "Merge by editor workspace label" merge))
+  :group 'herdr)
+
+(defvar herdr-attach-session-workspace nil
+  "Editor workspace selected for the session group being attached.")
 
 (defun herdr-session-layout (&optional all)
   "Return the herdr session's workspaces paired with their entries.
@@ -524,7 +953,9 @@ in them are left out."
                          (cons (alist-get 'tab_id tab) (alist-get 'label tab)))
                        (herdr-tabs)))
          (panes (mapcar (lambda (pane)
-                          (append `((kind . "herdr") (session . ,herdr-session))
+                          (append `((kind . "herdr")
+                                    (session . ,herdr-session)
+                                    (server_key . ,(herdr-server-key)))
                                   (unless (alist-get 'label pane)
                                     `((label . ,(cdr (assoc (alist-get 'tab_id pane) tabs)))))
                                   pane))
@@ -539,14 +970,33 @@ in them are left out."
                       (cons workspace members)))
                   (herdr-workspaces)))))
 
+(defun herdr--session-attachment-layout (layout)
+  "Return LAYOUT grouped for full-session attachment."
+  (if (not (eq herdr-attach-session-workspace-policy 'merge))
+      layout
+    (let ((by-label (make-hash-table :test #'equal))
+          groups)
+      (dolist (group layout)
+        (dolist (entry (cdr group))
+          (let* ((directory (herdr-entry-directory entry))
+                 (label (and directory (herdr-workspace-label directory)))
+                 (existing (gethash label by-label)))
+            (if existing
+                (setcdr existing (nconc (cdr existing) (list entry)))
+              (let ((merged (cons (car group) (list entry))))
+                (puthash label merged by-label)
+                (push merged groups))))))
+      (nreverse groups))))
+
 ;;;###autoload
 (defun herdr-attach-session (&optional session all takeover)
-  "Attach the agents of a herdr SESSION, mirroring how it is laid out.
-Each herdr workspace opens an editor workspace of its own through
-`herdr-workspace-open-function', and every agent in it becomes a buffer
-there.  ALL attaches plain panes too.  Input ownership stays with
-herdr's own client unless TAKEOVER says otherwise, so the attached
-buffers start as a view of a session someone else is driving.
+  "Attach the agents of a herdr SESSION in editor workspace groups.
+`herdr-attach-session-workspace-policy' controls whether the groups
+mirror herdr workspaces or merge by editor workspace label.
+`herdr-workspace-open-function' opens each group, and every agent in it
+becomes a buffer there.  ALL attaches plain panes too.  Input ownership
+stays with herdr's own client unless TAKEOVER says otherwise, so the
+attached buffers start as a view of a session someone else is driving.
 Terminals Emacs already shows are left alone.  Returns the buffers it
 attached."
   (interactive (list (herdr-read-session "Attach herdr session: ")
@@ -557,14 +1007,18 @@ attached."
       (user-error "No herdr server on %s" (herdr-socket-file)))
     (let ((herdr-attach-takeover takeover)
           (buffers nil))
-      (dolist (group (herdr-session-layout all))
+      (dolist (group (herdr--session-attachment-layout
+                      (herdr-session-layout all)))
         (let* ((workspace (car group))
-               (entries (cdr group)))
-          (when herdr-workspace-open-function
-            (funcall herdr-workspace-open-function workspace
-                     (alist-get 'cwd (car entries))))
+               (entries (cdr group))
+               (directory (herdr-entry-directory (car entries)))
+               (herdr-attach-session-workspace
+                (when herdr-workspace-open-function
+                  (funcall herdr-workspace-open-function workspace directory))))
           (dolist (entry entries)
-            (unless (herdr-terminal-buffer (alist-get 'terminal_id entry))
+            (unless (if-let* ((server-key (alist-get 'server_key entry)))
+                        (herdr-terminal-buffer (alist-get 'terminal_id entry) server-key)
+                      (herdr-terminal-buffer (alist-get 'terminal_id entry)))
               (push (herdr-attach-entry entry) buffers)))))
       (setq buffers (delq nil (nreverse buffers)))
       (message "Attached %d terminal%s from %s"
@@ -574,7 +1028,7 @@ attached."
 
 ;;;###autoload
 (defun herdr-jump (session)
-  "Jump to a running SESSION, whether or not Emacs already shows it."
+  "Jump to a running SESSION, whether or not Emacs already show it."
   (interactive (list (herdr-read-entry "Jump to session: " (herdr-sessions))))
   (herdr-visit session))
 
@@ -597,21 +1051,67 @@ attached."
                (file-exists-p (expand-file-name (format "%s/herdr.sock" name) sessions)))
              (directory-files sessions nil "\\`[^.]"))))))
 
+(defun herdr-all-sessions ()
+  "Return every session Emacs may talk to, configured or merely running.
+`herdr-known-sessions' contributes the configured ones and
+`herdr-available-sessions' those a socket on disk reveals.  Designators
+naming the same session appear once."
+  (let ((seen (make-hash-table :test #'equal))
+        (sessions nil))
+    (dolist (session (append (herdr-known-sessions) (herdr-available-sessions))
+                     (nreverse sessions))
+      (let ((name (or (herdr-session-name session) "")))
+        (unless (gethash name seen)
+          (puthash name t seen)
+          (push session sessions))))))
+
+(defun herdr-session-socket (session)
+  "Return the socket SESSION is served over."
+  (let ((herdr-socket-path nil)
+        (herdr-session session))
+    (herdr-socket-file)))
+
+(defun herdr-session-for-socket (server-key)
+  "Return the session SERVER-KEY is the server of, or nil when none is.
+Only a session name reaches the command line, so a terminal held by the
+server it answers on has to be said the other way round before it can be
+attached."
+  (when server-key
+    (let ((key (file-truename (expand-file-name server-key))))
+      (seq-find (lambda (session)
+                  (equal key (herdr-session-server-key session)))
+                (herdr-all-sessions)))))
+
 (defun herdr-read-session (prompt &optional default)
-  "Read a herdr session designator with PROMPT, offering DEFAULT."
+  "Read a herdr session designator with PROMPT, offering DEFAULT.
+Each name is shown beside the socket it stands for, since that is what
+tells two sessions apart."
   (let* ((known (mapcar (lambda (session)
                           (pcase session
                             ((or 'nil 'shared) "shared")
                             ('emacs "emacs")
                             (name name)))
-                        (append (herdr-known-sessions) (herdr-available-sessions))))
+                        (herdr-all-sessions)))
          (default (pcase default
                     ((or 'nil 'shared) "shared")
                     ('emacs "emacs")
-                    (name name))))
+                    (name name)))
+         (names (delete-dups (append known (list "shared" "emacs"))))
+         (width (apply #'max 0 (mapcar #'string-width names)))
+         (annotation
+          (lambda (name)
+            (concat (make-string (max 1 (- (+ width 2) (string-width name))) ?\s)
+                    (abbreviate-file-name
+                     (herdr-session-socket (herdr--session-designator name))))))
+         (table (lambda (string predicate action)
+                  (if (eq action 'metadata)
+                      `(metadata (category . herdr-session)
+                                 (annotation-function . ,annotation)
+                                 (display-sort-function . identity)
+                                 (cycle-sort-function . identity))
+                    (complete-with-action action names string predicate)))))
     (herdr--session-designator
-     (completing-read (format-prompt prompt default)
-                      (delete-dups (append known (list "shared" "emacs")))
+     (completing-read (format-prompt prompt default) table
                       nil nil nil nil default))))
 
 ;;;###autoload

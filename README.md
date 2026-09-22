@@ -1,239 +1,419 @@
 # herdr.el
 
-Emacs client for [herdr](https://herdr.dev), the terminal workspace manager for
-coding agents. Talks to herdr's newline-delimited JSON socket API, attaches
-server-owned terminals into Emacs terminal buffers, and bridges herdr sessions
-with `claude-code-ide.el` in both directions.
-
-## Layers
-
-| File | What it is |
-| --- | --- |
-| `herdr-core.el` | socket client — `herdr-request`, `herdr-subscribe`, errors, customs |
-| `herdr-api.el` | one wrapper per API method, generated from the installed herdr's schema |
-| `herdr.el` | attaching terminals, completion, interactive commands |
-| `herdr-claude-code-ide.el` | claude-code-ide bridge |
+`herdr.el` is an Emacs 29.1+ client for [Herdr](https://herdr.dev), the persistent terminal workspace manager. Herdr owns agent processes, terminals, tabs, and workspaces; Emacs attaches terminal buffers to that state.
 
 ## Install
 
+Install `transient` 0.9.0+ from a configured package archive. Terminal attachment also requires one of Ghostel, vterm, or Eat.
+
 ```elisp
 (use-package herdr
-  :load-path "~/projects/herdr.el"
-  :commands (herdr-attach-agent herdr-attach-pane))
+  :load-path "~/src/herdr.el"
+  :commands (herdr-attach-agent herdr-attach-pane herdr-jump))
 
-(use-package herdr-claude-code-ide
-  :after claude-code-ide
-  :config (herdr-claude-code-ide-mode 1))
+(use-package herdr-transient
+  :load-path "~/src/herdr.el"
+  :commands herdr-transient
+  :bind (("C-c h" . herdr-transient)))
 ```
 
-Terminal buffers use ghostel, vterm or eat — whichever is installed, or set
-`herdr-terminal-backend`.
+Attached buffers are named after the project and git branch the terminal works in, as in `*herdr: app@main claude*`, with linked worktrees named after their main checkout; set `herdr-buffer-name-function` to name them differently. Set `herdr-terminal-backend` when automatic backend selection is unsuitable. The package installs no global keybinding itself.
 
-## Attaching a terminal
+## Terminal attachment
 
-`M-x herdr-attach-agent` lists the agents herdr is running and opens the chosen
-one in an Emacs terminal buffer. `M-x herdr-attach-pane` does the same for any
-pane. Input goes straight to the herdr terminal; killing the buffer detaches
-and leaves the process running.
+Pass `:session "review"` to `herdr-attach-terminal` or `herdr-agent-adopt`; `herdr-attach-entry` uses the entry's session or its optional session argument. The CLI receives `--session NAME`, including `--session default` for the shared session. Socket paths are resolved internally and inherited socket environment variables do not select the attachment.
 
-With the claude-code-ide bridge loaded, picking a claude agent opens a real
-claude-code-ide session around it instead of a bare terminal. Anything else in
-`herdr-attach-functions` gets the same chance to claim an entry first; the plain
-terminal attach runs when they all decline.
+Ghostel attachment errors raise an Emacs warning with the session, terminal, and CLI reason. The last 16,384 characters of output are retained in `*herdr-errors*` before Ghostel deletes the terminal buffer. Normal detach and deliberate cleanup are silent. The adapter's `:attached` phase denotes a live local transport, not a server acceptance acknowledgement.
 
-Attached terminals open in a dedicated side window (`herdr-window-side`,
-`herdr-window-width`, `herdr-window-height`), each in its own slot so several
-of them sit next to each other. Slots start at `herdr-window-slot-base`, high
-enough to stay clear of other side-window users such as claude-code-ide. Set
-`herdr-display-buffer-action` for a different placement, or
-`herdr-use-side-window` to nil to hand placement over to `display-buffer-alist`
-or a popup framework.
+## Agent workflows
 
-Only one writable client owns a terminal at a time, so attaching takes input
-ownership by default (`herdr-attach-takeover`). The herdr UI keeps rendering
-the same terminal, read-only, until it takes ownership back.
+`herdr-agent.el` provides one lifecycle for Claude Code, Codex, and Pi.
 
-## One herdr server, or one of your own
-
-`herdr-session` picks which server Emacs talks to:
-
-| Value | Meaning |
+| Operation | Meaning |
 | --- | --- |
-| `shared` (default) | the session a bare `herdr` attaches to, so Emacs sessions sit next to hand-run agents in the herdr UI |
-| `emacs` | a session of its own, named by `herdr-emacs-session-name` — reach it from a terminal with `herdr --session emacs` |
-| a string | that session by name |
+| start | Create a Herdr tab and start a new harness session. |
+| continue | Continue the harness's latest session in a new tab. |
+| resume | Resume a named harness session reference in a new tab. |
+| adopt | Attach an already-running Herdr agent without starting another CLI. |
+| detach | Release Emacs state while keeping the Herdr pane and agent alive. |
+| stop | Close one agent's Herdr pane. |
+| stop all | Close every reported agent pane on the selected server. |
+| message | Send a typed message plus the context at point to an agent. |
+| associate | Bind a primary agent to the current buffer, project, or workspace. |
 
-A session is a whole server namespace: its own socket, state directory and
-persistence. Emacs passes the choice to every herdr command it runs, so an
-attached terminal reaches the same server the API calls do. `herdr-socket-path`
-overrides the lot with a raw socket path when you know exactly which server you
-mean.
+Use `herdr-agent-start`, `herdr-agent-continue`, and `herdr-agent-resume` from Lisp. `herdr-agent-stop` takes a composite `(server-key . terminal-id)` target. Existing work is available through `herdr-attach-agent`, `herdr-attach-pane`, `herdr-attach-session`, and `herdr-jump`. `herdr-attach-pane` offers only the panes running no agent, since `herdr-attach-agent` already offers the rest and draws them far better than a pane row can.
 
-Sessions of your own start empty, and tabs need a workspace, so `herdr-new-tab`
-opens one in a session that has none.
+`herdr-message-send` reads a message for the agent at hand; `herdr-message-send-session` and its project, workspace, `recent`, and `primary` variants name a scope to pick from instead. Each reads a message and sends it followed by a `---` barrier and the context at point: a `file:` or `buffer:` line with the line range, `mode:`, and the region or current line in a fenced block for file-visiting buffers, or whatever a provider on `herdr-send-context-functions` returns. The minibuffer asks for the message, with earlier messages on `M-p`; `C-c '` moves the draft to a `*herdr message*` buffer where `C-c C-c` sends and `C-c C-k` discards. Setting `herdr-message-read-function` to `herdr-message-read-field` writes the message in a [cera](https://github.com/srnnkls/cera) field directly under the region or line it is about instead, where `RET` sends and `C-c C-k` cancels; the field closes into the vendor mark of the harness it writes to, drawn from `herdr-status-harness-marks` in that harness's own colour, and a buffer a process streams into, such as a terminal, still asks in the minibuffer. Sending shows the agent's terminal beside the window you sent from, attaching it first when nothing shows it, unless `herdr-message-show-agent` is nil.
 
-### Routing projects to sessions
+`herdr-switch-agent` reads one of the current editor workspace's agents and shows it at its prompt, attaching it first when nothing shows it; a prefix argument offers every agent running instead.
 
-Work and private projects can live on different herdr servers. Assignment is
-explicit and per project:
+`herdr-toggle-agent` shows the current editor workspace's agent, or takes the one on screen off it: a herdr terminal already on the frame loses its window and keeps its buffer, and nothing else moves. Otherwise the workspace answers with the agent it has attached and worked in most recently, shown through `display-buffer` so the editor's own popup rule for herdr terminals places it and decides whether it takes focus; `herdr-toggle-agent-display-action` overrides that where a caller wants its own. A workspace holding no attached agent reads one of the agents running in it, and a workspace running none offers to start one where it works. The current workspace stays current throughout. `herdr-message-send` messages the workspace's foreground agent with the context at point: the one used most recently from Emacs, which selecting an agent's window counts as, then the one herdr itself has focused, then the only one in the workspace. A prefix argument reads the agent instead, for either command. Neither is bound; `s-c` and `s-m` are a natural pair. `herdr-associate-agent`, `herdr-associate-project-agent`, and `herdr-associate-workspace-agent` bind a primary agent; `herdr-message-send-primary-session` and `herdr-send-primary-session` resolve buffer, then project, then workspace, and bind the project on first use when nothing is set. Functions on `herdr-message-compose-functions` receive the target, the message text, and the context string; the first prompt they return is sent instead of the barrier composition, so an integration can deliver the context through another channel.
 
-```elisp
-M-x herdr-assign-project-session      ; assigns the current project, saved
-```
+`herdr-attach-session-workspace-policy` defaults to `mirror`, which preserves Herdr workspace groups. Set it to `merge` to accumulate entries with the same `herdr-workspace-label` in one editor workspace.
 
-Assignments made that way are written to `herdr-state-file`, an alist in your
-setup's state directory — point it at a durable one, since
-`locate-user-emacs-file` lands in the cache directory under Doom:
+Vanilla Emacs can use built-in tab-bar workspaces:
 
 ```elisp
-(setq herdr-state-file (file-name-concat doom-state-dir "herdr/project-sessions.eld"))
+(setq herdr-attach-session-workspace-policy 'merge
+      herdr-workspace-open-function
+      (lambda (_workspace directory)
+        (let ((name (herdr-workspace-label directory)))
+          (tab-bar-switch-to-tab name)
+          name)))
 ```
 
-`C-u` assigns for this Emacs only, writing nothing. Assignments you'd rather
-keep in configuration go in `herdr-project-sessions`, an alist of
-`(PROJECT-ROOT . SESSION)`, and those win over the stored ones.
+`tab-bar-switch-to-tab` selects an existing tab by name or creates it when missing.
 
-The project root comes from `herdr-project-root-function`, which asks projectile
-when projectile is loaded and project.el otherwise — override it to decide
-project identity your own way.
+### Sending context
 
-Projects nothing was assigned to fall back to `herdr-session-alist`, directory
-rules whose key is a directory or a predicate:
+These commands send the active region, or the current line when no region is active, through the agent prompt API. The default message includes the file or buffer name and line range.
+
+`herdr-send` sends the context at point to the agent at hand, writing nothing, and the scoped commands pick one instead:
+
+| Scope | Select with completion | Use the agent used most recently |
+| --- | --- | --- |
+| All sessions | `herdr-send-session` | `herdr-send-recent-session` |
+| Current project | `herdr-send-project-session` | `herdr-send-recent-project-session` |
+| Current editor workspace | `herdr-send-workspace-session` | `herdr-send-recent-workspace-session` |
+
+Selection commands always open completion, including for one candidate. `recent` commands use Emacs's global Herdr agent MRU and never open completion.
+
+Project scope compares roots returned by `herdr-project-root-function`; linked worktrees therefore remain separate projects. Workspace scope compares `herdr-current-workspace-label` with each session directory's `herdr-workspace-label`, so an editor integration may deliberately group worktrees.
+
+Functions in `herdr-send-context-functions` receive the selected session entry. The first non-nil string replaces the default region-or-line message, which lets optional editor integrations provide richer context without becoming a Herdr dependency.
+
+A harness descriptor owns its display label and native start, continue, and resume arguments:
 
 ```elisp
-(setq herdr-session-alist '(("~/work" . "work") ("~/src" . "private")))
+(herdr-agent-register-harness
+ "aider"
+ :label "Aider"
+ :arguments '((start)
+              (continue "--continue")
+              (resume "--resume" :reference)))
 ```
 
-and then to `herdr-session`. `herdr-session-for` answers what a directory
-resolves to; `herdr-with-session` runs code against one server.
+The Herdr server must support the registered harness.
 
-Routing reaches everything that talks to herdr: a Claude session starts on the
-server its project routes to, `herdr-attach-agent` offers the agents of that
-server, and `herdr-jump` scans every known session at once, tagging each entry
-with the server it came from and attaching it there. Servers that are not
-running are skipped rather than started while listing.
+## Adapter contract
 
-## Attaching a whole session
+Optional integrations inject one adapter per registered harness:
 
-`M-x herdr-attach-session` mirrors a running herdr session into Emacs: every
-one of its workspaces opens an editor workspace through
-`herdr-workspace-open-function`, and each agent inside becomes a buffer there,
-named after its tab. A prefix argument takes plain panes along too. Terminals
-Emacs already shows are left alone, so running it again after a while only
-picks up what is new.
+```elisp
+(herdr-agent-adapter KIND)
+(herdr-agent-register-adapter KIND ADAPTER)
+(herdr-agent-unregister-adapter KIND ADAPTER)
+```
 
-Input ownership stays with whoever holds it — the attached buffers start as a
-view of a session someone else is driving, since claiming three terminals at
-once from a herdr client you are looking at is rarely what you meant. Pass
-TAKEOVER, or attach a single agent, when you want to type.
+`ADAPTER` receives `(session phase context)` through this lifecycle:
 
-## Jumping between sessions
+```elisp
+(adapter session :prepare nil)
+(adapter session :arguments complete-argv)
+(adapter session :adopted agent)
+(adapter session :attached nil)
+(adapter session :status nil)
+(adapter session :detach nil)
+```
 
-`M-x herdr-jump` completes over everything running — herdr's agents plus the
-claude-code-ide sessions this Emacs owns — and shows the one you pick, attaching
-its terminal first if no buffer has it yet. Entries are grouped by kind and
-annotated with agent, status and directory. One terminal appears once: an agent
-that already has a buffer wins over the bare herdr entry.
+`:prepare` may return pane environment entries. `:arguments` may transform the complete native argument list. `:status` may return an alist. `:detach` must release only adapter-owned state and remain safe to retry.
 
-`herdr-session-functions` collects the entries, so other session sources can add
-themselves.
+A session captures its adapter before the first phase and keeps that exact function through cleanup. `herdr-agent-adapter` reads the current registration. Registration is idempotent for the same function; conflicts signal. Unregistration requires the same function and refuses while a live session has captured it. Adapter data belongs in the session's opaque state through `herdr-agent-set-adapter-state`; Herdr does not inspect it.
 
-## Integration points
+Host access for adapters stays within the public `herdr-agent-resolve-session`, `herdr-agent-list`, `herdr-agent-send-text`, `herdr-agent-prompt`, `herdr-agent-adopt`, and `herdr-agent-session-*` interfaces. `herdr-agent-event-functions` observes lifecycle events after Herdr updates its indexes.
 
-| Hook / variable | Use |
+## Transient
+
+`M-x herdr-transient` opens the canonical Herdr menu:
+
+```text
+Launch:  N new         c continue      r resume
+Agent:   P prompt      R rename        j switch
+         e escape      RET return      x stop        X stop all
+Attach:  a agent       p pane          A session
+         J jump        o route project
+Find:    s search      S search menu   i dashboard
+         I one line    t details
+```
+
+An action the dashboard also offers is on the key the dashboard binds it
+to — `P`, `R`, `x`, `t`, `s`, `S` — so the two menus read as one. A test
+pins that agreement.
+
+Opening the menu starts no process. Every agent command reads its target
+from the status dashboard when the menu is opened there, and prompts
+otherwise. The dashboard has its own menu on `?`, `herdr-status-dispatch`,
+mirroring the keys it binds directly.
+
+## Status dashboard
+
+`M-x herdr-status` opens a Magit-style dashboard over every herdr server
+`herdr-all-sessions` finds — the configured ones plus any session whose
+socket is on disk, so a server started with `herdr --session NAME` shows
+up without being assigned to a project first. It claims the selected
+window the way `magit-status` does; `herdr-status-display-action` is the
+`display-buffer` action it uses, bound so popup rules cannot divert it.
+Sections collapse with `TAB` and `S-TAB`, and `M-1` through `M-4` set the
+level for the whole buffer.  `herdr-status-left-fringe-width` widens the
+fringe the collapse arrows are drawn in, so they clear the headings.
+
+`M-x herdr-project-status` opens the same dashboard for the current project.
+Agents, Recent, Herds, and Panes follow `herdr-project-root-function` and
+each entry's working directory. Sessions shows health and totals only for
+servers hosting a matching agent or pane.
+`p` (`herdr-status-toggle-project`) switches between global and project
+views. The header shows the scope, which survives refreshes. Both entry
+commands capture the calling buffer's directory, so the project view
+follows the project you open it from. It requires a current project.
+
+| Section | Contents |
 | --- | --- |
-| `herdr-attach-functions` | claim an entry before the plain terminal attach |
-| `herdr-buffer-functions` | see every buffer that starts showing a terminal |
-| `herdr-terminal-id` | buffer-local id of the terminal a buffer shows |
-| `herdr-terminal-buffer` | find the live buffer for a terminal id |
-| `herdr-session-functions` | contribute entries to `herdr-jump` |
-| `herdr-entry-annotation-functions` | add fields to completion annotations |
+| `Sessions` | One entry per session in scope: reachability, socket, herdr version, protocol, and object counts |
+| `Recent` | Agents in most-recently-used order, omitted when none |
+| `Herds` | One collapsible entry per herd the listed agents name, omitted when none does |
+| `Agents` | The filterable list, headed by the visible-of-total count and the active filters |
+| `Panes` | Panes running no agent, grouped under their workspace |
 
-Together they are enough to bind sessions to an editor-side notion of place —
-pinning each terminal to the workspace its project owns, say, and following that
-pin when jumping.
+Functions on `herdr-status-sections-functions` insert further sections above `Recent`; each receives the agent entries, the column widths, and the tab and workspace indexes, draws an agent on the shared columns with `herdr-status-agent-row`, and inserts nothing when it has nothing to show. `herdr-status-request-refresh` schedules the coalesced redraw those sections need when their data changes. Limen's `limen-inbox-mode` uses this for the questions agents are waiting on.
 
-## Lining up with an editor's own layout
+An agent row opens with `herdr-status-attached-glyph` when Emacs has a
+buffer for it, then its state, name, harness, pane id, server,
+workspace, and working directory:
 
-Three levels correspond, so the herdr UI mirrors how the editor is arranged:
-an Emacs instance talks to one herdr session, `herdr-workspace-label-function`
-maps a directory to the herdr workspace its sessions belong in — return the
-editor workspace's name and the two line up — and each agent session becomes a
-tab inside it, named by `herdr-claude-code-ide-label-function`, which defaults
-to the checkout the session runs in, so a worktree's tab carries the worktree's
-name.
+```text
+• ● busy    api-review   claude   %1   shared   herdr.el   ~/projects/herdr.el
+  ● idle    docs         codex    %2   shared   herdr.el   ~/projects/herdr.el
+```
 
-`herdr-open-tab` does the work: it finds the workspace by label, creates it when
-it is missing — labelling the tab that comes with it rather than leaving an
-empty one behind — and otherwise opens a tab inside it.
+Pane rows carry the same marker. Setting the glyph to nil drops the
+column, leaving the name's own colour to say which rows Emacs holds a
+buffer for. The server column appears once a second session is in play,
+the way the completion annotations do.
 
-## claude-code-ide bridge
+A name wider than `herdr-status-name-width` is cut short, so an agent
+named after the prompt it was given cannot push the columns after it off
+the line. Nil, the default, gives the name a third of the window.
 
-With `herdr-claude-code-ide-mode` on, `M-x claude-code-ide` creates a herdr tab
-in the project directory, starts the Claude CLI there, and attaches the
-claude-code-ide buffer to it. No session escapes that route:
-`herdr-claude-code-ide-require-herdr` refuses to start one when herdr cannot be
-reached rather than falling back to an Emacs-owned CLI, and
-`herdr-auto-start-server` starts a headless herdr server first when none is
-running (detached, so it outlives Emacs). Set the first to nil to allow the
-plain claude-code-ide behaviour as a fallback. The CLI inherits `CLAUDE_CODE_SSE_PORT`, so MCP —
-ediff, at-mentions, diagnostics — works exactly as it does with a locally
-spawned CLI. The conversation survives Emacs restarts and shows up in the herdr
-UI alongside every other agent.
+`herdr-status-switch` reads a running agent with completion and shows it.
+Every command that picks an agent — it, `herdr-attach-agent`, the message
+and send commands, the transient — reads through `herdr-read-agent`, so
+they all offer the same rows: the state glyph, the name, and behind it
+the harness with its vendor mark, the branch, and where the agent works,
+given as its project and, for a linked worktree, `project:checkout`. The
+pane and workspace ids the dashboard shows are left out, since nobody
+picks an agent by them. A name longer than `herdr-read-agent-name-width`
+— by default the width the longest one needs, up to 40 percent of the
+frame — is cut short in the row alone and still matches in full. The
+agent reached for most recently leads, and the rest keep the order they
+were handed in, so a dashboard's own sort still decides among the agents
+nothing has been near. `R` renames what point stands for: an agent by
+its own name, a plain pane by the label its row reads by.
 
-The other direction — a claude that herdr already runs becomes a session:
+Point inside a section offers what that section draws: one herd's
+members, a project's group, the recently used, or a section another
+package inserted. Point on a row means the section holding it. The agent
+list and the dashboard at large offer the agents the project scope and
+the active filters leave.
 
-- attaching it (`herdr-attach-agent`, `herdr-attach-pane`) adopts it, unless
-  `herdr-claude-code-ide-adopt-on-attach` is nil.
-- `M-x herdr-claude-code-ide-adopt` does the same on demand.
-- `herdr-claude-code-ide-auto-adopt-mode` adopts every claude herdr detects
-  whose directory is a project Emacs knows
-  (`herdr-claude-code-ide-auto-adopt-predicate`).
+The directory is `herdr-entry-directory`: herdr's `foreground_cwd` when it
+has one, falling back to the `cwd` the pane opened in. An agent that moves
+itself into a worktree moves only the former, and workspace routing,
+project scope, and the attached buffer's `default-directory` all follow it.
+A directory an agent only visits inside a single shell command is invisible
+to herdr, since no process ever changes directory.
 
-The session is named after the herdr agent — its rename, else its terminal
-title (`herdr-claude-code-ide-instance-name-function`) — so several agents in
-one project become `*claude-code[project:name]*` buffers without prompting.
-Adopting the same terminal twice reuses the session it already has.
+Expanding a row shows the terminal, pane, workspace, and tab identity
+herdr reports — including `terminal_title_stripped`, the name the harness
+gave the session — then a preview of what the agent last said, then
+whatever fields the harness adapter contributes through its `:status`
+phase.
 
-An adopted CLI started before its MCP server existed, so it is not connected to
-Emacs yet. `herdr-claude-code-ide-connect-on-adopt` sends `/ide` for you while
-the agent is idle (the default), always, or never; `M-x
-herdr-claude-code-ide-connect-ide` does it on demand. Claude answers with its
-IDE picker — pick the Emacs entry there.
+The preview is the tail of the agent's recent output with the harness's
+own chrome removed: `herdr-status-preview-ignore-regexps` drops rules,
+the prompt, and the status bar, and the last
+`herdr-status-preview-lines` lines of what survives are shown. Setting
+that to 0 turns the preview off and asks herdr for nothing.
 
-Caveat worth knowing: `claude-code-ide-stop` and killing the buffer end the
-*attachment*, not the CLI. Close the herdr tab to end the conversation.
+A refresh fetches one snapshot per session and no per-agent request. The
+preview and the adapter fields each cost one request per agent, both
+issued when a row is first expanded and reused until the next refresh. Herdr lifecycle events
+redraw a live dashboard on a short idle delay, which
+`herdr-status-auto-refresh` turns off.
 
-## API wrappers
+| Key | Action |
+| --- | --- |
+| `RET` / `o` | Show the agent or pane, attaching it when nothing does yet; on a session row, attach the whole of it. With a prefix argument, move herdr itself to the agent's pane as well |
+| `P` | Send a prompt |
+| `R` | Rename |
+| `d` | Detach — Emacs lets go of the terminal and its buffer, the pane runs on |
+| `x` | Stop — the pane closes and the buffer goes with it, after confirmation |
+| `f` | Filter menu |
+| `O` | Order menu |
+| `t` | Show or hide agent metadata |
+| `h` | Herd menu |
+| `s` | Search agent history, narrowed by the section at point |
+| `S` | Search menu |
+| `g` | Refresh |
+| `p` | Toggle global / project view |
+| `?` | `herdr-status-dispatch`, a menu of these same keys |
 
-Every method of the socket API has a function — `herdr-api-pane-split`,
-`herdr-api-agent-prompt`, `herdr-api-workspace-create`, and 86 more. Required
-parameters are positional, the rest are keywords; nil keywords are omitted from
-the request, and `:false` sends a literal false.
+Every action has a direct key; `?` opens a menu that mirrors them and
+closes on a second `?`. `s` and `S` are bound only where
+[memex.el](https://github.com/srnnkls/memex.el) is on the load path, and
+are absent otherwise — the same keys `memex-status` searches under.
+
+`herdr-status-entry-at-point` returns the agent or pane row under point,
+or nil elsewhere, so an editor integration can add a binding that attaches
+into a workspace of its own choosing.
+
+Filters compose conjunctively and survive a refresh. `herdr-status-filter`
+offers harness, agent state, current project, current editor
+workspace, and attached-only. Harness and state offer the values the
+section at point shows, so filtering from inside a herd asks about that
+herd rather than about every agent the dashboard holds. Every one of them is an entry in
+`herdr-status-predicates`, which is also where a custom filter goes:
 
 ```elisp
-(herdr-api-tab-create :cwd "~/src/app" :label "tests" :env '((CI . "1")))
-(herdr-api-pane-send-text "w1:p2" "cargo test\n")
-(herdr-subscribe '("pane.agent_status_changed") #'my-handler)
+(add-to-list 'herdr-status-predicates
+             (cons 'nameless
+                   (lambda ()
+                     (lambda (entry) (null (alist-get 'name entry))))))
 ```
 
-Calls that wait on the server (`herdr-api-agent-wait`,
-`herdr-api-pane-wait-for-output`) need a longer `herdr-request-timeout` bound
-around them.
+Each element maps a symbol to a function of no arguments. That function
+may prompt and returns a predicate of one session entry, or nil to add no
+filter. `herdr-status-add-filter` completes over the registry, so a
+custom predicate is available under `f x` without further wiring.
 
-Regenerate the wrappers after a herdr upgrade:
+## Herds
 
-```bash
-herdr api schema --json > /tmp/herdr-api.schema.json
-emacs -Q --batch -l tools/herdr-api-gen.el \
-      --eval '(herdr-api-gen "/tmp/herdr-api.schema.json" "herdr-api.el")'
+A herd is a named set of agents that know each other's names and know the
+`herdr` CLI is how they reach one another. `h` in the dashboard opens the
+menu:
+
+| Key | Action |
+| --- | --- |
+| `a` | Add the agent at point to a herd, naming a new one if you like |
+| `A` | Add several — the rows the region covers, else pick from the session's agents |
+| `r` | Take the agent at point out of its herd |
+| `d` | Dissolve a herd, leaving its agents running and named |
+| `b` | Send one prompt to every idle member |
+| `R` | Send the roster again after membership changed |
+
+Joining sends the member `herdr-herd-protocol`, any paragraphs functions
+on `herdr-herd-protocol-functions` add, and the live roster, through
+`herdr agent prompt`; the members already there get one line, `[herd
+refactor] memex-index joined (claude, ~/src/memex). No reply needed.`,
+and leaving tells them the same way. `herdr-herd-notice` builds such a
+line and `herdr-herd-notice-prefix` opens it, so a hook can tell a notice
+from a task, and `herdr-herd-sent-functions` hears of every prompt a herd
+command sends. Nothing is written into the project the agent works in, so
+Codex and Pi members join on the same terms as Claude. An agent that is
+`working` or `blocked` is skipped and named rather than interrupted
+mid-turn; `herdr-herd-busy-states` is that list.
+
+Members address each other by name only. An agent that already has one
+keeps it; one that has none is named at join from the repository it works
+in and the task its terminal title shows — `memex-incremental-index`,
+`sira-unified-kv` — offered as an editable default and passed through
+herdr's own uniqueness check. A linked worktree is named after the
+repository it was cut from, not its own directory.
+
+A herd belongs to one session. `herdr agent prompt` reaches one server,
+so agents on different sessions can neither reach each other nor be
+reached, and two alike labels on two sessions are two herds — written
+`cmw/refactor` where the session is named. Every herd command takes the
+session from what point is on: an agent row, a herd, or a session row.
+Where point names none it asks, listing each session beside the socket it
+stands for:
+
+```text
+Session (default shared):
+shared   ~/.config/herdr/herdr.sock
+cmw      ~/.config/herdr/sessions/cmw/herdr.sock
+gf       ~/.config/herdr/sessions/gf/herdr.sock
 ```
 
-## Tests
+Adding an agent from another session is refused by name rather than
+quietly making a herd that cannot talk to itself.
 
-```bash
-emacs -Q --batch -L . -l herdr-tests.el -f ert-run-tests-batch-and-exit
+### Membership lives in herdr
+
+A member's pane carries its herd in the pane's own manual label, as
+`herd:NAME` ahead of whatever else the label says:
+
+```console
+$ herdr pane rename w71:p1 "herd:refactor"      # join
+$ herdr pane list | jq -r '.result.panes[].label'
+$ herdr pane rename w71:p1 --clear              # leave
 ```
 
-The socket tests run against a fake server; the one test that needs a real
-herdr skips itself when none is running.
+Emacs is therefore not the entry point. Herdr persists that label across
+a restart and reports it with the pane, so an agent joins, leaves, and
+reads a herd with the same `herdr` CLI it already uses for everything
+else, and needs no editor running. Emacs only reads and writes the same
+field. A herd exists exactly as long as some live pane names it; nothing
+is stored outside herdr.
+
+The label is drawn only where a pane has no terminal title — which every
+agent pane sets — so on an agent it stays invisible. Text a pane label
+already carried survives every herd command: joining prepends `herd:NAME`
+and leaving takes it away again. Other packages keep their own per-agent
+settings in the same place as further `PREFIX:VALUE` words;
+`herdr-herd-label-token` reads one and `herdr-herd-label-with-token`
+rewrites it, leaving the herd and every other word alone.
+
+`bin/herdr-herd` wraps those calls for agents. It defaults every pane
+argument to `$HERDR_PANE_ID`, so an agent talks about itself with no
+arguments:
+
+```console
+$ herdr-herd join refactor
+$ herdr-herd peers
+$ herdr-herd say "rebased onto main, your turn"
+```
+
+The roster an agent receives names the script's absolute path, so no
+`PATH` setup is needed; `herdr-herd-command` controls that, and nil
+leaves agents the plain `herdr` commands alone. The script needs
+`python3` to read herdr's JSON and refuses outside a herdr pane.
+
+## Searching agent history
+
+With [memex.el](https://github.com/srnnkls/memex.el) installed, `s`
+searches the transcripts memex indexed, narrowed to what point stands
+for: one agent on an agent row, a herd's members inside a herd, every
+listed agent elsewhere in the dashboard, and everything outside it. `S`
+opens the menu, which adds the search modes and, for the agent at point,
+its transcript and a resume into a fresh tab.
+
+Without memex.el neither key is bound and nothing is loaded.
+
+## Agent-facing Emacs integration
+
+[Limen](https://github.com/srnnkls/limen) optionally injects editor operations, context, diffs, and native Claude Code, Codex, and Pi transports through the adapter contract. Herdr runs all three harnesses without Limen.
+
+## Ownership
+
+Herdr remains authoritative for process lifetime and terminal input. Killing an Emacs buffer or detaching a session never stops the Herdr agent; use `herdr-agent-stop` to end it.
+
+## Platforms
+
+| Platform | Emacs | Status |
+| --- | --- | --- |
+| Ubuntu | 29.1, 30.1, 31.1 | Supported |
+| macOS | 29.1, 30.1, 31.1 | Supported |
+| Windows | 29.1, 30.1, 31.1 | Supported |
+
+CI also runs an experimental, soft-failing Ubuntu snapshot job.
+
+## Troubleshooting
+
+- `no terminal backend`: install Ghostel, vterm, or Eat, or set `herdr-terminal-backend`.
+- `No herdr server`: start Herdr, or allow `herdr-auto-start-server` for the selected session.
+- A terminal is read-only: enable `herdr-attach-takeover` when attaching to transfer input ownership.
+- An agent stays "unfocused" in Herdr after its Emacs buffer left the screen: keep `herdr-report-focus-loss` nil so only Herdr reports focus loss.
+
+## License
+
+herdr.el is GPL-3.0-or-later; see [LICENSE](LICENSE).

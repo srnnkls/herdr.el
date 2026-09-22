@@ -4,7 +4,6 @@
 
 ;; Author: Sören Nikolaus <soeren@code17.io>
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: terminals, tools, processes
 ;; URL: https://github.com/srnnkls/herdr.el
 
@@ -19,7 +18,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 
-(declare-function projectile-project-root "projectile" (&optional dir))
+(declare-function projectile-project-root "ext:projectile" (&optional dir))
 (declare-function project-current "project" (&optional maybe-prompt directory))
 (declare-function project-root "project" (project))
 
@@ -237,10 +236,14 @@ A nil SESSION drops the assignment.  The store is written to
 A nil SESSION leaves the current choice alone, so callers can pass
 whatever an entry carries."
   (declare (indent 1) (debug (form body)))
-  (let ((value (make-symbol "session")))
+  (let ((value (make-symbol "session"))
+        (current (make-symbol "current-session")))
     `(let* ((,value ,session)
-            (herdr-session (or ,value herdr-session))
-            (herdr-socket-path (if ,value nil herdr-socket-path)))
+            (,current herdr-session)
+            (herdr-session (or ,value ,current))
+            (herdr-socket-path (if (and ,value (not (equal ,value ,current)))
+                                   nil
+                                 herdr-socket-path)))
        ,@body)))
 
 (defun herdr-known-sessions ()
@@ -260,6 +263,26 @@ whatever an entry carries."
                           (if session
                               (expand-file-name session (expand-file-name "sessions" dir))
                             dir)))))
+
+(defun herdr-server-key ()
+  "Return the canonical identity of the herdr server in scope."
+  (let* ((socket (expand-file-name (herdr-socket-file)))
+         (parent (file-name-directory socket))
+         (basename (file-name-nondirectory socket)))
+    (if-let* ((target (file-symlink-p socket)))
+        (file-truename (expand-file-name target parent))
+      (if (file-exists-p socket)
+          (file-truename socket)
+        (expand-file-name basename (file-truename parent))))))
+
+(defun herdr-session-server-key (session)
+  "Return the canonical identity of the server SESSION is served by.
+A session designator and an explicit `herdr-socket-path' both name a
+server, and the designator is the one that answers here, so a caller
+holding a session never reads the socket another scope left behind."
+  (let ((herdr-session session)
+        (herdr-socket-path nil))
+    (herdr-server-key)))
 
 (defun herdr-global-args ()
   "Return the herdr CLI flags selecting the session Emacs talks to.
@@ -391,7 +414,8 @@ TYPES is a list of event type strings such as \"pane.agent_detected\".
 CALLBACK receives the event alist.  Returns the subscription process;
 `delete-process' on it unsubscribes."
   (let ((proc (herdr--connect))
-        (pending ""))
+        (pending "")
+        (subscriptions (vconcat (mapcar (lambda (type) `((type . ,type))) types))))
     (set-process-filter
      proc
      (lambda (_proc chunk)
@@ -401,11 +425,11 @@ CALLBACK receives the event alist.  Returns the subscription process;
            (setq pending (substring pending (match-end 0)))
            (unless (string-empty-p line)
              (when-let* ((message (ignore-errors (herdr--decode line)))
-                         (event (alist-get 'event message)))
-               (funcall callback event)))))))
-    (process-send-string
-     proc (herdr--payload "events.subscribe"
-                          `((subscriptions . ,(mapcar (lambda (type) `((type . ,type))) types)))))
+                         ((alist-get 'event message)))
+               (funcall callback (alist-get 'data message))))))))
+    (process-send-string proc
+                         (herdr--payload "events.subscribe"
+                                         `((subscriptions . ,subscriptions))))
     proc))
 
 (provide 'herdr-core)

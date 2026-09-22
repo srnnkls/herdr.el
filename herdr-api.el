@@ -13,7 +13,7 @@
 (require 'herdr-core)
 
 (defconst herdr-api-protocol 17
-  "herdr socket protocol version these wrappers were generated from.")
+  "Herdr socket protocol version these wrappers were generated from.")
 
 (defun herdr-api-ping ()
   "Call the herdr API method `ping'.
@@ -432,7 +432,8 @@ Return the result alist."
   (herdr-request "agent.start"
                  (herdr--params
                   (list (cons 'kind kind) (cons 'name name)
-                        (cons 'pane_id pane-id) (cons 'args args)
+                        (cons 'pane_id pane-id)
+                        (cons 'args (and args (vconcat args)))
                         (cons 'timeout_ms timeout-ms)))))
 
 (cl-defun herdr-api-agent-prompt (target text &key wait)
