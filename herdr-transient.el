@@ -131,8 +131,6 @@ to, so the two menus can be read as one."
     ("J" "jump" herdr-jump)
     ("o" "route project" herdr-assign-project-session)]
    ["Find"
-    ("s" "search" herdr-memex-search :if herdr-memex-available-p)
-    ("S" "search menu" herdr-memex-dispatch :if herdr-memex-available-p)
     ("i" "dashboard" herdr-status)
     ("I" "one line" herdr-transient--status)
     ("t" herdr-status-toggle-details

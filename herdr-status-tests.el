@@ -198,8 +198,8 @@
         (let* ((widths (herdr-status--widths entries workspaces))
                (cell (herdr-status--field-column 'branch
                                                  (herdr-status--branch (car entries))
-                                                 (nth 5 widths))))
-          (should (= (nth 5 widths) 10))
+                                                 (herdr-status-field-width widths 'branch))))
+          (should (= (herdr-status-field-width widths 'branch) 10))
           (should (string-match-p "feat/lime" cell))
           (should-not (string-match-p "interface" cell))
           (should (equal (get-text-property (1- (length cell))
@@ -230,6 +230,36 @@
                    (setq echoed (apply #'format format arguments)))))
         (herdr-status--echo-cut-field))
       (should-not echoed))))
+
+(defun herdr-status-tests--cost (entry)
+  "Return what ENTRY reports it has cost, or nil."
+  (alist-get 'cost (alist-get 'tokens entry)))
+
+(ert-deftest herdr-status-draws-a-column-a-package-registered ()
+  (let* ((entries (list '((agent . "claude") (pane_id . "%1") (cwd . "/repo")
+                          (tokens . ((cost . "$1.20"))))
+                        '((agent . "codex") (pane_id . "%2") (cwd . "/repo"))))
+         (workspaces (make-hash-table :test #'equal))
+         (herdr-status-field-glyphs (cons '(cost "$") herdr-status-field-glyphs))
+         (herdr-status-columns
+          (append herdr-status-columns
+                  '((cost :value herdr-status-tests--cost))))
+         (widths (herdr-status--widths entries workspaces))
+         (cells (lambda (entry)
+                  (string-join
+                   (delq nil (herdr-status--trailing-columns
+                              entry widths (list :workspaces workspaces)))
+                   "  "))))
+    (should (= (herdr-status-field-width widths 'cost) (string-width "$1.20")))
+    (should (string-match-p "\\$1\\.20" (funcall cells (car entries))))
+    (should-not (string-match-p "1\\.20" (funcall cells (cadr entries))))))
+
+(ert-deftest herdr-status-measures-a-column-of-its-own-width-per-row ()
+  (let* ((entries (list '((agent . "claude") (pane_id . "%1") (cwd . "/repo"))))
+         (workspaces (make-hash-table :test #'equal))
+         (widths (herdr-status--widths entries workspaces)))
+    (should-not (herdr-status-field-width widths 'directory))
+    (should (herdr-status-field-width widths 'branch))))
 
 (ert-deftest herdr-status-marks-oh-my-pi-with-a-pi ()
   (let ((mark (herdr-status-harness-glyph "omp")))
@@ -654,27 +684,27 @@
 
 (ert-deftest herdr-status-orders-the-agents-by-the-column-asked-for ()
   (herdr-status-tests--with-dashboard
-    (should (equal (mapcar #'herdr--entry-label (herdr-status--visible-agents))
+    (should (equal (mapcar #'herdr--entry-label (herdr-status-visible-agents))
                    '("api-review" "docs" "beta-work")))
     (herdr-status-sort-by "name")
-    (should (equal (mapcar #'herdr--entry-label (herdr-status--visible-agents))
+    (should (equal (mapcar #'herdr--entry-label (herdr-status-visible-agents))
                    '("api-review" "beta-work" "docs")))
     (should (string-match-p "· by name ↓"
                             (herdr-status-tests--section-text "Agents ")))
     (herdr-status-sort-by "name")
-    (should (equal (mapcar #'herdr--entry-label (herdr-status--visible-agents))
+    (should (equal (mapcar #'herdr--entry-label (herdr-status-visible-agents))
                    '("docs" "beta-work" "api-review")))
     (should (string-match-p "· by name ↑"
                             (herdr-status-tests--section-text "Agents ")))
     (herdr-status-sort-clear)
-    (should (equal (mapcar #'herdr--entry-label (herdr-status--visible-agents))
+    (should (equal (mapcar #'herdr--entry-label (herdr-status-visible-agents))
                    '("api-review" "docs" "beta-work")))))
 
 (ert-deftest herdr-status-sorts-working-agents-to-the-top-by-state ()
   (herdr-status-tests--with-dashboard
     (herdr-status-sort-by "state")
     (should (equal (mapcar #'herdr-status--state
-                           (herdr-status--visible-agents))
+                           (herdr-status-visible-agents))
                    '("working" "idle" "orbiting")))))
 
 (ert-deftest herdr-status-orders-panes-by-their-number-not-their-text ()
@@ -1698,14 +1728,15 @@ Emacs releases the attachment first and the two go together."
            (cells (lambda (entry)
                     (string-join
                      (delq nil (herdr-status--trailing-columns
-                                entry widths workspaces))
+                                entry widths (list :workspaces workspaces)))
                      "  "))))
-      (should (= (nth 6 widths) (string-width "Opus 5")))
+      (should (= (herdr-status-field-width widths 'model) (string-width "Opus 5")))
       (should (string-match-p "Opus 5" (funcall cells reported)))
       (should-not (string-match-p "Opus 5" (funcall cells silent))))
     (let* ((widths (herdr-status--widths (list silent) workspaces))
-           (columns (herdr-status--trailing-columns silent widths workspaces)))
-      (should (zerop (nth 6 widths)))
+           (columns (herdr-status--trailing-columns
+                            silent widths (list :workspaces workspaces))))
+      (should (zerop (herdr-status-field-width widths 'model)))
       (should-not (nth 3 columns)))))
 
 (ert-deftest herdr-status-draws-the-context-window-an-agent-reports ()
@@ -1722,12 +1753,12 @@ Emacs releases the attachment first and the two go together."
            (widths (herdr-status--widths entries workspaces))
            (cells (string-join
                    (delq nil (herdr-status--trailing-columns
-                              reported widths workspaces))
+                              reported widths (list :workspaces workspaces)))
                    "  ")))
-      (should (= (nth 7 widths) (string-width "136k/200k")))
+      (should (= (herdr-status-field-width widths 'context) (string-width "136k/200k")))
       (should (string-match-p "136k/200k" cells)))
     (let ((widths (herdr-status--widths (list silent) workspaces)))
-      (should (zerop (nth 7 widths))))))
+      (should (zerop (herdr-status-field-width widths 'context))))))
 
 (ert-deftest herdr-status-sorts-agents-by-the-share-of-their-window ()
   (should (equal (herdr-status--context-key

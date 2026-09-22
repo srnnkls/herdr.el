@@ -974,5 +974,27 @@ looks for a replacement buffer runs into."
       (should (equal (plist-get seen :session) "review"))
       (should (equal (alist-get 'session entry) "build")))))
 
+(ert-deftest herdr-takes-a-harness-preamble-off-a-title-and-nothing-else ()
+  (dolist (case '(("π > Notizen für Slides" . "Notizen für Slides")
+                  ("π ∴ Slides" . "Slides")
+                  ("π ⠋ working now" . "working now")
+                  ("π 🌓 moon phase" . "moon phase")
+                  ("π | ascii spinner" . "ascii spinner")))
+    (should (equal (herdr--undecorated-label (car case)) (cdr case))))
+  (dolist (kept '("π Notizen" "π calculation of π" "π" "π >" "◑ peira migration"
+                  "plain title" "" "a π b"))
+    (should (equal (herdr--undecorated-label kept) kept)))
+  (should-not (herdr--undecorated-label nil))
+  (should (equal (herdr--undecorated-label 42) 42))
+  (let ((herdr-entry-label-decorations '("\\`\\(" "\\`π > ")))
+    (should (equal (herdr--undecorated-label "π > kept") "kept"))))
+
+(ert-deftest herdr-leaves-a-named-entry-its-name ()
+  (should (equal (herdr--entry-label '((name . "π > mine")
+                                       (terminal_title_stripped . "π > other")))
+                 "π > mine"))
+  (should (equal (herdr--entry-label '((terminal_title_stripped . "π > other")))
+                 "other")))
+
 (provide 'herdr-tests)
 ;;; herdr-tests.el ends here

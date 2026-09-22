@@ -707,9 +707,9 @@ the screen, so a filter applies the moment it is added."
              (not (memq (eieio-oref section 'type)
                         '(herdr-status-root herdr-status-agents)))
              (herdr-status--section-agents section))
-        (herdr-status--visible-agents))))
+        (herdr-status-visible-agents))))
 
-(defun herdr-status--visible-agents ()
+(defun herdr-status-visible-agents ()
   "Return the agents left by the active filters, in the order asked for."
   (herdr-status--sorted
    (cl-remove-if-not
@@ -899,27 +899,76 @@ a harness that reports none."
               ((not (string-empty-p context))))
     context))
 
-(defun herdr-status--trailing-columns (entry widths workspaces)
+(defcustom herdr-status-columns
+  '((pane :value herdr-status-column-pane)
+    (workspace :value herdr-status-column-workspace)
+    (branch :value herdr-status--branch)
+    (model :value herdr-status--model)
+    (context :value herdr-status--context)
+    (directory :value herdr-status--directory :face herdr-status-path
+               :width own))
+  "The fields drawn after an agent's name, in the order they are drawn.
+Each entry is a symbol naming the field and a plist:
+
+  :value   a function of the entry, or of the entry and the redraw's
+           context plist, answering with the field's text or nil.  The
+           context carries `:workspaces', the table resolving a
+           workspace label.
+  :face    the face the text is drawn in, `herdr-status-meta' by default.
+  :width   `shared' - the default - measures the field across every row
+           and gives them all one width; `own' gives each row the width
+           of its own value, for a field whose length says nothing about
+           the others.
+
+`herdr-status-field-glyphs' says what leads a field and
+`herdr-status-column-widths' what it may take before it is cut short, so
+a field added here is drawn whole without touching either."
+  :type '(alist :key-type symbol :value-type plist)
+  :group 'herdr-status)
+
+(defun herdr-status-column-pane (entry)
+  "Return the pane ENTRY runs in."
+  (alist-get 'pane_id entry))
+
+(defun herdr-status-column-workspace (entry context)
+  "Return the label of ENTRY's workspace, resolved through CONTEXT."
+  (herdr-status--workspace-label entry (plist-get context :workspaces)))
+
+(defun herdr-status--column-value (field entry context)
+  "Return what FIELD says of ENTRY in CONTEXT, or nil."
+  (when-let* ((value (plist-get (alist-get field herdr-status-columns) :value)))
+    (condition-case nil
+        (funcall value entry context)
+      (wrong-number-of-arguments (funcall value entry)))))
+
+(defun herdr-status--column-shared-p (field)
+  "Return non-nil when FIELD takes one width across every row."
+  (not (eq (plist-get (alist-get field herdr-status-columns) :width) 'own)))
+
+(defun herdr-status-field-width (widths field)
+  "Return the columns FIELD takes in WIDTHS, or nil for a field of its own."
+  (alist-get field (plist-get widths :fields)))
+
+(defun herdr-status--trailing-columns (entry widths context)
   "Return the cells that follow ENTRY's session column, on WIDTHS.
-WORKSPACES resolves the workspace label.  The pane, workspace, branch,
-model and context keep their columns; the directory comes last, being
-the one field whose length varies from row to row."
-  (list (herdr-status--field-column 'pane (alist-get 'pane_id entry)
-                                    (nth 3 widths))
-        (herdr-status--field-column 'workspace
-                                    (herdr-status--workspace-label entry workspaces)
-                                    (nth 4 widths))
-        (herdr-status--field-column 'branch (herdr-status--branch entry)
-                                    (nth 5 widths))
-        (herdr-status--field-column 'model (herdr-status--model entry)
-                                    (nth 6 widths))
-        (herdr-status--field-column 'context (herdr-status--context entry)
-                                    (nth 7 widths))
-        (when-let* ((directory (herdr-status--directory entry)))
-          (herdr-status--field-column 'directory directory
-                                      (or (herdr-status-column-width 'directory)
-                                          (string-width directory))
-                                      'herdr-status-path))))
+CONTEXT is the redraw's plist, which `herdr-status-columns' reads what
+it needs of from.  A field of its own width comes out as wide as this
+row's value; every other field shares one width with the rows around it."
+  (mapcar
+   (lambda (column)
+     (let* ((field (car column))
+            (value (herdr-status--column-value field entry context))
+            (face (plist-get (cdr column) :face)))
+       (if (herdr-status--column-shared-p field)
+           (herdr-status--field-column field value
+                                       (or (herdr-status-field-width widths field) 0)
+                                       face)
+         (when value
+           (herdr-status--field-column
+            field value
+            (or (herdr-status-column-width field) (string-width value))
+            face)))))
+   herdr-status-columns))
 
 (defun herdr-status--harness-mark (entry)
   "Return the glyph and face marking ENTRY's harness, or nil."
@@ -986,18 +1035,19 @@ FIELD names the column in `herdr-status-column-widths', which caps it."
 
 (defun herdr-status--row (entry widths workspaces)
   "Return the single line drawn for ENTRY.
-WIDTHS holds the label, harness, session, pane, workspace, branch, model
-and context column widths, and WORKSPACES resolves the workspace label."
+WIDTHS is what `herdr-status--widths' answered, and WORKSPACES resolves
+the workspace label."
   (concat
    (herdr-status--attached-column entry)
    (herdr-status--state-column entry) " "
    (string-join
     (delq nil
           (append
-           (list (herdr-status--label-column entry (nth 0 widths))
-                 (herdr-status--harness-column entry (nth 1 widths))
-                 (herdr-status--session-column entry (nth 2 widths)))
-           (herdr-status--trailing-columns entry widths workspaces)))
+           (list (herdr-status--label-column entry (plist-get widths :label))
+                 (herdr-status--harness-column entry (plist-get widths :harness))
+                 (herdr-status--session-column entry (plist-get widths :session)))
+           (herdr-status--trailing-columns entry widths
+                                           (list :workspaces workspaces))))
     "  ")))
 
 (defun herdr-status-agent-row (entry widths workspaces)
@@ -1007,23 +1057,29 @@ draw an agent on the same columns as the agent list with this."
   (herdr-status--row entry widths workspaces))
 
 (defun herdr-status--widths (entries workspaces)
-  "Return the column widths fitting ENTRIES, labelled via WORKSPACES.
-Label, harness and session keep a floor; pane, workspace, branch, model
-and context take exactly the widest value, and zero when no entry has
-one."
-  (list (herdr-status--name-width entries)
-        (herdr-status--width entries (lambda (entry) (alist-get 'agent entry)) 6
-                             'harness)
-        (herdr-status--width entries #'herdr-status--session-name 6 'session)
-        (herdr-status--width entries (lambda (entry) (alist-get 'pane_id entry)) 0
-                             'pane)
-        (herdr-status--width entries
-                             (lambda (entry)
-                               (herdr-status--workspace-label entry workspaces))
-                             0 'workspace)
-        (herdr-status--width entries #'herdr-status--branch 0 'branch)
-        (herdr-status--width entries #'herdr-status--model 0 'model)
-        (herdr-status--width entries #'herdr-status--context 0 'context)))
+  "Return the widths fitting ENTRIES, labelled via WORKSPACES.
+The answer carries the label, harness and session widths, which keep a
+floor, and one width per shared field of `herdr-status-columns', which
+take exactly the widest value and zero where no entry has one."
+  (let ((context (list :workspaces workspaces)))
+    (list :label (herdr-status--name-width entries)
+          :harness (herdr-status--width
+                    entries (lambda (entry) (alist-get 'agent entry)) 6 'harness)
+          :session (herdr-status--width
+                    entries #'herdr-status--session-name 6 'session)
+          :fields
+          (delq nil
+                (mapcar
+                 (lambda (column)
+                   (let ((field (car column)))
+                     (when (herdr-status--column-shared-p field)
+                       (cons field
+                             (herdr-status--width
+                              entries
+                              (lambda (entry)
+                                (herdr-status--column-value field entry context))
+                              0 field)))))
+                 herdr-status-columns)))))
 
 (defconst herdr-status--detail-fields
   '(server_key session terminal_id pane_id workspace_id tab_id agent
@@ -1393,7 +1449,7 @@ agent list.  Nothing is drawn where no agent names a herd."
 (defun herdr-status--insert-agents (widths tabs workspaces)
   "Insert the filtered agent list.
 WIDTHS, TABS, and WORKSPACES are passed through to each row."
-  (let ((visible (herdr-status--visible-agents))
+  (let ((visible (herdr-status-visible-agents))
         (total (length (herdr-status--agents herdr-status--entries))))
     (magit-insert-section (herdr-status-agents)
       (magit-insert-heading
@@ -1438,15 +1494,10 @@ lines up with them."
 
 ;;;; Mode
 
-(autoload 'herdr-memex-search "herdr-memex" nil t)
-(autoload 'herdr-memex-dispatch "herdr-memex" nil t)
-(autoload 'herdr-memex-available-p "herdr-memex")
-(autoload 'herdr-memex-install-keys "herdr-memex")
-
 (defvar-keymap herdr-status-mode-map
   :doc "Keymap for `herdr-status-mode'.
-The search keys `s' and `S' are installed by `herdr-memex-install-keys'
-where memex.el is on the load path, and are unbound where it is not."
+The keys a package outside herdr takes up - `s' and `S' are memex's -
+are bound by that package and unbound where it is not installed."
   :parent magit-section-mode-map
   "?" #'herdr-status-dispatch
   "RET" #'herdr-status-visit
@@ -1517,7 +1568,6 @@ value to the mouse, which reads it from `help-echo' either way."
                 herdr-status-visibility-indicators))
   (when (characterp (car (magit-section-visibility-indicator)))
     (setq-local left-margin-width 2))
-  (herdr-memex-install-keys)
   (add-hook 'window-configuration-change-hook
             #'herdr-status--widen-fringe nil t)
   (add-hook 'post-command-hook #'herdr-status--echo-cut-field nil t))
@@ -2232,10 +2282,7 @@ Every suffix here is bound directly in `herdr-status-mode-map' as well."
     ("K" "close" herdr-status-close-pane)]
    ["Herd"
     ("h" "herds" herdr-herd-dispatch)]
-   ["Search"
-    :if herdr-memex-available-p
-    ("s" "search" herdr-memex-search)
-    ("S" "memex" herdr-memex-dispatch)]]
+   ]
   [:class transient-row
           ("?" "close" transient-quit-one)
           ("q" "quit dashboard" quit-window)])

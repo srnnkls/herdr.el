@@ -599,11 +599,49 @@ the buffer when non-nil.  Returns the buffer."
 
 ;;;; Completion
 
+(defun herdr-entry-label (entry)
+  "Return the name ENTRY is known by, for whatever reads herdr's entries.
+`herdr-entry-directory' answers for the other half of an entry a package
+outside herdr wants: what it is called and where it runs."
+  (herdr--entry-label entry))
+
+(defcustom herdr-entry-label-decorations
+  '("\\`π[[:space:]]*\\(?:[>!∴:/|\\\\-]\\|[\u2800-\u28ff]\\|[\U0001F311-\U0001F318]\\)[[:space:]]+")
+  "Regexps whose match is taken off the front of an entry's label.
+A harness writes what it likes into its terminal's title, and herdr
+answers with the title as it found it.  Oh My Pi leads with its own mark
+and a glyph saying whose turn it is, which says nothing the dashboard's
+own columns do not; a regexp here takes such a preamble off.
+
+A pattern is held to the whole preamble - the mark and the glyph behind
+it - so a title that merely begins with the same character keeps every
+word of it.  One that would leave nothing behind is ignored, and one
+that cannot be read as a regexp is passed over rather than taking the
+label with it."
+  :type '(repeat regexp)
+  :group 'herdr)
+
+(defun herdr--undecorated-label (label)
+  "Return LABEL without the preamble its harness wrote in front of it.
+LABEL is answered unchanged unless a pattern matches its very front and
+leaves something behind."
+  (if (not (stringp label))
+      label
+    (or (seq-some
+         (lambda (pattern)
+           (condition-case nil
+               (when (and (string-match pattern label) (zerop (match-beginning 0)))
+                 (let ((rest (string-trim (substring label (match-end 0)))))
+                   (and (not (string-empty-p rest)) rest)))
+             (error nil)))
+         herdr-entry-label-decorations)
+        label)))
+
 (defun herdr--entry-label (entry)
   "Return a short label for pane or agent ENTRY."
   (or (alist-get 'name entry)
       (alist-get 'label entry)
-      (alist-get 'terminal_title_stripped entry)
+      (herdr--undecorated-label (alist-get 'terminal_title_stripped entry))
       (alist-get 'agent entry)
       (alist-get 'pane_id entry)))
 

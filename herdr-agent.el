@@ -31,6 +31,9 @@
                  (resume "resume" :reference)))
     ("pi" :label "Pi"
      :arguments ((start) (continue "--continue")
+                 (resume "--session" :reference)))
+    ("omp" :label "Oh My Pi"
+     :arguments ((start) (continue "--continue")
                  (resume "--session" :reference))))
   "Harness descriptors keyed by Herdr agent kind.")
 
