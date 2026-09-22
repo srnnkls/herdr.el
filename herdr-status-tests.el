@@ -1583,6 +1583,45 @@ Emacs releases the attachment first and the two go together."
           (should (equal text (buffer-string)))
           (should (string-match-p "Global" header-line-format)))))))
 
+(ert-deftest herdr-status-waits-for-what-holds-its-rows ()
+  "An inhibitor keeps the redraw off the buffer until it lets go."
+  (herdr-status-tests--with-dashboard
+    (let ((held t)
+          (herdr-status--deferred-timer nil)
+          (herdr-status-redraw-inhibit-functions nil))
+      (add-hook 'herdr-status-redraw-inhibit-functions (lambda () held))
+      (let ((inhibit-read-only t))
+        (goto-char (point-max))
+        (insert "field-holds-this\n"))
+      (herdr-status-refresh)
+      (should (eq herdr-status--deferred 'fetch))
+      (should (string-match-p "field-holds-this" (buffer-string)))
+      (herdr-status--redraw-deferred)
+      (should (eq herdr-status--deferred 'fetch))
+      (should herdr-status--deferred-timer)
+      (setq held nil)
+      (herdr-status--redraw-deferred)
+      (should-not herdr-status--deferred)
+      (should-not herdr-status--deferred-timer)
+      (should-not (string-match-p "field-holds-this" (buffer-string))))))
+
+(ert-deftest herdr-status-a-cached-redraw-does-not-outrank-a-waiting-fetch ()
+  "The retry asks herdr again where the redraw that waited would have."
+  (herdr-status-tests--with-dashboard
+    (let ((herdr-status--deferred-timer nil)
+          (herdr-status-redraw-inhibit-functions (list (lambda () t))))
+      (unwind-protect
+          (progn
+            (herdr-status-refresh)
+            (should (eq herdr-status--deferred 'fetch))
+            (herdr-status--redraw t)
+            (should (eq herdr-status--deferred 'fetch))
+            (setq herdr-status--deferred nil)
+            (herdr-status--redraw t)
+            (should (eq herdr-status--deferred 'cached)))
+        (when herdr-status--deferred-timer
+          (cancel-timer herdr-status--deferred-timer))))))
+
 (provide 'herdr-status-tests)
 ;;; herdr-status-tests.el ends here
 

@@ -411,6 +411,23 @@ one across the refresh an agent event triggers.")
 (defvar herdr-status--timer nil
   "Idle timer coalescing event-driven redraws.")
 
+(defvar herdr-status-redraw-inhibit-functions nil
+  "Functions called with no arguments in a dashboard about to be redrawn.
+A redraw erases the buffer and draws it again, which strands anything
+holding markers or overlays into the rows it replaces — a field read
+over a row, a reader laid across it.  Whatever holds the buffer that way
+answers non-nil here while it does, and the redraw is put off and tried
+again until every function answers nil.")
+
+(defvar herdr-status--deferred-timer nil
+  "Timer retrying the redraws that an inhibitor put off.")
+
+(defvar-local herdr-status--deferred nil
+  "How a redraw this buffer put off is to be run once it can be.
+`cached' redraws from the records the waiting redraw had, `fetch' asks
+herdr again, as the redraw that waited would have; a fetch waiting
+outlives a cached redraw deferred after it.")
+
 ;;;; Collection
 
 (defun herdr-status--session-record (session)
@@ -1631,9 +1648,47 @@ the agent entries, the column widths, the tab index, and the workspace
 index the redraw computed, and inserts nothing when it has nothing to
 show.")
 
+(defun herdr-status-redraw-inhibited-p ()
+  "Return non-nil while something laid over this dashboard holds its rows."
+  (run-hook-with-args-until-success 'herdr-status-redraw-inhibit-functions))
+
+(defun herdr-status--defer-redraw (cached)
+  "Put this buffer's redraw off, CACHED or not, until its inhibitors let go."
+  (unless (and cached (eq herdr-status--deferred 'fetch))
+    (setq herdr-status--deferred (if cached 'cached 'fetch)))
+  (unless herdr-status--deferred-timer
+    (setq herdr-status--deferred-timer
+          (run-with-timer herdr-status-refresh-delay herdr-status-refresh-delay
+                          #'herdr-status--redraw-deferred))))
+
+(defun herdr-status--redraw-deferred ()
+  "Run the redraws that waited, in every dashboard whose inhibitors let go."
+  (let (waiting)
+    (dolist (buffer (herdr-status--buffers))
+      (with-current-buffer buffer
+        (when herdr-status--deferred
+          (if (or herdr-status--refreshing (herdr-status-redraw-inhibited-p))
+              (setq waiting t)
+            (let ((cached (eq herdr-status--deferred 'cached)))
+              (setq herdr-status--deferred nil)
+              (condition-case nil
+                  (herdr-status--redraw cached)
+                (herdr-error nil)))))))
+    (unless waiting
+      (cancel-timer herdr-status--deferred-timer)
+      (setq herdr-status--deferred-timer nil))))
+
 (defun herdr-status--redraw (&optional cached)
   "Re-fetch and redraw the dashboard in the current buffer.
-With CACHED, redraw from the records the last fetch left instead."
+With CACHED, redraw from the records the last fetch left instead.
+A dashboard whose rows something else is holding waits instead: the
+redraw is put off and run once every inhibitor has let go."
+  (if (herdr-status-redraw-inhibited-p)
+      (herdr-status--defer-redraw cached)
+    (herdr-status--draw cached)))
+
+(defun herdr-status--draw (cached)
+  "Redraw the dashboard in the current buffer, asking herdr unless CACHED."
   (let ((herdr-status--refreshing t)
         (inhibit-read-only t)
         (line (line-number-at-pos))

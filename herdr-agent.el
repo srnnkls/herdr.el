@@ -14,6 +14,7 @@
 (defvar cera-session-keymap)
 (declare-function cera-read "ext:cera"
                   (table &optional initial bounds source-face))
+(declare-function cera-field-open-p "ext:cera" (&optional buffer))
 (declare-function herdr-status-harness-glyph "herdr-status" (entry &optional property))
 (defvar cera-input-prefix)
 
@@ -1536,6 +1537,15 @@ cera or the minibuffer itself."
                      (herdr-agent--context-bounds) nil)
           context)))
     (herdr-message-read-minibuffer target context)))
+
+(defun herdr-field-open-p ()
+  "Return non-nil while any cera field is being read over this buffer.
+A message field is one of them, an annotation another; a buffer redrawn
+under either would leave its brackets over rows they were not drawn for
+and its markers pointing nowhere."
+  (and (fboundp 'cera-field-open-p) (cera-field-open-p)))
+
+(add-hook 'herdr-status-redraw-inhibit-functions #'herdr-field-open-p)
 
 (defun herdr-message-read-minibuffer (target context)
   "Read a message for TARGET in the minibuffer and send it with CONTEXT.
