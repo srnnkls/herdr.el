@@ -15,6 +15,7 @@
 (declare-function cera-read "ext:cera"
                   (table &optional initial bounds source-face))
 (declare-function cera-field-open-p "ext:cera" (&optional buffer))
+(declare-function cera-accept "ext:cera" ())
 (declare-function herdr-status-harness-glyph "herdr-status" (entry &optional property))
 (defvar cera-input-prefix)
 
@@ -1333,17 +1334,22 @@ The field's own keys stay in place, as does whatever keymap a caller
 already put in `cera-session-keymap': this map is composed in front of
 it rather than instead of it.  It is where a consumer puts what it can
 do about the agent the message goes to, reached through
-`herdr-message--pending'.")
+`herdr-message--pending'.  `C-<return>' sends without taking the cursor
+to the agent, where cera's own `RET' sends as `herdr-message-show-agent'
+says."
+  "C-<return>" #'herdr-message-send-in-place)
 
 (defvar herdr-message-minibuffer-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c '") #'herdr-message-edit-from-minibuffer)
+    (define-key map (kbd "C-<return>") #'herdr-message-send-in-place)
     map)
   "Keys added to the minibuffer while reading an agent message.")
 
 (defvar herdr-message-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c C-c") #'herdr-message-commit)
+    (define-key map (kbd "C-<return>") #'herdr-message-send-in-place)
     (define-key map (kbd "C-c C-k") #'herdr-message-cancel)
     map)
   "Keymap for `herdr-message-mode'.")
@@ -1385,16 +1391,31 @@ barrier.")
                             (herdr-message--compose text context)))
     target))
 
-(defcustom herdr-message-show-agent t
-  "Whether sending a message shows the agent's terminal.
-A terminal already on the selected frame is left where it is, and one
-that nothing shows yet is attached.  The window sent from stays selected."
-  :type 'boolean
+(defcustom herdr-message-show-agent 'focus
+  "What sending a message does with the agent's terminal.
+`focus' shows it and takes the cursor to its prompt, t shows it and
+keeps the window sent from selected, and nil leaves it alone.  A
+terminal already on the selected frame is left in its window, and one
+that nothing shows yet is attached.  `herdr-message-send-in-place' sends
+without taking the cursor anywhere, whatever this says."
+  :type '(choice (const :tag "Show it and go to its prompt" focus)
+                 (const :tag "Show it" t)
+                 (const :tag "Leave it alone" nil))
   :group 'herdr)
 
+(defvar herdr-message--in-place nil
+  "Non-nil when the message being sent leaves the cursor where it is.")
+
 (defun herdr-message--show-target (target)
-  "Show TARGET's terminal after a message, keeping the selected window."
-  (when herdr-message-show-agent
+  "Show TARGET's terminal after a message, as `herdr-message-show-agent' says."
+  (cond
+   ((null herdr-message-show-agent))
+   ((and (eq herdr-message-show-agent 'focus) (not herdr-message--in-place))
+    (if-let* ((buffer (herdr-terminal-buffer (cdr target) (car target))))
+        (herdr-agent--focus-buffer buffer)
+      (when-let* ((entry (herdr--entry-for-target target)))
+        (herdr-agent--show-entry entry))))
+   (t
     (let ((window (selected-window)))
       (if-let* ((buffer (herdr-terminal-buffer (cdr target) (car target))))
           (unless (get-buffer-window buffer)
@@ -1402,7 +1423,19 @@ that nothing shows yet is attached.  The window sent from stays selected."
         (when-let* ((entry (herdr--entry-for-target target)))
           (herdr-visit entry)))
       (when (window-live-p window)
-        (select-window window)))))
+        (select-window window))))))
+
+(defun herdr-message-send-in-place ()
+  "Send the message being written, leaving the cursor where it is.
+The terminal is still shown where `herdr-message-show-agent' shows one;
+only the move to its prompt is left out.  The field, the minibuffer and
+the message buffer each send this way on this key."
+  (interactive)
+  (if (derived-mode-p 'herdr-message-mode)
+      (let ((herdr-message--in-place t))
+        (herdr-message-commit))
+    (setq herdr-message--in-place t)
+    (if (minibufferp) (exit-minibuffer) (cera-accept))))
 
 (defun herdr-message--target-label (target)
   "Return a short label for agent TARGET."
@@ -1525,10 +1558,11 @@ cera or the minibuffer itself."
            (or (fboundp 'cera-read) (require 'cera nil t)))
       (let ((cera-input-prefix (herdr-message--field-prefix target))
             (cera-session-keymap
-             (if cera-session-keymap
+             (if (bound-and-true-p cera-session-keymap)
                  (make-composed-keymap herdr-message-field-map cera-session-keymap)
                herdr-message-field-map))
-            (herdr-message--pending (cons target context)))
+            (herdr-message--pending (cons target context))
+            (herdr-message--in-place nil))
         (message "Message to %s" (herdr-message--target-label target))
         (herdr-message--show-target
          (herdr-message--send
@@ -1554,6 +1588,7 @@ Earlier messages are reached through the history keys.
 minibuffer moves the draft to a `herdr-message-mode' buffer instead."
   (let ((herdr-message--pending (cons target context))
         (herdr-message--edited nil)
+        (herdr-message--in-place nil)
         (history-add-new-input nil))
     (minibuffer-with-setup-hook
         (lambda ()

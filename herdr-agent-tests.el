@@ -1975,6 +1975,7 @@ to be reached through the server it was found on."
                   (,server-a get "shared")
                   (,server-a get "shared")
                   (,server-a close "a:pane")
+                  (,server-b buffer "shared" ,server-a)
                   (,server-a prompt "shared" "Write the tests" nil)
                   (,server-a keys ("esc") "shared")
                   (,server-a keys ("enter") "shared")
@@ -2658,6 +2659,7 @@ to be reached through the server it was found on."
 
 (ert-deftest herdr-message-commit-shows-the-agent-without-selecting-it ()
   (let ((herdr-message-history nil)
+        (herdr-message-show-agent t)
         (herdr-message-read-function #'herdr-message-read-minibuffer)
         (target '("/servers/a.sock" . "shared"))
         (terminal (generate-new-buffer " *herdr shown terminal*"))
@@ -2700,6 +2702,57 @@ to be reached through the server it was found on."
                         (should-not (get-buffer-window terminal))))
                   (delete-process process))))))
       (kill-buffer terminal))))
+
+(ert-deftest herdr-message-send-focuses-the-agent-unless-sent-in-place ()
+  (let ((herdr-message-history nil)
+        (herdr-message-show-agent 'focus)
+        (herdr-message-read-function #'herdr-message-read-minibuffer)
+        (target '("/servers/a.sock" . "shared"))
+        (terminal (generate-new-buffer " *herdr focused terminal*"))
+        (in-place nil)
+        prompted)
+    (unwind-protect
+        (cl-letf (((symbol-function 'herdr-agent-prompt) #'ignore)
+                  ((symbol-function 'herdr-sessions) (lambda () nil))
+                  ((symbol-function 'herdr-terminal-goto-prompt)
+                   (lambda (buffer) (push buffer prompted)))
+                  ((symbol-function 'read-string)
+                   (lambda (&rest _)
+                     (when in-place (setq herdr-message--in-place t))
+                     "hello")))
+          (with-current-buffer terminal
+            (setq herdr-terminal-id "shared"
+                  herdr-terminal-server-key "/servers/a.sock"))
+          (let ((process (make-process :name "herdr-focused" :buffer terminal
+                                       :command '("cat") :noquery t)))
+            (unwind-protect
+                (save-window-excursion
+                  (delete-other-windows)
+                  (let ((origin (selected-window)))
+                    (herdr-message--read target nil)
+                    (should (eq (window-buffer (selected-window)) terminal))
+                    (should (equal prompted (list terminal)))
+                    (select-window origin)
+                    (delete-other-windows)
+                    (setq in-place t)
+                    (herdr-message--read target nil)
+                    (should (get-buffer-window terminal))
+                    (should (eq (selected-window) origin))
+                    (should-not herdr-message--in-place)
+                    (delete-other-windows)
+                    (with-current-buffer (herdr-message--edit target "draft" nil)
+                      (herdr-message-send-in-place))
+                    (should (get-buffer-window terminal))
+                    (should-not (eq (window-buffer (selected-window)) terminal))
+                    (should-not herdr-message--in-place)
+                    (should (= (length prompted) 1))))
+              (delete-process process))))
+      (kill-buffer terminal))))
+
+(ert-deftest herdr-message-sends-in-place-on-c-return-wherever-it-is-written ()
+  (dolist (map (list herdr-message-field-map herdr-message-minibuffer-map
+                     herdr-message-mode-map))
+    (should (eq (lookup-key map (kbd "C-<return>")) #'herdr-message-send-in-place))))
 
 (ert-deftest herdr-message-editor-sends-captured-context-or-cancels ()
   (let ((herdr-message-history nil)
