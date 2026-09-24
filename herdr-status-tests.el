@@ -1820,6 +1820,7 @@ Emacs releases the attachment first and the two go together."
           starts)
       (cl-letf (((symbol-function 'herdr-agent-start)
                  (lambda (kind name &rest arguments)
+                   (should (equal (plist-member arguments :wait) '(:wait nil)))
                    (push (list kind name (plist-get arguments :project-root)
                                herdr-session)
                          starts)))

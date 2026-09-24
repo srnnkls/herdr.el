@@ -443,6 +443,8 @@
                                       "codex" "term-codex" "codex:pane" "work"))))
                          (setf (alist-get 'interactive_ready agent) nil)
                          `((agent . ,agent))))))
+                  ((symbol-function 'herdr-api-agent-list)
+                   (lambda () '((agents))))
                   ((symbol-function 'herdr-subscribe)
                    (lambda (&rest _)
                      (let ((process
@@ -459,6 +461,116 @@
           (should (= attempts 2))
           (should (= get-attempts 2))
           (should (eq (herdr-agent-session-state session) 'attached)))
+      (herdr-agent-tests--detach session)
+      (dolist (process subscription-processes)
+        (when (process-live-p process)
+          (delete-process process)))
+      (remhash (herdr-agent--canonical-server-key server-key)
+               herdr-agent--subscriptions)
+      (delete-directory root t))))
+
+(ert-deftest herdr-agent-start-in-pane-reads-readiness-where-herdr-answers ()
+  "A herdr that refuses a terminal id as an agent target is asked by pane."
+  (let* ((root (make-temp-file "herdr-agent-ready" t))
+         (server-key (file-truename (expand-file-name "herdr.sock" root)))
+         (starting (lambda ()
+                     (let ((agent (copy-tree
+                                   (herdr-agent-tests--agent
+                                    "codex" "term-codex" "codex:pane" "work"))))
+                       (setf (alist-get 'interactive_ready agent) nil
+                             (alist-get 'agent_status agent) "unknown")
+                       agent)))
+         targets
+         subscription-processes
+         session)
+    (unwind-protect
+        (cl-letf (((symbol-function 'herdr-api-agent-start)
+                   (lambda (&rest _) `((agent . ,(funcall starting)))))
+                  ((symbol-function 'herdr-api-agent-list)
+                   (lambda () `((agents ,(funcall starting)))))
+                  ((symbol-function 'herdr-api-agent-get)
+                   (lambda (target)
+                     (push target targets)
+                     (if (string-prefix-p "term-" target)
+                         (signal 'herdr-api-error
+                                 (list "agent_not_found"
+                                       (format "agent target %s not found" target)))
+                       `((agent . ,(herdr-agent-tests--agent
+                                    "codex" "term-codex" "codex:pane" "work"))))))
+                  ((symbol-function 'herdr-subscribe)
+                   (lambda (&rest _)
+                     (let ((process
+                            (start-process "herdr-agent-subscription" nil "sleep" "30")))
+                       (push process subscription-processes)
+                       process)))
+                  ((symbol-function 'sleep-for) #'ignore))
+          (setq session
+                (herdr-agent-start-in-pane
+                 "codex" "review"
+                 (herdr-agent-tests--pane "codex" "pending-codex"
+                                          "codex:pane" "work")
+                 :server-key server-key :args '() :attach nil :timeout-ms 1000))
+          (should (equal (reverse targets) '("term-codex" "codex:pane")))
+          (should (eq (herdr-agent-session-state session) 'attached)))
+      (herdr-agent-tests--detach session)
+      (dolist (process subscription-processes)
+        (when (process-live-p process)
+          (delete-process process)))
+      (remhash (herdr-agent--canonical-server-key server-key)
+               herdr-agent--subscriptions)
+      (delete-directory root t))))
+
+(ert-deftest herdr-agent-start-in-pane-without-waiting-takes-up-the-ready-record-later ()
+  (let* ((root (make-temp-file "herdr-agent-nowait" t))
+         (server-key (file-truename (expand-file-name "herdr.sock" root)))
+         (pending (lambda (value)
+                    (let ((agent (copy-tree
+                                  (herdr-agent-tests--agent
+                                   "codex" "term-codex" "codex:pane" "work"))))
+                      (setf (alist-get 'interactive_ready agent) nil
+                            (alist-get 'agent_status agent) "unknown"
+                            (alist-get 'value (alist-get 'agent_session agent)) value)
+                      agent)))
+         (answers (list (funcall pending "session-8")
+                        (herdr-agent-tests--agent "codex" "term-codex" "codex:pane" "work")))
+         timers
+         subscription-processes
+         session)
+    (unwind-protect
+        (cl-letf (((symbol-function 'herdr-api-agent-start)
+                   (lambda (&rest _)
+                    `((agent . ((launch_pending . t)
+                                ,@(assq-delete-all 'agent (funcall pending nil)))))))
+                  ((symbol-function 'herdr-api-agent-get)
+                   (lambda (_target) `((agent . ,(pop answers)))))
+                  ((symbol-function 'run-with-timer)
+                   (lambda (_delay _repeat function &rest _)
+                     (push function timers)))
+                  ((symbol-function 'herdr-subscribe)
+                   (lambda (&rest _)
+                     (let ((process
+                            (start-process "herdr-agent-subscription" nil "sleep" "30")))
+                       (push process subscription-processes)
+                       process))))
+          (setq session
+                (herdr-agent-start-in-pane
+                 "codex" "review"
+                 (herdr-agent-tests--pane "codex" "pending-codex"
+                                          "codex:pane" "work")
+                 :server-key server-key :args '() :attach nil :wait nil))
+          (should (eq (herdr-agent-session-state session) 'attached))
+          (should (equal (herdr-agent-session-kind session) "codex"))
+          (should (= (length answers) 2))
+          (should-not (alist-get 'value (herdr-agent-session-agent-session session)))
+          (funcall (pop timers))
+          (should (= (length answers) 1))
+          (should-not (alist-get 'value (herdr-agent-session-agent-session session)))
+          (funcall (pop timers))
+          (should-not answers)
+          (should-not timers)
+          (should (equal (alist-get 'value (herdr-agent-session-agent-session session))
+                         "session-7"))
+          (should (eq session (herdr-agent-find server-key "term-codex"))))
       (herdr-agent-tests--detach session)
       (dolist (process subscription-processes)
         (when (process-live-p process)

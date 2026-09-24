@@ -2080,7 +2080,7 @@ answers.  KIND defaults to the harness at point, then to
                    default-directory))
          (session (if entry (alist-get 'session entry) herdr-session)))
     (herdr-with-session session
-      (herdr-agent-start kind nil :project-root root))
+      (herdr-agent-start kind nil :project-root root :wait nil))
     (herdr-status-refresh)
     (message "Started %s in %s" kind (abbreviate-file-name root))))
 

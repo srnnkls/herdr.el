@@ -450,7 +450,7 @@ events from replacing whatever terminal is on screen."
              (herdr-agent--rollback session)
              (signal (car err) (cdr err)))))))))
 
-(defun herdr-agent--request-target (_server-key terminal-id &optional _agent)
+(defun herdr-agent--request-target (_server-key terminal-id)
   "Return a Herdr agent target for TERMINAL-ID."
   terminal-id)
 
@@ -518,9 +518,8 @@ events from replacing whatever terminal is on screen."
       (setq agent
             (condition-case err
                 (or (alist-get 'agent
-                               (herdr-api-agent-get
-                                (herdr-agent--request-target
-                                 server-key terminal agent)))
+                               (herdr-agent--call-with-request-target
+                                server-key terminal #'herdr-api-agent-get))
                     (signal 'herdr-error
                             (list "agent.get did not return an agent")))
               (herdr-api-error
@@ -549,9 +548,11 @@ events from replacing whatever terminal is on screen."
            (sleep-for 0.1)))))))
 
 (cl-defun herdr-agent-start-in-pane
-    (kind name pane &key server-key args (attach t) session timeout-ms)
+    (kind name pane &key server-key args (attach t) session timeout-ms (wait t))
   "Start KIND named NAME in PANE on SERVER-KEY.
-ARGS, ATTACH, SESSION, and TIMEOUT-MS control startup."
+ARGS, ATTACH, SESSION, and TIMEOUT-MS control startup.  WAIT nil returns
+once the agent is started and attached, without holding Emacs until
+herdr reports it ready; its record is taken up when it is."
   (let* ((server-key (herdr-agent--canonical-server-key
                       (or server-key (herdr-server-key))))
          (start-timeout-ms (or timeout-ms 30000))
@@ -569,8 +570,11 @@ ARGS, ATTACH, SESSION, and TIMEOUT-MS control startup."
           (unless agent (signal 'herdr-error (list "agent.start did not return an agent")))
           (herdr-agent--apply-agent
            session
-           (herdr-agent--with-server server-key
-             (herdr-agent--ready-agent agent server-key start-timeout-ms))
+           (cond (wait
+                  (herdr-agent--with-server server-key
+                    (herdr-agent--ready-agent agent server-key start-timeout-ms)))
+                 ((alist-get 'agent agent) agent)
+                 (t (cons (cons 'agent kind) agent)))
            server-key)
           (unless attach
             (herdr-agent--register session))
@@ -579,10 +583,33 @@ ARGS, ATTACH, SESSION, and TIMEOUT-MS control startup."
             (herdr-agent--run-adapter session :attached))
           (setf (herdr-agent-session-state session) 'attached
                 (herdr-agent-session-ownership session) nil)
+          (unless wait
+            (herdr-agent--refresh-when-ready
+             session (+ (float-time) (/ start-timeout-ms 1000.0))))
           session)
       (error
        (herdr-agent--rollback session)
        (signal (car err) (cdr err))))))
+
+(defun herdr-agent--refresh-when-ready (session deadline)
+  "Take up SESSION's agent record once herdr reports it ready, by DEADLINE.
+Each look is scheduled after the last one ends, so none holds Emacs and
+none overlaps the next.  A session no longer attached is let go."
+  (run-with-timer
+   0.1 nil
+   (lambda ()
+     (when (and (eq (herdr-agent-session-state session) 'attached)
+                (< (float-time) deadline))
+       (let* ((server-key (herdr-agent-session-server session))
+              (agent (ignore-error herdr-error
+                       (herdr-agent--with-server server-key
+                         (alist-get 'agent
+                                    (herdr-agent--call-with-request-target
+                                     server-key (herdr-agent-session-terminal session)
+                                     #'herdr-api-agent-get))))))
+         (if (and agent (herdr-agent--interactive-ready-p agent))
+             (herdr-agent--refresh-session session agent server-key)
+           (herdr-agent--refresh-when-ready session deadline)))))))
 
 (defun herdr-agent--workspace-empty-p (workspace-id)
   "Return non-nil when WORKSPACE-ID has no tabs or panes."
@@ -635,9 +662,12 @@ ARGS, ATTACH, SESSION, and TIMEOUT-MS control startup."
   session)
 
 (cl-defun herdr-agent-start-session
-    (kind name &key server-key project-root workspace args (attach t) timeout-ms)
+    (kind name &key server-key project-root workspace args (attach t) timeout-ms
+          (wait t))
   "Start KIND named NAME on SERVER-KEY for PROJECT-ROOT in WORKSPACE with ARGS.
-ATTACH controls terminal attachment; TIMEOUT-MS limits startup."
+ATTACH controls terminal attachment; TIMEOUT-MS limits startup; WAIT nil
+returns without waiting for the agent to be ready, as in
+`herdr-agent-start-in-pane'."
   (let* ((project-root (or project-root
                            (funcall herdr-project-root-function)
                            default-directory))
@@ -720,7 +750,7 @@ ATTACH controls terminal attachment; TIMEOUT-MS limits startup."
                             :workspace (and (not existing) workspace-id)))
                 (herdr-agent-start-in-pane kind name pane :server-key server-key
                                            :args args :attach attach :session session
-                                           :timeout-ms timeout-ms))
+                                           :timeout-ms timeout-ms :wait wait))
             (error
              (herdr-agent--rollback session)
              (signal (car err) (cdr err)))))))))
@@ -872,12 +902,14 @@ ATTACH controls terminal attachment; TIMEOUT-MS limits startup."
             (cdr entry))))
 
 (cl-defun herdr-agent-start
-    (kind name &key server-key project-root workspace (attach t) timeout-ms)
+    (kind name &key server-key project-root workspace (attach t) timeout-ms (wait t))
   "Start native KIND named NAME on SERVER-KEY for PROJECT-ROOT in WORKSPACE.
-ATTACH controls terminal attachment; TIMEOUT-MS limits startup."
+ATTACH controls terminal attachment; TIMEOUT-MS limits startup; WAIT nil
+returns without waiting for the agent to be ready."
   (herdr-agent-start-session
    kind name :server-key server-key :project-root project-root :workspace workspace
-   :args (herdr-agent--native-args kind 'start) :attach attach :timeout-ms timeout-ms))
+   :args (herdr-agent--native-args kind 'start) :attach attach :timeout-ms timeout-ms
+   :wait wait))
 
 (cl-defun herdr-agent-continue
     (kind name &key server-key project-root workspace (attach t) timeout-ms)
