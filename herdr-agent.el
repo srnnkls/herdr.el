@@ -1262,6 +1262,24 @@ another provider handle it.  `herdr-default-send-context' is the fallback.")
         (funcall herdr-project-root-function directory)
       (file-error nil))))
 
+(defun herdr-agent-workspace-buffer-p (buffer)
+  "Return non-nil when BUFFER sits in the current editor workspace.
+A workspace package keeping a buffer list of its own is the one that
+knows: `persp-mode', which doom's workspaces are built on, is asked
+wherever it is loaded.  Without one every buffer is in the workspace
+there is."
+  (if (fboundp 'persp-contain-buffer-p)
+      (persp-contain-buffer-p buffer)
+    t))
+
+(defcustom herdr-agent-workspace-buffer-predicate #'herdr-agent-workspace-buffer-p
+  "Predicate saying whether a terminal buffer is in the current workspace.
+It is called with the buffer.  This is what decides which attached
+agents `herdr-toggle-agent' counts as being here, so an editor that
+groups buffers its own way answers for itself."
+  :type 'function
+  :group 'herdr-agent)
+
 (defun herdr-agent--send-scope-entries (entries scope)
   "Filter agent ENTRIES for send SCOPE."
   (pcase scope
@@ -1282,8 +1300,10 @@ another provider handle it.  `herdr-default-send-context' is the fallback.")
                           (user-error "No current editor workspace"))))
        (cl-remove-if-not
         (lambda (entry)
-          (when-let* ((directory (herdr-entry-directory entry)))
-            (equal workspace (herdr-workspace-label directory))))
+          (or (when-let* ((directory (herdr-entry-directory entry)))
+                (equal workspace (herdr-workspace-label directory)))
+              (when-let* ((buffer (herdr--entry-buffer entry)))
+                (funcall herdr-agent-workspace-buffer-predicate buffer))))
         entries)))
     (_ (error "Unknown send scope: %S" scope))))
 
@@ -1909,24 +1929,6 @@ agent lands and whether it takes focus."
   "Display action putting a buffer nowhere.
 An attach shows what it attached on its own; suppressing that leaves the
 buffer to go out once, through the rules the editor keeps for it.")
-
-(defun herdr-agent-workspace-buffer-p (buffer)
-  "Return non-nil when BUFFER sits in the current editor workspace.
-A workspace package keeping a buffer list of its own is the one that
-knows: `persp-mode', which doom's workspaces are built on, is asked
-wherever it is loaded.  Without one every buffer is in the workspace
-there is."
-  (if (fboundp 'persp-contain-buffer-p)
-      (persp-contain-buffer-p buffer)
-    t))
-
-(defcustom herdr-agent-workspace-buffer-predicate #'herdr-agent-workspace-buffer-p
-  "Predicate saying whether a terminal buffer is in the current workspace.
-It is called with the buffer.  This is what decides which attached
-agents `herdr-toggle-agent' counts as being here, so an editor that
-groups buffers its own way answers for itself."
-  :type 'function
-  :group 'herdr-agent)
 
 (defun herdr-agent--workspace-entries (entries)
   "Return the members of ENTRIES this workspace can be said to hold.
