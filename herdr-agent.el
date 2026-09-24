@@ -1863,6 +1863,18 @@ an agent that is blocked waiting on interactive input."
        (lambda (request-target)
          (herdr-api-agent-send-keys (vconcat keys) request-target))))))
 
+(defcustom herdr-agent-key-delay 0.05
+  "Seconds `herdr-agent-type-keys' waits after each key.
+A burst sent at once drops keys, so each goes on its own."
+  :type 'number
+  :group 'herdr-agent)
+
+(defun herdr-agent-type-keys (target keys)
+  "Send KEYS, a list of key names, to TARGET one at a time."
+  (dolist (key keys)
+    (herdr-agent-send-keys target (list key))
+    (sleep-for herdr-agent-key-delay)))
+
 ;;;; Foreground agent
 
 (defun herdr-agent--foreground-entry (entries &optional any)
