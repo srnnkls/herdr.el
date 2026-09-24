@@ -252,15 +252,15 @@ redraw a live dashboard on a short idle delay, which
 | `t` | Show or hide agent metadata |
 | `h` | Herd menu |
 | `s` | Search agent history, narrowed by the section at point |
-| `S` | Search menu |
+| `m` | memex menu: `RET` transcript of the agent at point, `S` / `L` / `H` search semantic / lexical / hybrid |
 | `g` | Refresh |
 | `p` | Toggle global / project view |
 | `?` | `herdr-status-dispatch`, a menu of these same keys |
 
 Every action has a direct key; `?` opens a menu that mirrors them and
-closes on a second `?`. `s` and `S` are bound only where
+closes on a second `?`. `s` and `m` are bound only where
 [memex.el](https://github.com/srnnkls/memex.el) is on the load path, and
-are absent otherwise — the same keys `memex-status` searches under.
+are absent otherwise.
 
 `herdr-status-entry-at-point` returns the agent or pane row under point,
 or nil elsewhere, so an editor integration can add a binding that attaches
@@ -383,9 +383,10 @@ leaves agents the plain `herdr` commands alone. The script needs
 With [memex.el](https://github.com/srnnkls/memex.el) installed, `s`
 searches the transcripts memex indexed, narrowed to what point stands
 for: one agent on an agent row, a herd's members inside a herd, every
-listed agent elsewhere in the dashboard, and everything outside it. `S`
-opens the menu, which adds the search modes and, for the agent at point,
-its transcript and a resume into a fresh tab.
+listed agent elsewhere in the dashboard, and everything outside it. `m`
+opens the menu: `m RET` shows the transcript of the agent at point, `m S`,
+`m L` and `m H` search semantically, lexically and by both, and `m r`
+resumes the agent's session in a fresh tab.
 
 Without memex.el neither key is bound and nothing is loaded.
 

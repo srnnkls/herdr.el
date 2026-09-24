@@ -1524,7 +1524,7 @@ lines up with them."
 
 (defvar-keymap herdr-status-mode-map
   :doc "Keymap for `herdr-status-mode'.
-The keys a package outside herdr takes up - `s' and `S' are memex's -
+The keys a package outside herdr takes up - `s' and `m' are memex's -
 are bound by that package and unbound where it is not installed."
   :parent magit-section-mode-map
   "?" #'herdr-status-dispatch
