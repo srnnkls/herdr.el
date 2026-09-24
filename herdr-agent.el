@@ -1905,6 +1905,41 @@ with no agent and nothing used yet, asks."
                  (herdr-agent--foreground-entry all)))
         (herdr-read-agent "Agent: " all))))
 
+(defun herdr-agent--cycle (step)
+  "Make the agent STEP places on from the foreground one the foreground one.
+The agents are the workspace's, or every agent where the workspace holds
+none, in the order herdr lists them: the ones `herdr-message-send' takes
+its agent from, so the one cycled to is the one written to next."
+  (let* ((all (herdr-agent--send-candidates))
+         (_ (herdr--prune-session-targets all))
+         (pool (or (and (herdr-current-workspace-label)
+                        (herdr-agent--send-scope-entries all 'workspace))
+                   all)))
+    (unless pool
+      (user-error "No herdr agent is running"))
+    (let* ((current (herdr-agent--foreground-entry pool))
+           (index (if current
+                      (cl-position current pool)
+                    (if (> step 0) -1 0)))
+           (position (mod (+ index step) (length pool)))
+           (entry (nth position pool)))
+      (herdr--record-session-target (herdr--entry-target entry))
+      (message "Agent: %s (%d/%d)"
+               (herdr--entry-label entry) (1+ position) (length pool))
+      entry)))
+
+;;;###autoload
+(defun herdr-next-agent (&optional n)
+  "Make the Nth next agent of this workspace the one messages go to."
+  (interactive "p")
+  (herdr-agent--cycle (or n 1)))
+
+;;;###autoload
+(defun herdr-previous-agent (&optional n)
+  "Make the Nth previous agent of this workspace the one messages go to."
+  (interactive "p")
+  (herdr-agent--cycle (- (or n 1))))
+
 (defun herdr-agent--shown-window ()
   "Return the window on the selected frame whose agent is to be hidden.
 The selected window when it shows an agent, then the shown agent used
