@@ -2269,6 +2269,20 @@ on, and attaching again picks it back up."
                                        (not (cdr herdr-status--sort))))
   (herdr-status-refresh))
 
+(defmacro herdr-status--define-sort-command (column)
+  "Define a command ordering the dashboard by COLUMN."
+  `(defun ,(intern (format "herdr-status-sort-by-%s" column)) ()
+     ,(format "Order the herdr dashboard's agents by %s." column)
+     (interactive)
+     (herdr-status-sort-by ,column)))
+
+(herdr-status--define-sort-command "state")
+(herdr-status--define-sort-command "name")
+(herdr-status--define-sort-command "harness")
+(herdr-status--define-sort-command "pane")
+(herdr-status--define-sort-command "session")
+(herdr-status--define-sort-command "directory")
+
 (defun herdr-status-sort-clear ()
   "Return the agent list to the order herdr reports."
   (interactive)
@@ -2279,14 +2293,13 @@ on, and attaching again picks it back up."
 (transient-define-prefix herdr-status-sort ()
   "Order the herdr dashboard's agent list."
   [["Column"
-    ("s" "state" (lambda () (interactive) (herdr-status-sort-by "state")))
-    ("n" "name" (lambda () (interactive) (herdr-status-sort-by "name")))
-    ("h" "harness" (lambda () (interactive) (herdr-status-sort-by "harness")))]
+    ("s" "state" herdr-status-sort-by-state)
+    ("n" "name" herdr-status-sort-by-name)
+    ("h" "harness" herdr-status-sort-by-harness)]
    ["Where"
-    ("p" "pane" (lambda () (interactive) (herdr-status-sort-by "pane")))
-    ("S" "session" (lambda () (interactive) (herdr-status-sort-by "session")))
-    ("d" "directory"
-     (lambda () (interactive) (herdr-status-sort-by "directory")))]
+    ("p" "pane" herdr-status-sort-by-pane)
+    ("S" "session" herdr-status-sort-by-session)
+    ("d" "directory" herdr-status-sort-by-directory)]
    ["Order"
     ("r" "reverse" herdr-status-sort-reverse)
     ("x" "column" herdr-status-sort-by)
