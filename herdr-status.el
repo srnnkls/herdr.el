@@ -1001,9 +1001,20 @@ GLYPH is what `herdr-status-glyph' takes, one string or a list of
 candidates.  The glyph carries its faces under PROPERTY, `face' by
 default; a buffer that fontifies its own text passes `font-lock-face'."
   (let ((glyph (herdr-status-glyph glyph)))
-    (concat (propertize glyph (or property 'face)
-                        (herdr-status--glyph-faces glyph face))
+    (concat (herdr-status--centred
+             glyph (propertize glyph (or property 'face)
+                               (herdr-status--glyph-faces glyph face)))
             (herdr-status--glyph-gap glyph face))))
+
+(defun herdr-status--centred (glyph shown)
+  "Return SHOWN, the drawing of GLYPH, raised to sit centred on its line.
+A Nerd Font glyph is scaled down by `herdr-status-nerd-glyph' and so sits
+on the baseline with the height it gave up above it; raising it by half
+of that, measured in its own height, centres it."
+  (let ((height (face-attribute 'herdr-status-nerd-glyph :height nil t)))
+    (if (and (herdr-status--nerd-glyph-p glyph) (floatp height) (< 0 height 1))
+        (propertize shown 'display `(raise ,(/ (- 1.0 height) (* 2 height))))
+      shown)))
 
 (defun herdr-status-harness-glyph (harness &optional property)
   "Return HARNESS's vendor mark and the gap holding it to two columns, or nil.
