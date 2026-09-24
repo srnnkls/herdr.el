@@ -49,3 +49,7 @@
 (add-hook 'eask-before-compile-hook
           (lambda ()
             (setq byte-compile-error-on-warn t)))
+
+;; The imperative-mood heuristic older checkdoc runs reads a verb later in
+;; the first sentence as its opening one; Emacs 31 turned it off by default.
+(setq checkdoc-verb-check-experimental-flag nil)
