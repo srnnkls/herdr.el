@@ -574,7 +574,8 @@ REQUIRE non-nil refuses a name that session carries no herd under."
 
 (defun herdr-herd--read-entries (session &optional prompt)
   "Return the agent entries to act on, from the region or by completion.
-Only the agents on SESSION are offered, since a herd reaches one server."
+Only the agents on SESSION are offered, since a herd reaches one server;
+completion asks with PROMPT."
   (or (herdr-herd--region-entries session)
       (let* ((candidates (mapcar (lambda (entry)
                                    (cons (herdr--entry-label entry) entry))
@@ -730,14 +731,14 @@ of HERD's session are offered for completion where there is not."
 (transient-define-prefix herdr-herd-dispatch ()
   "Manage the herds agents belong to."
   [:description herdr-herd--dispatch-description
-   ["Membership"
-    ("a" "add agent at point" herdr-herd-add)
-    ("A" "add several" herdr-herd-add-many)
-    ("r" "remove agent at point" herdr-herd-remove)
-    ("d" "dissolve" herdr-herd-dissolve)]
-   ["Tell"
-    ("b" "broadcast" herdr-herd-broadcast)
-    ("R" "re-announce roster" herdr-herd-announce)]])
+                ["Membership"
+                 ("a" "add agent at point" herdr-herd-add)
+                 ("A" "add several" herdr-herd-add-many)
+                 ("r" "remove agent at point" herdr-herd-remove)
+                 ("d" "dissolve" herdr-herd-dissolve)]
+                ["Tell"
+                 ("b" "broadcast" herdr-herd-broadcast)
+                 ("R" "re-announce roster" herdr-herd-announce)]])
 
 (provide 'herdr-herd)
 ;;; herdr-herd.el ends here

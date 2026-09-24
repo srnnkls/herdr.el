@@ -425,7 +425,7 @@ fallback."
     "\\`server shut down: terminal [^ ]+ exited\\'")
   "Regexps matching the CLI lines that end a terminal without a fault.
 An attachment ends when the pane it shows does, and the process behind
-that pane ending - an agent given \\[universal-argument] C-d, a shell
+that pane ending - an agent given \\[universal-argument] \\`C-d', a shell
 told to exit - is the terminal running its course rather than anything
 going wrong.  A line matching none of these is reported."
   :type '(repeat regexp)
@@ -497,8 +497,7 @@ focus-in still goes through."
     (setq ghostel--focus-state nil)
     nil))
 
-(with-eval-after-load 'ghostel
-  (advice-add 'ghostel--focus-event :around #'herdr--ghostel-focus-event))
+(advice-add 'ghostel--focus-event :around #'herdr--ghostel-focus-event)
 
 (defvar herdr-buffer-functions nil
   "Functions called with each buffer that starts showing a herdr terminal.
@@ -606,7 +605,7 @@ outside herdr wants: what it is called and where it runs."
   (herdr--entry-label entry))
 
 (defcustom herdr-entry-label-decorations
-  '("\\`π[[:space:]]*\\(?:[>!∴:/|\\\\-]\\|[\u2800-\u28ff]\\|[\U0001F311-\U0001F318]\\)[[:space:]]+")
+  '("\\`π[[:space:]]*\\(?:[>!∴:/|\\-]\\|[\u2800-\u28ff]\\|[\U0001F311-\U0001F318]\\)[[:space:]]+")
   "Regexps whose match is taken off the front of an entry's label.
 A harness writes what it likes into its terminal's title, and herdr
 answers with the title as it found it.  Oh My Pi leads with its own mark

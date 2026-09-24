@@ -543,7 +543,7 @@ answers for no project rather than taking the dashboard down."
 
 (defvar herdr-status-predicates
   `((agent-harness . ,(lambda ()
-                     (herdr-status--field-predicate "Harness: " 'agent)))
+                        (herdr-status--field-predicate "Harness: " 'agent)))
     (agent-state . ,(lambda ()
                       (herdr-status--field-predicate "Agent state: "
                                                      'agent_status)))
@@ -1241,7 +1241,7 @@ was read stays good for `herdr-status-preview-ttl' seconds."
                         (assoc-delete-all key herdr-status--previews)))
             lines))))))
 
-(declare-function memex-markdown-render "memex-markdown" (markdown &optional code))
+(declare-function memex-markdown-render "ext:memex-markdown" (markdown &optional code))
 
 (defun herdr-status--markdown-renderer ()
   "Return the markdown renderer to draw previews with, or nil for none.
