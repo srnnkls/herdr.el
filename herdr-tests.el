@@ -626,7 +626,8 @@ looks for a replacement buffer runs into."
                (other '((kind . "herdr") (terminal_id . "term_other") (agent . "codex")))
                (herdr-session-functions
                 (list (lambda () (list bare other)) (lambda () (list rich)))))
-          (cl-letf (((symbol-function 'herdr-all-sessions) (lambda () '(shared))))
+          (cl-letf (((symbol-function 'herdr-all-sessions) (lambda () '(shared)))
+                    ((symbol-function 'herdr-available-p) (lambda () t)))
             (let ((sessions (herdr-sessions)))
               (should (= (length sessions) 2))
               (should (equal (herdr--entry-label (car sessions)) "rich"))
