@@ -22,7 +22,7 @@
 (cl-defstruct (herdr-agent-session
                (:constructor herdr-agent--make-session))
   key server terminal kind name requested-name agent-session project route workspace tab pane
-  buffer attachment-process state ownership cleanup adapter adapter-state)
+  buffer attachment-process state ownership cleanup adapter adapter-state placeholder)
 
 (defvar herdr-agent-harnesses
   '(("claude" :label "Claude Code"
@@ -327,7 +327,12 @@ DISPLAY shows the buffer once attached."
          (herdr-attach-terminal
           (herdr-agent-session-terminal session)
           :session (herdr-agent--route session)
-          :label (herdr-agent-session-name session)
+          :label (if (herdr-agent-session-placeholder session)
+                     (or (plist-get (herdr-agent--harness
+                                     (herdr-agent-session-kind session) t)
+                                    :label)
+                         (herdr-agent-session-kind session))
+                   (herdr-agent-session-name session))
           :directory (herdr-agent-session-project session)
           :takeover herdr-attach-takeover :display display)))
     (herdr-agent-claim-attachment session buffer (get-buffer-process buffer))))
@@ -583,7 +588,9 @@ herdr reports it ready; its record is taken up when it is."
             (herdr-agent--run-adapter session :attached))
           (setf (herdr-agent-session-state session) 'attached
                 (herdr-agent-session-ownership session) nil)
-          (unless wait
+          (when (or (not wait)
+                    (and (herdr-agent-session-placeholder session)
+                         (not (herdr-agent--drop-placeholder session))))
             (herdr-agent--refresh-when-ready
              session (+ (float-time) (/ start-timeout-ms 1000.0))))
           session)
@@ -593,8 +600,10 @@ herdr reports it ready; its record is taken up when it is."
 
 (defun herdr-agent--refresh-when-ready (session deadline)
   "Take up SESSION's agent record once herdr reports it ready, by DEADLINE.
-Each look is scheduled after the last one ends, so none holds Emacs and
-none overlaps the next.  A session no longer attached is let go."
+A placeholder name comes off then as well, and is tried again on the
+next look while herdr refuses it.  Each look is scheduled after the last
+one ends, so none holds Emacs and none overlaps the next.  A session no
+longer attached is let go."
   (run-with-timer
    0.1 nil
    (lambda ()
@@ -607,9 +616,30 @@ none overlaps the next.  A session no longer attached is let go."
                                     (herdr-agent--call-with-request-target
                                      server-key (herdr-agent-session-terminal session)
                                      #'herdr-api-agent-get))))))
-         (if (and agent (herdr-agent--interactive-ready-p agent))
-             (herdr-agent--refresh-session session agent server-key)
-           (herdr-agent--refresh-when-ready session deadline)))))))
+         (cond ((not (and agent (herdr-agent--interactive-ready-p agent)))
+                (herdr-agent--refresh-when-ready session deadline))
+               ((not (herdr-agent-session-placeholder session))
+                (herdr-agent--refresh-session session agent server-key))
+               ((not (herdr-agent--drop-placeholder session))
+                (herdr-agent--refresh-when-ready session deadline))))))))
+
+(defun herdr-agent--drop-placeholder (session)
+  "Take the name herdr.el gave SESSION's agent off it and return the agent.
+Herdr names every agent it starts, so one started without a name is
+given a placeholder to launch under.  Once it is gone the agent goes by
+its terminal's title, as one started in herdr itself does.  Answers nil
+when SESSION has no placeholder or herdr will not let go of it yet."
+  (when (herdr-agent-session-placeholder session)
+    (let ((server-key (herdr-agent-session-server session)))
+      (when-let* ((agent (ignore-error herdr-error
+                           (herdr-agent--with-server server-key
+                             (alist-get 'agent
+                                        (herdr-agent--call-with-request-target
+                                         server-key (herdr-agent-session-terminal session)
+                                         #'herdr-api-agent-rename))))))
+        (setf (herdr-agent-session-placeholder session) nil)
+        (herdr-agent--refresh-session session agent server-key)
+        agent))))
 
 (defun herdr-agent--workspace-empty-p (workspace-id)
   "Return non-nil when WORKSPACE-ID has no tabs or panes."
@@ -687,9 +717,11 @@ returns without waiting for the agent to be ready, as in
           (unless (eq (herdr-agent-session-state existing) 'stopped)
             (signal 'herdr-error (list "agent cleanup is still pending"))))
         (herdr-agent--subscribe-before-start server-key)
-        (let* ((name (herdr-agent--available-name name server-key))
+        (let* ((placeholder (herdr-agent--blank-name-p name))
+               (name (herdr-agent--available-name name server-key))
                (session (herdr-agent--make-session
                          :server server-key :kind kind :name name :requested-name name
+                         :placeholder placeholder
                          :project (herdr-agent--project project-root) :state 'starting)))
           (condition-case err
               (let* ((env (herdr-agent--run-adapter session :prepare))
@@ -737,7 +769,8 @@ returns without waiting for the agent to be ready, as in
                                           (setf (herdr-agent-session-state session) 'detaching
                                                 (herdr-agent-session-cleanup session) (list err)))))
                                      (apply workspace-close arguments))))
-                          (herdr-open-tab :cwd project-root :label name :workspace workspace :env env))))
+                          (herdr-open-tab :cwd project-root :label (unless placeholder name)
+                                          :workspace workspace :env env))))
                      (tab (alist-get 'tab created))
                      (pane (alist-get 'root_pane created))
                      (workspace-id (or existing (alist-get 'workspace_id (alist-get 'workspace created))
