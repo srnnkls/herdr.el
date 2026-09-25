@@ -1443,6 +1443,35 @@ Emacs releases the attachment first and the two go together."
       (should (re-search-forward "^ +● api-review" nil t))
       (herdr-status-detach))))
 
+(ert-deftest herdr-status-detaching-lets-go-of-the-terminal-shown-for-the-agent ()
+  "A terminal buffer the lifecycle does not hold is let go of as well."
+  (herdr-status-tests--with-dashboard
+    (dolist (session '(nil session))
+      (let ((buffer (generate-new-buffer " *herdr detached terminal*"))
+            calls)
+        (with-current-buffer buffer
+          (setq-local herdr-terminal-id "t1"
+                      herdr-terminal-server-key "/tmp/alpha.sock"))
+        (make-process :name "herdr-detached-terminal" :buffer buffer
+                      :command '("sleep" "30") :noquery t)
+        (unwind-protect
+            (progn
+              (cl-letf (((symbol-function 'herdr-agent-resolve-session)
+                         (lambda (_target)
+                           (or session (user-error "Unknown agent: t1"))))
+                        ((symbol-function 'herdr-agent-detach)
+                         (lambda (held) (push held calls)))
+                        ((symbol-function 'herdr-agent-stop)
+                         (lambda (&rest _) (ert-fail "detaching closed the pane"))))
+                (goto-char (point-min))
+                (should (re-search-forward "^ +● api-review" nil t))
+                (herdr-status-detach))
+              (should-not (buffer-live-p buffer))
+              (should (equal calls (and session '(session)))))
+          (when (buffer-live-p buffer)
+            (let ((kill-buffer-query-functions nil))
+              (kill-buffer buffer))))))))
+
 ;;;; Project scope
 
 (defun herdr-status-tests--project-root (&optional directory)

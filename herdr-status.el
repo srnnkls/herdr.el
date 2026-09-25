@@ -2164,14 +2164,20 @@ running."
 (defun herdr-status-detach ()
   "Let go of the agent at point, leaving its herdr pane running.
 Emacs releases the terminal and its buffer; the agent in that pane carries
-on, and attaching again picks it back up."
+on, and attaching again picks it back up.  A buffer showing the agent's
+terminal goes as well when no Emacs session holds it."
   (interactive)
-  (let ((label (herdr--entry-label (herdr-status--entry-at-point))))
-    (if-let* ((session (herdr-status--attachment-at-point)))
-        (progn (herdr-agent-detach session)
-               (herdr-status-refresh)
-               (message "Detached %s, its pane left running" label))
-      (message "Emacs holds no attachment to %s" label))))
+  (let* ((entry (herdr-status--entry-at-point))
+         (label (herdr--entry-label entry))
+         (target (herdr--entry-target entry))
+         (session (herdr-status--attachment-at-point))
+         (buffer (and target (herdr-terminal-buffer (cdr target) (car target)))))
+    (if (not (or session buffer))
+        (message "Emacs holds no attachment to %s" label)
+      (when session (herdr-agent-detach session))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (herdr-status-refresh)
+      (message "Detached %s, its pane left running" label))))
 
 (defun herdr-status-add-filter (name)
   "Add the filter registered as NAME."
