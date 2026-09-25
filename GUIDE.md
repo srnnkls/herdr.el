@@ -377,7 +377,9 @@ window. Any cut field shows its whole value in the echo area when point crosses 
 output, without the harness's rules, prompt, status bar and tool calls. `herdr-status-preview-lines`
 lines are shown, and 0 turns previews off. With memex.el installed, previews render as markdown.
 Rows of agents in a state listed in `herdr-status-expanded-states`, `working` by default, start
-expanded, and `e` opens or closes all of them.
+expanded the first time they are drawn, and `e` opens or closes all of them. After that a row
+stays as you left it: every herdr event redraws the dashboard, and a section opened or closed by
+hand keeps that state across the redraw.
 
 `t` also shows each expanded agent's metadata: its terminal, pane, workspace and tab, the name the
 harness gave the session, and whatever fields the harness's adapter reports.
