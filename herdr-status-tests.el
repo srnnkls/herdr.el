@@ -643,13 +643,38 @@
                              (herdr-status--sections magit-root-section))))
       (magit-section-hide section))
     (herdr-status-refresh)
-    (should (equal (mapcar #'car herdr-status--collapsed)
-                   '(herdr-status-group)))
     (let ((section (seq-find (lambda (section)
                                (and (eq (oref section type) 'herdr-status-group)
                                     (equal (oref section value) "claude")))
                              (herdr-status--sections magit-root-section))))
       (should (oref section hidden)))))
+
+(defun herdr-status-tests--section (type &optional label)
+  "Return the first section of TYPE drawn, the agent row named LABEL for one."
+  (seq-find (lambda (section)
+              (and (eq (oref section type) type)
+                   (or (null label)
+                       (equal (herdr--entry-label (oref section value)) label))))
+            (herdr-status--sections magit-root-section)))
+
+(ert-deftest herdr-status-keeps-what-was-opened-or-closed-across-a-refresh ()
+  "Herdr reports every agent anew on each fetch, revision and all."
+  (herdr-status-tests--with-dashboard
+    (let ((revision 0))
+      (cl-letf* ((entries (symbol-function 'herdr-sessions))
+                 ((symbol-function 'herdr-sessions)
+                  (lambda ()
+                    (cl-incf revision)
+                    (mapcar (lambda (entry) (cons (cons 'revision revision) entry))
+                            (funcall entries)))))
+        (herdr-status-refresh)
+        (magit-section-hide (herdr-status-tests--section 'herdr-status-agent "api-review"))
+        (magit-section-show (herdr-status-tests--section 'herdr-status-agent "docs"))
+        (herdr-status-refresh)
+        (should (equal (herdr-status-tests--closed-agents) '("api-review" "beta-work")))
+        (magit-section-hide (herdr-status-tests--section 'herdr-status-agents))
+        (herdr-status-refresh)
+        (should (oref (herdr-status-tests--section 'herdr-status-agents) hidden))))))
 
 (ert-deftest herdr-status-toggles-the-rows-its-states-name ()
   (herdr-status-tests--with-dashboard

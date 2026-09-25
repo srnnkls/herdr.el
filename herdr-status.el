@@ -403,10 +403,10 @@ A burst of events collapses into one redraw."
 (defvar-local herdr-status--previews nil
   "Output previews already fetched since the last refresh.")
 
-(defvar-local herdr-status--collapsed nil
-  "The herds and groups collapsed in this dashboard, as (TYPE . VALUE).
-A redraw re-expands every section, so this is what carries a collapsed
-one across the refresh an agent event triggers.")
+(defvar-local herdr-status--visibility nil
+  "Whether each section of this dashboard was hidden, by where it stood.
+A redraw draws every section anew, so this is what carries one opened
+or closed across the refresh an agent event triggers.")
 
 (defvar herdr-status--timer nil
   "Idle timer coalescing event-driven redraws.")
@@ -1332,7 +1332,8 @@ INDENT is how far the lines are set in."
 (defcustom herdr-status-expanded-states '("working")
   "Agent states whose rows start expanded, showing the agent's preview.
 Rows in any other state start collapsed and open with `TAB'.  Nil starts
-every row collapsed."
+every row collapsed.  A row the dashboard has drawn before keeps the
+state it was last in, so this speaks only for a row drawn the first time."
   :type '(repeat string)
   :group 'herdr-status)
 
@@ -1596,6 +1597,8 @@ value to the mouse, which reads it from `help-echo' either way."
                 herdr-status-visibility-indicators))
   (when (characterp (car (magit-section-visibility-indicator)))
     (setq-local left-margin-width 2))
+  (add-hook 'magit-section-set-visibility-hook
+            #'herdr-status--kept-visibility nil t)
   (add-hook 'window-configuration-change-hook
             #'herdr-status--widen-fringe nil t)
   (add-hook 'post-command-hook #'herdr-status--echo-cut-field nil t))
@@ -1620,30 +1623,41 @@ runs out of stack.")
   (cons section (mapcan #'herdr-status--sections
                         (copy-sequence (oref section children)))))
 
-(defconst herdr-status--collapsible-types
-  '(herdr-status-herd herdr-status-group)
-  "Section types whose collapsed state outlives a redraw.")
+(defun herdr-status--visibility-key (section)
+  "Return the key SECTION's visibility is kept under across redraws.
+An agent or pane row goes by its terminal, since herdr reports the rest
+of its record anew on every fetch; any other section by its value.  Each
+is keyed along its parents, so one agent keeps a state per list it is in."
+  (let (key)
+    (while section
+      (let ((type (oref section type))
+            (value (oref section value)))
+        (push (cons type (if (memq type '(herdr-status-agent herdr-status-pane))
+                             (or (herdr--entry-target value)
+                                 (alist-get 'pane_id value))
+                           value))
+              key))
+      (setq section (oref section parent)))
+    key))
 
-(defun herdr-status--collapsible-p (section)
-  "Return SECTION's (TYPE . VALUE) when its collapsed state is kept."
-  (when (memq (oref section type) herdr-status--collapsible-types)
-    (cons (oref section type) (oref section value))))
+(defun herdr-status--recorded-visibility ()
+  "Return whether each section of this dashboard is hidden, by its key."
+  (let ((visibility (make-hash-table :test #'equal)))
+    (when magit-root-section
+      (dolist (section (herdr-status--sections magit-root-section))
+        (puthash (herdr-status--visibility-key section) (oref section hidden)
+                 visibility)))
+    visibility))
 
-(defun herdr-status--collapsed-sections ()
-  "Return the sections collapsed in this dashboard, as (TYPE . VALUE)."
-  (when magit-root-section
-    (delq nil
-          (mapcar (lambda (section)
-                    (and (oref section hidden)
-                         (herdr-status--collapsible-p section)))
-                  (herdr-status--sections magit-root-section)))))
-
-(defun herdr-status--restore-collapsed-sections ()
-  "Collapse the herds and groups that were collapsed before the redraw."
-  (dolist (section (herdr-status--sections magit-root-section))
-    (when-let* ((key (herdr-status--collapsible-p section)))
-      (when (member key herdr-status--collapsed)
-        (magit-section-hide section)))))
+(defun herdr-status--kept-visibility (section)
+  "Return `hide' or `show' for SECTION as it was before the redraw, or nil.
+Nil leaves a section the dashboard has not drawn before to its default."
+  (when herdr-status--visibility
+    (pcase (gethash (herdr-status--visibility-key section)
+                    herdr-status--visibility 'unseen)
+      ('unseen nil)
+      ('nil 'show)
+      (_ 'hide))))
 
 (defvar herdr-status-refresh-hook nil
   "Functions run in a dashboard buffer once it has been drawn.
@@ -1705,7 +1719,7 @@ redraw is put off and run once every inhibitor has let go."
         (line (line-number-at-pos))
         (starts (mapcar (lambda (window) (cons window (window-start window)))
                         (get-buffer-window-list nil nil t))))
-    (setq herdr-status--collapsed (herdr-status--collapsed-sections))
+    (setq herdr-status--visibility (herdr-status--recorded-visibility))
     (unless cached
       (setq herdr-status--session-records (herdr-status--collect-sessions)
             herdr-status--entries (herdr-status--collect-entries)
@@ -1750,8 +1764,7 @@ redraw is put off and run once every inhibitor has let go."
         (herdr-status--insert-panes widths workspaces)
         (herdr-status--insert-sessions))
       (let ((magit-section-cache-visibility nil))
-        (magit-section-show magit-root-section))
-      (herdr-status--restore-collapsed-sections))
+        (magit-section-show magit-root-section)))
     (goto-char (point-min))
     (forward-line (1- line))
     (pcase-dolist (`(,window . ,start) starts)
