@@ -288,7 +288,7 @@ is `$XDG_CONFIG_HOME/herdr/sessions/NAME/herdr.sock`; `XDG_CONFIG_HOME` defaults
 | `herdr-status-auto-refresh` | boolean | t | redraw on herdr events |
 | `herdr-status-refresh-delay` | number | 0.4 | idle seconds before an event-driven redraw |
 | `herdr-status-new-harness` | string | `"claude"` | the harness `n` starts away from a row |
-| `herdr-status-expanded-states` | list of strings | `("working")` | states whose rows start expanded; nil starts all collapsed |
+| `herdr-status-expanded-states` | list of strings | `("working")` | states whose rows are expanded when first drawn; nil starts all collapsed. A row opened or closed by hand keeps its state across redraws |
 | `herdr-status-show-details` | boolean | nil | show metadata under expanded rows |
 | `herdr-status-counted-states` | list of strings | `("working" "blocked")` | states the `Agents` heading counts |
 | `herdr-status-state-order` | list of strings | `("working" "blocked" "idle" "done")` | the order states sort in |
