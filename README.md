@@ -21,12 +21,11 @@ an agent the code in front of you without copying it.
 
 ## Installation
 
-herdr.el runs on Emacs 29.1 or newer and drives the `herdr` executable, from
-[herdr.dev](https://herdr.dev), found on `PATH` or named by `herdr-executable`. To attach to a
-terminal it uses whichever of Ghostel, vterm or Eat you have installed; one is enough. The `bin/herdr-herd`
-helper that herd members run needs `python3`.
+herdr.el needs Emacs 29.1 or newer and the `herdr` executable, from [herdr.dev](https://herdr.dev),
+on `PATH` or named by `herdr-executable`. It attaches through whichever of Ghostel, vterm or Eat
+you have installed, and the `bin/herdr-herd` helper that herd members run needs `python3`.
 
-With Emacs 30 or newer, `use-package` installs herdr.el from git:
+On Emacs 30 or newer, install it with `use-package`:
 
 ```elisp
 (use-package herdr
@@ -34,13 +33,12 @@ With Emacs 30 or newer, `use-package` installs herdr.el from git:
   :bind (("C-c h" . herdr-transient)))
 ```
 
-On Emacs 29, run `M-x package-vc-install RET https://github.com/srnnkls/herdr.el RET`. To use a
-checkout instead, put it on `load-path` and load the menu, which loads the rest:
+On Emacs 29, run `M-x package-vc-install RET https://github.com/srnnkls/herdr.el RET`.
+
+On Doom Emacs, add this to `packages.el`; `bin` carries the helper herd members run:
 
 ```elisp
-(add-to-list 'load-path "~/src/herdr.el")
-(require 'herdr-transient)
-(keymap-global-set "C-c h" #'herdr-transient)
+(package! herdr :recipe (:host github :repo "srnnkls/herdr.el" :files (:defaults "bin")))
 ```
 
 herdr.el itself binds no global key. The agent commands work best on keys of their own, for example:
