@@ -21,16 +21,11 @@ an agent the code in front of you without copying it.
 
 ## Installation
 
-herdr.el needs:
-
-- Emacs 29.1 or newer;
-- the `herdr` executable, from [herdr.dev](https://herdr.dev), on `PATH` or named by
-  `herdr-executable`;
-- `transient` 0.13.0 or newer and `magit-section` 4.0.0 or newer, from GNU ELPA, NonGNU ELPA or
-  MELPA;
-- one terminal backend to attach with: Ghostel, vterm or Eat.
-
-The `bin/herdr-herd` helper that herd members run also needs `python3`.
+herdr.el runs on Emacs 29.1 or newer and drives the `herdr` executable, from
+[herdr.dev](https://herdr.dev), found on `PATH` or named by `herdr-executable`. Installing the
+package pulls in `transient` and `magit-section`, which it declares. To attach to a terminal it
+uses whichever of Ghostel, vterm or Eat you have installed; one is enough. The `bin/herdr-herd`
+helper that herd members run needs `python3`.
 
 With Emacs 30 or newer, `use-package` installs herdr.el from git:
 
@@ -41,7 +36,8 @@ With Emacs 30 or newer, `use-package` installs herdr.el from git:
 ```
 
 On Emacs 29, run `M-x package-vc-install RET https://github.com/srnnkls/herdr.el RET`. To use a
-checkout, put its directory on `load-path` and load the menu, which loads the rest:
+checkout instead, install `transient` and `magit-section` yourself, put the checkout on
+`load-path` and load the menu, which loads the rest:
 
 ```elisp
 (add-to-list 'load-path "~/src/herdr.el")
