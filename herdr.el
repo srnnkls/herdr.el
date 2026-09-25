@@ -404,6 +404,10 @@ fallback."
   "Canonical server key of the herdr terminal this buffer shows.")
 (put 'herdr-terminal-server-key 'permanent-local t)
 
+(defvar-local herdr--buffer-name nil
+  "The name herdr gave this terminal buffer, while it answers to it.")
+(put 'herdr--buffer-name 'permanent-local t)
+
 (defvar-local herdr--terminal-closing nil
   "Non-nil while deliberately closing this terminal attachment.")
 
@@ -592,11 +596,34 @@ the buffer when non-nil.  Returns the buffer."
                      (or label terminal-id)
                      (abbreviate-file-name directory)))))
       (setq buffer (herdr--terminal-exec buffer (car command) (cdr command)))
+      (with-current-buffer buffer
+        (setq herdr--buffer-name (buffer-name)))
       (herdr-claim-buffer buffer terminal-id session)
       (when display (herdr-display-buffer buffer))
       buffer)))
 
 ;;;; Completion
+
+(defun herdr-follow-labels (entries)
+  "Rename the terminal buffers ENTRIES show after the labels they go by now.
+An agent's label moves when it titles its conversation or sheds the
+placeholder name it launched under; its buffer keeps the name herdr gave
+it until then.  A buffer renamed by hand is left as it is."
+  (dolist (entry entries)
+    (let ((directory (herdr-entry-directory entry)))
+      (when-let* ((target (herdr--entry-target entry))
+                  (buffer (herdr-terminal-buffer (cdr target) (car target)))
+                  (given (buffer-local-value 'herdr--buffer-name buffer))
+                  ((equal (buffer-name buffer) given))
+                  (label (herdr--entry-label entry))
+                  ((not (equal (funcall herdr-buffer-name-function label directory)
+                               given)))
+                  (name (ignore-error user-error
+                          (herdr--free-buffer-name label (cdr target) (car target)
+                                                   directory))))
+        (with-current-buffer buffer
+          (rename-buffer name)
+          (setq herdr--buffer-name name))))))
 
 (defun herdr-entry-label (entry)
   "Return the name ENTRY is known by, for whatever reads herdr's entries.

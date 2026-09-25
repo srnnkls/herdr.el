@@ -1723,7 +1723,8 @@ redraw is put off and run once every inhibitor has let go."
     (unless cached
       (setq herdr-status--session-records (herdr-status--collect-sessions)
             herdr-status--entries (herdr-status--collect-entries)
-            herdr-status--details nil))
+            herdr-status--details nil)
+      (herdr-follow-labels herdr-status--entries))
     (herdr--prune-session-targets herdr-status--entries)
     (setq herdr-status--panes
           (herdr-status--orphan-panes herdr-status--session-records

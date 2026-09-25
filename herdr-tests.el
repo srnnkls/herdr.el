@@ -997,5 +997,60 @@ looks for a replacement buffer runs into."
   (should (equal (herdr--entry-label '((terminal_title_stripped . "π > other")))
                  "other")))
 
+;;;; Buffers following their labels
+
+(defun herdr-tests--terminal-buffer (name terminal given)
+  "Return a live buffer NAME showing TERMINAL, named GIVEN by herdr."
+  (let ((buffer (generate-new-buffer name)))
+    (with-current-buffer buffer
+      (setq-local herdr-terminal-id terminal
+                  herdr-terminal-server-key "/tmp/a.sock"
+                  herdr--buffer-name given))
+    (make-process :name "herdr-follow" :buffer buffer
+                  :command '("sleep" "30") :noquery t)
+    buffer))
+
+(ert-deftest herdr-follow-labels-renames-the-buffers-herdr-named ()
+  (let* ((herdr-buffer-name-function
+          (lambda (label _directory) (format "*herdr-follow: %s*" label)))
+         (placeholder (herdr-tests--terminal-buffer
+                       "*herdr-follow: agent*" "t1" "*herdr-follow: agent*"))
+         (by-hand (herdr-tests--terminal-buffer
+                   "*herdr-follow: mine*" "t2" "*herdr-follow: agent-2*")))
+    (unwind-protect
+        (progn
+          (herdr-follow-labels
+           '(((server_key . "/tmp/a.sock") (terminal_id . "t1")
+              (terminal_title_stripped . "Tailscale to WireGuard replacement"))
+             ((server_key . "/tmp/a.sock") (terminal_id . "t2")
+              (terminal_title_stripped . "Another topic"))))
+          (should (equal (buffer-name placeholder)
+                         "*herdr-follow: Tailscale to WireGuard replacement*"))
+          (should (equal (buffer-local-value 'herdr--buffer-name placeholder)
+                         (buffer-name placeholder)))
+          (should (equal (buffer-name by-hand) "*herdr-follow: mine*")))
+      (let ((kill-buffer-query-functions nil))
+        (mapc #'kill-buffer (list placeholder by-hand))))))
+
+(ert-deftest herdr-attach-terminal-remembers-the-name-it-gave ()
+  (let ((herdr-buffer-name-function
+         (lambda (label _directory) (format "*herdr-given: %s*" label)))
+        buffer)
+    (unwind-protect
+        (cl-letf (((symbol-function 'herdr-session-server-key)
+                   (lambda (_session) "/tmp/a.sock"))
+                  ((symbol-function 'herdr--terminal-exec)
+                   (lambda (target &rest _)
+                     (make-process :name "herdr-given" :buffer target
+                                   :command '("sleep" "30") :noquery t)
+                     target)))
+          (setq buffer (herdr-attach-terminal "t9" :session 'shared
+                                              :label "Claude Code"))
+          (should (equal (buffer-local-value 'herdr--buffer-name buffer)
+                         "*herdr-given: Claude Code*")))
+      (when (buffer-live-p buffer)
+        (let ((kill-buffer-query-functions nil))
+          (kill-buffer buffer))))))
+
 (provide 'herdr-tests)
 ;;; herdr-tests.el ends here
