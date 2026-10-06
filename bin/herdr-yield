@@ -1,0 +1,143 @@
+#!/bin/sh
+# herdr-yield — herdr, except that a direct terminal attach lets go of
+# the terminal's size while nobody types into it.
+#
+# A `herdr terminal attach' owns its terminal's size for as long as it
+# runs, so a phone or another client looking at the same tab draws into
+# the size Emacs left.  Here the attach is a terminal session controller
+# while keys arrive and an observer once HERDR_YIELD_IDLE seconds (2 by
+# default) pass without one; the next key takes control back.  Every
+# other command is herdr's own.
+#
+#   (setq herdr-executable "herdr-yield")
+
+set -eu
+
+HERDR=${HERDR_YIELD_HERDR:-herdr}
+
+case " $* " in
+*" terminal attach "*) ;;
+*) exec "$HERDR" "$@" ;;
+esac
+
+exec python3 -c '
+import base64, json, os, re, select, signal, subprocess, sys, termios, time, tty
+
+herdr = sys.argv[1]
+args = sys.argv[2:]
+at = args.index("terminal")
+global_args, rest = args[:at], args[at + 2:]
+takeover = "--takeover" in rest
+target = next(a for a in rest if not a.startswith("--"))
+idle = float(os.environ.get("HERDR_YIELD_IDLE", "2"))
+# What the outer terminal answers on its own - focus changes, cursor and
+# mode reports, OSC and DCS replies - to the modes a replayed frame sets.
+REPORTS = re.compile(
+    rb"\x1b\[[IO]|\x1b\[\d+;\d+R|\x1b\[[?>][\d;]*\$?[a-zA-Z]"
+    rb"|\x1b[]P_][^\x07\x1b]*(?:\x07|\x1b\\)")
+
+tty_in = sys.stdin.fileno()
+out = sys.stdout.buffer
+wake_r, wake_w = os.pipe()
+os.set_blocking(wake_w, False)
+signal.set_wakeup_fd(wake_w)
+signal.signal(signal.SIGWINCH, lambda *_: None)
+
+
+def size():
+    cols, rows = os.get_terminal_size(tty_in)
+    return ["--cols", str(cols), "--rows", str(rows)]
+
+
+def open_stream(mode):
+    flags = ["--takeover"] if mode == "control" and takeover else []
+    return subprocess.Popen(
+        [herdr, *global_args, "terminal", "session", mode, target, *flags, *size()],
+        stdin=subprocess.PIPE if mode == "control" else subprocess.DEVNULL,
+        stdout=subprocess.PIPE)
+
+
+def send(message):
+    stream.stdin.write((json.dumps(message) + "\n").encode())
+    stream.stdin.flush()
+
+
+def close(stream):
+    if stream.stdin:
+        try:
+            send({"type": "terminal.release"})
+        except OSError:
+            pass
+    stream.kill()
+    stream.wait()
+
+
+def finish(line, status=0):
+    sys.stderr.write(line + "\n")
+    sys.exit(status)
+
+
+saved = termios.tcgetattr(tty_in)
+tty.setraw(tty_in)
+mode, stream = "control", open_stream("control")
+last_key, pending, lines = time.monotonic(), b"", b""
+try:
+    while True:
+        timeout = max(0.0, last_key + idle - time.monotonic()) if mode == "control" else None
+        ready, _, _ = select.select([tty_in, stream.stdout, wake_r], [], [], timeout)
+        if wake_r in ready:
+            os.read(wake_r, 512)
+            if mode == "control":
+                cols, rows = os.get_terminal_size(tty_in)
+                send({"type": "terminal.resize", "cols": cols, "rows": rows})
+            else:
+                close(stream)
+                stream, lines = open_stream("observe"), b""
+        if not ready and mode == "control":
+            close(stream)
+            mode, stream, lines = "observe", open_stream("observe"), b""
+            continue
+        if tty_in in ready:
+            data = pending + os.read(tty_in, 65536)
+            pending, keys, i = b"", bytearray(), 0
+            while i < len(data):
+                if data[i] != 2:
+                    keys.append(data[i])
+                elif i + 1 == len(data):
+                    pending = b"\x02"
+                elif data[i + 1] == ord("q"):
+                    finish(f"detached from {target}")
+                else:
+                    keys.append(data[i + 1])
+                    i += 1
+                i += 1
+            if mode == "observe" and not REPORTS.sub(b"", bytes(keys)):
+                continue
+            last_key = time.monotonic()
+            if mode == "observe":
+                close(stream)
+                mode, stream, lines = "control", open_stream("control"), b""
+            if keys:
+                send({"type": "terminal.input",
+                      "bytes": base64.b64encode(bytes(keys)).decode()})
+        if stream.stdout in ready:
+            chunk = os.read(stream.stdout.fileno(), 1 << 20)
+            if not chunk:
+                if mode == "control":
+                    stream.wait()
+                    mode, stream, lines = "observe", open_stream("observe"), b""
+                    continue
+                finish(f"herdr-yield: lost the stream of {target}", 1)
+            *records, lines = (lines + chunk).split(b"\n")
+            for record in map(json.loads, filter(None, records)):
+                if record["type"] == "terminal.frame":
+                    out.write(base64.b64decode(record["bytes"]))
+                elif record["type"] == "terminal.closed":
+                    reason = record.get("reason", "")
+                    if reason.endswith(" exited"):
+                        finish("server shut down: " + reason)
+            out.flush()
+finally:
+    termios.tcsetattr(tty_in, termios.TCSADRAIN, saved)
+    stream.kill()
+' "$HERDR" "$@"

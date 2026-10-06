@@ -132,6 +132,12 @@ With Ghostel, an Emacs window losing focus is not reported to the process by def
 herdr's own client does not report focus again until its own focus changes, and the agent would
 believe nobody is looking. `herdr-report-focus-loss` reports it anyway.
 
+An attachment also owns its terminal's size for as long as it lasts, so a phone or another client
+showing the same tab draws into the size Emacs left. Setting `herdr-executable` to
+`bin/herdr-yield` hands the size back two seconds after the last key, `HERDR_YIELD_IDLE` seconds
+when set, while the buffer keeps showing the terminal; the next key takes it back. It needs
+`python3`, and runs every command other than the attach through `herdr` unchanged.
+
 ### When an attachment fails
 
 With Ghostel, an attachment that ends with an error from the herdr CLI raises an Emacs warning

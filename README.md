@@ -155,6 +155,7 @@ Where the code lives:
 - `herdr-agent.el`: the agent lifecycle, adapters, messages, context, and the agent at hand.
 - `herdr-status.el`: the dashboard.
 - `herdr-herd.el` and `bin/herdr-herd`: herds.
+- `bin/herdr-yield`: a `herdr` that lets an idle attachment give up the terminal's size.
 - `herdr-transient.el`: the `herdr-transient` menu.
 
 ## License

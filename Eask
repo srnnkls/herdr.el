@@ -28,6 +28,7 @@
 
 (files "herdr*.el"
        "bin/herdr-herd"
+       "bin/herdr-yield"
        "LICENSE"
        '(:exclude "herdr*-tests.el"))
 
