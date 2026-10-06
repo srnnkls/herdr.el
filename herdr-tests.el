@@ -1052,5 +1052,37 @@ looks for a replacement buffer runs into."
         (let ((kill-buffer-query-functions nil))
           (kill-buffer buffer))))))
 
+(ert-deftest herdr-yield-sync-tells-an-attachment-only-when-shown-changes ()
+  (let ((buffer (generate-new-buffer " *herdr-yield-test*"))
+        (other (generate-new-buffer " *herdr-plain-test*"))
+        (sent nil)
+        (shown t)
+        (focused t))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer (setq herdr--yield 'unknown))
+          (cl-letf (((symbol-function 'get-buffer-process) (lambda (_) 'process))
+                    ((symbol-function 'process-live-p) #'identity)
+                    ((symbol-function 'visible-frame-list) (lambda () '(frame)))
+                    ((symbol-function 'frame-focus-state) (lambda (_) focused))
+                    ((symbol-function 'get-buffer-window)
+                     (lambda (target &optional _) (and shown (eq target buffer))))
+                    ((symbol-function 'herdr-terminal-send)
+                     (lambda (text &optional _) (push (cons (current-buffer) text) sent))))
+            (herdr--yield-sync)
+            (herdr--yield-sync)
+            (setq shown nil)
+            (herdr--yield-sync)
+            (setq shown t focused nil)
+            (herdr--yield-sync)
+            (setq focused t)
+            (herdr--yield-sync)))
+      (kill-buffer buffer)
+      (kill-buffer other))
+    (should (equal (mapcar #'cdr (reverse sent))
+                   '("\e_herdr-yield;show\e\\" "\e_herdr-yield;hide\e\\"
+                     "\e_herdr-yield;show\e\\")))
+    (should (seq-every-p (lambda (pair) (eq (car pair) buffer)) sent))))
+
 (provide 'herdr-tests)
 ;;; herdr-tests.el ends here

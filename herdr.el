@@ -392,6 +392,11 @@ fallback."
       (when window (select-window window))
       window))))
 
+(defvar-local herdr--yield nil
+  "Whether this attachment through `herdr-yield' was last told it is shown.
+One of `shown', `hidden' and `unknown'; nil for any other attachment.")
+(put 'herdr--yield 'permanent-local t)
+
 (defvar-local herdr-terminal-id nil
   "Id of the herdr terminal this buffer shows.")
 (put 'herdr-terminal-id 'permanent-local t)
@@ -597,10 +602,36 @@ the buffer when non-nil.  Returns the buffer."
                      (abbreviate-file-name directory)))))
       (setq buffer (herdr--terminal-exec buffer (car command) (cdr command)))
       (with-current-buffer buffer
-        (setq herdr--buffer-name (buffer-name)))
+        (setq herdr--buffer-name (buffer-name))
+        (when (string-suffix-p "herdr-yield" (car command))
+          (setq herdr--yield 'unknown)))
       (herdr-claim-buffer buffer terminal-id session)
       (when display (herdr-display-buffer buffer))
+      (herdr--yield-sync)
       buffer)))
+
+;;;; Yielding the size
+
+(defun herdr--yield-sync (&rest _)
+  "Tell every attachment through `herdr-yield' whether Emacs shows it.
+One a window shows while an Emacs frame has focus keeps Emacs's size;
+the rest hand it to whichever other client looks at their tab."
+  (let ((focused (seq-some #'frame-focus-state (visible-frame-list))))
+    (dolist (buffer (buffer-list))
+      (when-let* ((state (buffer-local-value 'herdr--yield buffer))
+                  (process (get-buffer-process buffer))
+                  ((process-live-p process)))
+        (let ((wanted (if (and focused (get-buffer-window buffer 'visible))
+                          'shown
+                        'hidden)))
+          (unless (eq state wanted)
+            (with-current-buffer buffer
+              (setq herdr--yield wanted)
+              (herdr-terminal-send (format "\e_herdr-yield;%s\e\\"
+                                           (if (eq wanted 'shown) "show" "hide"))))))))))
+
+(add-hook 'window-buffer-change-functions #'herdr--yield-sync)
+(add-function :after after-focus-change-function #'herdr--yield-sync)
 
 ;;;; Completion
 

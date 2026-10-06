@@ -134,9 +134,10 @@ believe nobody is looking. `herdr-report-focus-loss` reports it anyway.
 
 An attachment also owns its terminal's size for as long as it lasts, so a phone or another client
 showing the same tab draws into the size Emacs left. Setting `herdr-executable` to
-`bin/herdr-yield` hands the size back two seconds after the last key, `HERDR_YIELD_IDLE` seconds
-when set, while the buffer keeps showing the terminal; the next key takes it back. It needs
-`python3`, and runs every command other than the attach through `herdr` unchanged.
+`bin/herdr-yield` keeps the size only while a window of a focused Emacs frame shows the buffer;
+otherwise the tab takes the size of a client looking at it, and showing the buffer or typing into
+it takes the size back. It needs `python3`, and runs every command other than the attach through
+`herdr` unchanged.
 
 ### When an attachment fails
 

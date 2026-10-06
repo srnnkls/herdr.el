@@ -1,13 +1,14 @@
 #!/bin/sh
 # herdr-yield — herdr, except that a direct terminal attach lets go of
-# the terminal's size while nobody types into it.
+# the terminal's size while Emacs is not showing it.
 #
 # A `herdr terminal attach' owns its terminal's size for as long as it
 # runs, so a phone or another client looking at the same tab draws into
 # the size Emacs left.  Here the attach is a terminal session controller
-# while keys arrive and an observer once HERDR_YIELD_IDLE seconds (2 by
-# default) pass without one; the next key takes control back.  Every
-# other command is herdr's own.
+# until its input carries `ESC _ herdr-yield;hide ESC \', and an observer,
+# which takes no size, until `ESC _ herdr-yield;show ESC \' or a key.
+# herdr.el writes both as the buffer is shown and hidden.  Every other
+# command is herdr's own.
 #
 #   (setq herdr-executable "herdr-yield")
 
@@ -21,7 +22,7 @@ case " $* " in
 esac
 
 exec python3 -c '
-import base64, json, os, re, select, signal, subprocess, sys, termios, time, tty
+import base64, json, os, re, select, signal, subprocess, sys, termios, tty
 
 herdr = sys.argv[1]
 args = sys.argv[2:]
@@ -29,7 +30,7 @@ at = args.index("terminal")
 global_args, rest = args[:at], args[at + 2:]
 takeover = "--takeover" in rest
 target = next(a for a in rest if not a.startswith("--"))
-idle = float(os.environ.get("HERDR_YIELD_IDLE", "2"))
+VISIBILITY = re.compile(rb"\x1b_herdr-yield;(show|hide)\x1b\\")
 # What the outer terminal answers on its own - focus changes, cursor and
 # mode reports, OSC and DCS replies - to the modes a replayed frame sets.
 REPORTS = re.compile(
@@ -80,11 +81,10 @@ def finish(line, status=0):
 saved = termios.tcgetattr(tty_in)
 tty.setraw(tty_in)
 mode, stream = "control", open_stream("control")
-last_key, pending, lines = time.monotonic(), b"", b""
+pending, lines = b"", b""
 try:
     while True:
-        timeout = max(0.0, last_key + idle - time.monotonic()) if mode == "control" else None
-        ready, _, _ = select.select([tty_in, stream.stdout, wake_r], [], [], timeout)
+        ready, _, _ = select.select([tty_in, stream.stdout, wake_r], [], [])
         if wake_r in ready:
             os.read(wake_r, 512)
             if mode == "control":
@@ -93,10 +93,6 @@ try:
             else:
                 close(stream)
                 stream, lines = open_stream("observe"), b""
-        if not ready and mode == "control":
-            close(stream)
-            mode, stream, lines = "observe", open_stream("observe"), b""
-            continue
         if tty_in in ready:
             data = pending + os.read(tty_in, 65536)
             pending, keys, i = b"", bytearray(), 0
@@ -111,13 +107,18 @@ try:
                     keys.append(data[i + 1])
                     i += 1
                 i += 1
-            if mode == "observe" and not REPORTS.sub(b"", bytes(keys)):
-                continue
-            last_key = time.monotonic()
-            if mode == "observe":
+            wanted = VISIBILITY.findall(bytes(keys))
+            keys = VISIBILITY.sub(b"", bytes(keys))
+            wanted = wanted[-1] if wanted else None
+            if mode == "observe" and REPORTS.sub(b"", keys):
+                wanted = b"show"
+            if wanted == b"hide" and mode == "control":
+                close(stream)
+                mode, stream, lines = "observe", open_stream("observe"), b""
+            elif wanted == b"show" and mode == "observe":
                 close(stream)
                 mode, stream, lines = "control", open_stream("control"), b""
-            if keys:
+            if keys and mode == "control":
                 send({"type": "terminal.input",
                       "bytes": base64.b64encode(bytes(keys)).decode()})
         if stream.stdout in ready:
