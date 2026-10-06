@@ -441,6 +441,18 @@
       (should (< (string-match "beta-work" recent)
                  (string-match "api-review" recent))))))
 
+(ert-deftest herdr-status-draws-only-the-sections-asked-for ()
+  (let ((herdr-status-sections '(sessions agents)))
+    (herdr-status-tests--with-dashboard
+      (setq herdr--recent-session-targets '(("/tmp/alpha.sock" . "t1")))
+      (herdr-status-refresh)
+      (goto-char (point-min))
+      (should-not (re-search-forward "^Recent" nil t))
+      (should (< (progn (goto-char (point-min))
+                        (re-search-forward "^Sessions" nil t))
+                 (progn (goto-char (point-min))
+                        (re-search-forward "^Agents" nil t)))))))
+
 (ert-deftest herdr-status-filters-compose-conjunctively ()
   (herdr-status-tests--with-dashboard
     (setq herdr-status--filters

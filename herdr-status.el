@@ -1673,6 +1673,17 @@ the agent entries, the column widths, the tab index, and the workspace
 index the redraw computed, and inserts nothing when it has nothing to
 show.")
 
+(defcustom herdr-status-sections '(recent herds agents panes sessions)
+  "The sections the dashboard draws, in the order it draws them.
+A section left out is not drawn; `herdr-status-sections-functions' still
+inserts above all of them."
+  :type '(repeat (choice (const :tag "Recently used agents" recent)
+                         (const :tag "Herds" herds)
+                         (const :tag "Agents" agents)
+                         (const :tag "Panes without an agent" panes)
+                         (const :tag "Sessions" sessions)))
+  :group 'herdr-status)
+
 (defun herdr-status-redraw-inhibited-p ()
   "Return non-nil while something laid over this dashboard holds its rows."
   (run-hook-with-args-until-success 'herdr-status-redraw-inhibit-functions))
@@ -1759,11 +1770,13 @@ redraw is put off and run once every inhibitor has let go."
         (run-hook-with-args 'herdr-status-sections-functions
                             (herdr-status--agents herdr-status--entries)
                             widths tabs workspaces)
-        (herdr-status--insert-recent widths tabs workspaces)
-        (herdr-status--insert-herds widths tabs workspaces)
-        (herdr-status--insert-agents widths tabs workspaces)
-        (herdr-status--insert-panes widths workspaces)
-        (herdr-status--insert-sessions))
+        (dolist (section herdr-status-sections)
+          (pcase section
+            ('recent (herdr-status--insert-recent widths tabs workspaces))
+            ('herds (herdr-status--insert-herds widths tabs workspaces))
+            ('agents (herdr-status--insert-agents widths tabs workspaces))
+            ('panes (herdr-status--insert-panes widths workspaces))
+            ('sessions (herdr-status--insert-sessions)))))
       (let ((magit-section-cache-visibility nil))
         (magit-section-show magit-root-section)))
     (goto-char (point-min))
