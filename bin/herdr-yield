@@ -30,6 +30,11 @@ at = args.index("terminal")
 global_args, rest = args[:at], args[at + 2:]
 takeover = "--takeover" in rest
 target = next(a for a in rest if not a.startswith("--"))
+# The modes `herdr terminal attach` sets, so the wheel reaches the
+# scrollback herdr keeps as it does there.
+MODES_ON = b"\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h"
+MODES_OFF = b"\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?1049l"
+MOUSE = re.compile(rb"\x1b\[<(\d+);(\d+);(\d+)([Mm])")
 VISIBILITY = re.compile(rb"\x1b_herdr-yield;(show|hide)\x1b\\")
 # What the outer terminal answers on its own - focus changes, cursor and
 # mode reports, OSC and DCS replies - to the modes a replayed frame sets.
@@ -73,6 +78,19 @@ def close(stream):
     stream.wait()
 
 
+def mouse(match):
+    code, column, row = (int(n) for n in match.groups()[:3])
+    if code & 64:
+        return {"type": "terminal.scroll", "lines": 3,
+                "direction": "down" if code & 1 else "up"}
+    button = ("left", "middle", "right", None)[code & 3]
+    action = ("drag" if button else "move") if code & 32 else (
+        "down" if match.group(4) == b"M" else "up")
+    return {"type": "terminal.mouse", "action": action, "button": button or "left",
+            "column": column - 1, "row": row - 1,
+            "modifiers": (code & 4 and 1) | (code & 16 and 2) | (code & 8 and 4)}
+
+
 def finish(line, status=0):
     sys.stderr.write(line + "\n")
     sys.exit(status)
@@ -80,6 +98,8 @@ def finish(line, status=0):
 
 saved = termios.tcgetattr(tty_in)
 tty.setraw(tty_in)
+out.write(MODES_ON)
+out.flush()
 mode, stream = "control", open_stream("control")
 pending, lines = b"", b""
 try:
@@ -110,7 +130,9 @@ try:
             wanted = VISIBILITY.findall(bytes(keys))
             keys = VISIBILITY.sub(b"", bytes(keys))
             wanted = wanted[-1] if wanted else None
-            if mode == "observe" and REPORTS.sub(b"", keys):
+            events = [mouse(match) for match in MOUSE.finditer(keys)]
+            keys = MOUSE.sub(b"", keys)
+            if mode == "observe" and (events or REPORTS.sub(b"", keys)):
                 wanted = b"show"
             if wanted == b"hide" and mode == "control":
                 close(stream)
@@ -121,6 +143,8 @@ try:
             if keys and mode == "control":
                 send({"type": "terminal.input",
                       "bytes": base64.b64encode(bytes(keys)).decode()})
+            for event in events if mode == "control" else ():
+                send(event)
         if stream.stdout in ready:
             chunk = os.read(stream.stdout.fileno(), 1 << 20)
             if not chunk:
@@ -139,6 +163,8 @@ try:
                         finish("server shut down: " + reason)
             out.flush()
 finally:
+    out.write(MODES_OFF)
+    out.flush()
     termios.tcsetattr(tty_in, termios.TCSADRAIN, saved)
     stream.kill()
 ' "$HERDR" "$@"
