@@ -1601,7 +1601,8 @@ value to the mouse, which reads it from `help-echo' either way."
             #'herdr-status--kept-visibility nil t)
   (add-hook 'window-configuration-change-hook
             #'herdr-status--widen-fringe nil t)
-  (add-hook 'post-command-hook #'herdr-status--echo-cut-field nil t))
+  (add-hook 'post-command-hook #'herdr-status--echo-cut-field nil t)
+  (add-hook 'window-buffer-change-functions #'herdr-status--shown nil t))
 
 (defvar herdr-status--refreshing nil
   "Non-nil while a redraw is running anywhere.
@@ -1873,14 +1874,25 @@ Outside a dashboard, open the current project's dashboard."
      (with-current-buffer buffer (derived-mode-p 'herdr-status-mode)))
    (buffer-list)))
 
+(defvar-local herdr-status--stale nil
+  "Non-nil when a refresh passed this dashboard by because no window showed it.")
+
 (defun herdr-status--refresh-buffers ()
-  "Redraw every live dashboard buffer."
+  "Redraw every dashboard a window shows, and mark the others stale."
   (setq herdr-status--timer nil)
   (dolist (buffer (herdr-status--buffers))
     (with-current-buffer buffer
-      (condition-case nil
-          (herdr-status-refresh)
-        (herdr-error nil)))))
+      (if (not (get-buffer-window buffer t))
+          (setq herdr-status--stale t)
+        (setq herdr-status--stale nil)
+        (condition-case nil
+            (herdr-status-refresh)
+          (herdr-error nil))))))
+
+(defun herdr-status--shown (_window)
+  "Refresh this dashboard once a window shows it again, when it is stale."
+  (when herdr-status--stale
+    (herdr-status-request-refresh)))
 
 (defun herdr-status-cached-agents ()
   "Return the agent entries this dashboard drew from its last fetch."
