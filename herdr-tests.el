@@ -25,6 +25,7 @@
 HANDLER receives the decoded request alist and returns the response
 alist.  Returns the socket path."
   (setq herdr-tests--socket-dir (make-temp-file "herdr-test" t))
+  (advice-add 'herdr--await :override #'herdr-tests--await)
   (let ((path (expand-file-name "herdr.sock" herdr-tests--socket-dir)))
     (make-network-process
      :name "herdr-test-server" :server t :family 'local :service path
@@ -38,8 +39,13 @@ alist.  Returns the socket path."
                   proc (concat (json-serialize (funcall handler request)) "\n")))))
     path))
 
+(defun herdr-tests--await (_proc)
+  "Wait for any output, so the fake server in this Emacs can answer."
+  (accept-process-output nil 0.05))
+
 (defun herdr-tests--teardown ()
   "Stop fake servers and remove their socket directory."
+  (advice-remove 'herdr--await #'herdr-tests--await)
   (dolist (proc (process-list))
     (when (string-prefix-p "herdr-test-server" (process-name proc))
       (delete-process proc)))
@@ -70,6 +76,31 @@ alist.  Returns the socket path."
           (herdr-socket-path "/tmp/probe/herdr.sock"))
       (should (equal (herdr-attach-command "term_1")
                      '("herdr" "--session" "agents" "terminal" "attach" "term_1"))))))
+
+(defun herdr-tests--api-buffers ()
+  (seq-count (lambda (buffer) (string-prefix-p " *herdr-api*" (buffer-name buffer)))
+             (buffer-list)))
+
+(ert-deftest herdr-request-to-a-refusing-socket-leaves-no-buffer ()
+  (let* ((directory (make-temp-file "herdr-test" t))
+         (herdr-socket-path (expand-file-name "herdr.sock" directory))
+         (before (herdr-tests--api-buffers)))
+    (unwind-protect
+        (progn
+          (write-region "" nil herdr-socket-path)
+          (should-error (herdr-request "ping") :type 'herdr-error)
+          (should (= (herdr-tests--api-buffers) before)))
+      (delete-directory directory t))))
+
+(ert-deftest herdr-subscription-buffer-dies-with-its-process ()
+  (unwind-protect
+      (let* ((herdr-socket-path (herdr-tests--start-server (lambda (_) '((result)))))
+             (before (herdr-tests--api-buffers))
+             (proc (herdr-subscribe '("pane.updated") #'ignore)))
+        (should (= (herdr-tests--api-buffers) (1+ before)))
+        (delete-process proc)
+        (should (= (herdr-tests--api-buffers) before)))
+    (herdr-tests--teardown)))
 
 (ert-deftest herdr-request-returns-result ()
   (unwind-protect

@@ -310,17 +310,19 @@ Pass `:false' or `:null' to send those JSON values explicitly."
   (let ((path (herdr-socket-file)))
     (unless (file-exists-p path)
       (signal 'herdr-error (list (format "no herdr socket at %s" path))))
-    (condition-case err
-        (make-network-process :name "herdr-api"
-                              :family 'local
-                              :service path
-                              :coding 'utf-8-unix
-                              :noquery t
-                              :buffer (generate-new-buffer " *herdr-api*"))
-      (file-error
-       (signal 'herdr-error
-               (list (format "cannot reach herdr at %s: %s"
-                             path (error-message-string err))))))))
+    (let ((buffer (generate-new-buffer " *herdr-api*")))
+      (condition-case err
+          (make-network-process :name "herdr-api"
+                                :family 'local
+                                :service path
+                                :coding 'utf-8-unix
+                                :noquery t
+                                :buffer buffer)
+        (file-error
+         (kill-buffer buffer)
+         (signal 'herdr-error
+                 (list (format "cannot reach herdr at %s: %s"
+                               path (error-message-string err)))))))))
 
 (defun herdr--payload (method params)
   "Return the request line sending METHOD with PARAMS."
@@ -333,6 +335,11 @@ Pass `:false' or `:null' to send those JSON values explicitly."
   "Return the parsed herdr response LINE."
   (json-parse-string line :object-type 'alist :array-type 'list
                      :null-object nil :false-object nil))
+
+(defun herdr--await (proc)
+  "Wait briefly for output from PROC alone, running no timers.
+Nothing else runs meanwhile, so one request never starts another inside it."
+  (accept-process-output proc 0.05 nil 1))
 
 (defun herdr--read-line (proc timeout)
   "Read one newline-terminated response line from PROC within TIMEOUT seconds."
@@ -348,7 +355,7 @@ Pass `:false' or `:null' to send those JSON values explicitly."
           (signal 'herdr-error (list "timed out waiting for herdr response")))
          ((not (process-live-p proc))
           (signal 'herdr-error (list "herdr closed the connection without a response")))
-         (t (accept-process-output proc 0.05)))))
+         (t (herdr--await proc)))))
     line))
 
 (defun herdr-request (method &optional params timeout)
@@ -427,6 +434,12 @@ CALLBACK receives the event alist.  Returns the subscription process;
              (when-let* ((message (ignore-errors (herdr--decode line)))
                          ((alist-get 'event message)))
                (funcall callback (alist-get 'data message))))))))
+    (set-process-sentinel
+     proc
+     (lambda (proc _event)
+       (unless (process-live-p proc)
+         (let ((buffer (process-buffer proc)))
+           (when (buffer-live-p buffer) (kill-buffer buffer))))))
     (process-send-string proc
                          (herdr--payload "events.subscribe"
                                          `((subscriptions . ,subscriptions))))
