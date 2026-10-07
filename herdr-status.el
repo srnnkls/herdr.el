@@ -2428,5 +2428,42 @@ Every suffix here is bound directly in `herdr-status-mode-map' as well."
           ("?" "close" transient-quit-one)
           ("q" "quit dashboard" quit-window)])
 
+;;;; Evil
+
+(declare-function evil-define-key* "ext:evil-core" (state keymap key def &rest bindings))
+(declare-function evil-make-overriding-map "ext:evil-core" (keymap &optional state copy))
+(defvar evil-normal-state-map)
+(defvar evil-motion-state-map)
+
+(defconst herdr-status-evil-renames '(("g" . "gr") ("h" . "H"))
+  "Dashboard keys that evil's normal state keeps for itself.
+Each pair is a key in `herdr-status-mode-map' and the key its command
+moves to, leaving evil its `g' prefix and its `h' motion.")
+
+(defun herdr-status--evil-own (key)
+  "Return evil's normal-state binding of KEY, a fresh prefix where it is one.
+The fresh prefix inherits evil's, so binding into it leaves evil's alone."
+  (let ((own (delq nil (list (keymap-lookup evil-normal-state-map key)
+                             (keymap-lookup evil-motion-state-map key)))))
+    (if (keymapp (car own))
+        (let ((prefix (make-sparse-keymap)))
+          (set-keymap-parent prefix (make-composed-keymap (seq-filter #'keymapp own)))
+          prefix)
+      (car own))))
+
+(defun herdr-status-evil-setup ()
+  "Put the dashboard's keys ahead of evil's normal state.
+Keys other packages add to `herdr-status-mode-map' later take effect
+too, since evil consults the keymap itself."
+  (evil-make-overriding-map herdr-status-mode-map 'normal)
+  (pcase-dolist (`(,key . ,_) herdr-status-evil-renames)
+    (evil-define-key* 'normal herdr-status-mode-map (kbd key) (herdr-status--evil-own key)))
+  (pcase-dolist (`(,key . ,moved) herdr-status-evil-renames)
+    (let ((command (keymap-lookup herdr-status-mode-map key)))
+      (evil-define-key* 'normal herdr-status-mode-map (kbd moved) command)
+      (transient-suffix-put 'herdr-status-dispatch command :key moved))))
+
+(with-eval-after-load 'evil (herdr-status-evil-setup))
+
 (provide 'herdr-status)
 ;;; herdr-status.el ends here
