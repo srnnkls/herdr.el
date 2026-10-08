@@ -2197,18 +2197,30 @@ one.  KIND is the harness at point, or read with a prefix argument."
   (herdr-agent-prompt (herdr-status--target-at-point) text)
   (herdr-status-refresh))
 
+(defcustom herdr-status-rename-prefill t
+  "Whether `herdr-status-rename' starts from what is renamed is called now.
+An agent's name is offered as its title, and a pane's label as it is.
+An agent without a name is offered one either way."
+  :type 'boolean
+  :group 'herdr-status)
+
 (defun herdr-status-rename (name &optional entry)
   "Rename what point stands for to NAME, or ENTRY when one is given.
 An agent has a name of its own, which herdr's agent API sets; one that
 has none is offered what `herdr-agent-name-function' gives it.  A plain
-pane has the label its row reads by instead, and that is what is set."
+pane has the label its row reads by instead, and that is what is set.
+`herdr-status-rename-prefill' says whether the current one is offered."
   (interactive
    (let ((entry (herdr-status--attachable-at-point)))
      (list (if (alist-get 'agent entry)
                (read-string "Agent name: "
-                            (unless (alist-get 'name entry)
+                            (if-let* ((current (alist-get 'name entry)))
+                                (and herdr-status-rename-prefill
+                                     (herdr-agent-title current))
                               (herdr-agent-title (herdr-agent-offered-name entry))))
-             (read-string "Pane name: "))
+             (read-string "Pane name: "
+                          (and herdr-status-rename-prefill
+                               (alist-get 'label entry))))
            entry)))
   (let ((entry (or entry (herdr-status--attachable-at-point))))
     (if (alist-get 'agent entry)

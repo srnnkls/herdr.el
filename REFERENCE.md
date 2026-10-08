@@ -298,6 +298,7 @@ is `$XDG_CONFIG_HOME/herdr/sessions/NAME/herdr.sock`; `XDG_CONFIG_HOME` defaults
 | `herdr-status-auto-refresh` | boolean | t | redraw on herdr events |
 | `herdr-status-refresh-delay` | number | 0.4 | idle seconds before an event-driven redraw |
 | `herdr-status-new-harness` | string | `"claude"` | the harness `n` starts away from a row |
+| `herdr-status-rename-prefill` | boolean | t | whether `R` starts from the agent's current name, as its title, or the pane's current label |
 | `herdr-status-sections` | list of `recent`, `herds`, `agents`, `panes`, `sessions` | all five, in that order | the sections the dashboard draws, in order |
 | `herdr-status-expanded-states` | list of strings | `("working")` | states whose rows are expanded when first drawn; nil starts all collapsed. A row opened or closed by hand keeps its state across redraws |
 | `herdr-status-show-details` | boolean | nil | show metadata under expanded rows |
