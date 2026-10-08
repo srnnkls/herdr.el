@@ -38,9 +38,9 @@
 
 (defun herdr-transient--resume (kind name reference)
   "Resume KIND named NAME from REFERENCE."
-  (interactive (list (herdr-transient--harness)
-                     (herdr-transient--name)
-                     (read-string "Session reference: ")))
+  (interactive (let ((kind (herdr-transient--harness)))
+                 (list kind (herdr-transient--name)
+                       (herdr-agent-read-session kind default-directory))))
   (herdr-agent-resume kind name reference))
 
 (defun herdr-transient--target ()

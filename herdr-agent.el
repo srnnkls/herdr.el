@@ -27,17 +27,23 @@
 (defvar herdr-agent-harnesses
   '(("claude" :label "Claude Code"
      :arguments ((start) (continue "--continue")
-                 (resume "--resume" :reference)))
+                 (resume "--resume" :reference))
+     :sessions herdr-agent-claude-sessions)
     ("codex" :label "Codex"
      :arguments ((start) (continue "resume" "--last")
-                 (resume "resume" :reference)))
+                 (resume "resume" :reference))
+     :sessions herdr-agent-codex-sessions)
     ("pi" :label "Pi"
      :arguments ((start) (continue "--continue")
                  (resume "--session" :reference)))
     ("omp" :label "Oh My Pi"
      :arguments ((start) (continue "--continue")
                  (resume "--session" :reference))))
-  "Harness descriptors keyed by Herdr agent kind.")
+  "Harness descriptors keyed by Herdr agent kind.
+`:arguments' says how the harness starts, continues and resumes;
+`:sessions', where given, is a function of a directory returning the
+sessions started there, newest first, as lists of the reference `resume'
+takes, a title or nil, and the time the session was last written.")
 
 (defun herdr-agent-register-harness (kind &rest properties)
   "Register KIND with descriptor PROPERTIES.
@@ -68,6 +74,10 @@ PROPERTIES must contain an `:arguments' action alist."
 
 (defvar herdr-agent-event-functions nil
   "Functions called with server key, event type, and event data.")
+
+(defvar herdr-agent-ready-functions nil
+  "Functions called with an agent session started without waiting.
+They run once herdr reports its agent ready for a prompt.")
 
 (defmacro herdr-agent--with-server (server-key &rest body)
   "Evaluate BODY against SERVER-KEY."
@@ -619,9 +629,11 @@ longer attached is let go."
          (cond ((not (and agent (herdr-agent--interactive-ready-p agent)))
                 (herdr-agent--refresh-when-ready session deadline))
                ((not (herdr-agent-session-placeholder session))
-                (herdr-agent--refresh-session session agent server-key))
+                (herdr-agent--refresh-session session agent server-key)
+                (run-hook-with-args 'herdr-agent-ready-functions session))
                ((not (herdr-agent--drop-placeholder session))
-                (herdr-agent--refresh-when-ready session deadline))))))))
+                (herdr-agent--refresh-when-ready session deadline))
+               (t (run-hook-with-args 'herdr-agent-ready-functions session))))))))
 
 (defun herdr-agent--drop-placeholder (session)
   "Take the name herdr.el gave SESSION's agent off it and return the agent.
@@ -691,6 +703,15 @@ when SESSION has no placeholder or herdr will not let go of it yet."
     (herdr-agent--register session))
   session)
 
+(defcustom herdr-agent-placement 'workspace
+  "Where an agent started from Emacs opens in herdr.
+`workspace' gives it a workspace of its own, labelled after its project;
+`tab' opens it as a tab in the project's workspace, creating that
+workspace for the first."
+  :type '(choice (const :tag "A workspace of its own" workspace)
+                 (const :tag "A tab in the project's workspace" tab))
+  :group 'herdr-agent)
+
 (cl-defun herdr-agent-start-session
     (kind name &key server-key project-root workspace args (attach t) timeout-ms
           (wait t))
@@ -728,7 +749,8 @@ returns without waiting for the agent to be ready, as in
                      (args (or (herdr-agent--run-adapter session :arguments args)
                                args))
                      (workspace (or workspace (herdr-workspace-label project-root)))
-                     (existing (herdr-workspace-id workspace))
+                     (fresh (eq herdr-agent-placement 'workspace))
+                     (existing (and (not fresh) (herdr-workspace-id workspace)))
                      (created
                       (let ((herdr--open-tab-cleanup-failed-function
                              (lambda (created)
@@ -770,7 +792,8 @@ returns without waiting for the agent to be ready, as in
                                                 (herdr-agent-session-cleanup session) (list err)))))
                                      (apply workspace-close arguments))))
                           (herdr-open-tab :cwd project-root :label (unless placeholder name)
-                                          :workspace workspace :env env))))
+                                          :workspace workspace :env env
+                                          :fresh fresh))))
                      (tab (alist-get 'tab created))
                      (pane (alist-get 'root_pane created))
                      (workspace-id (or existing (alist-get 'workspace_id (alist-get 'workspace created))
@@ -965,6 +988,163 @@ attachment; TIMEOUT-MS limits startup."
    kind name :server-key server-key :project-root project-root :workspace workspace
    :args (herdr-agent--native-args kind 'resume reference)
    :attach attach :timeout-ms timeout-ms))
+
+;;;; Past sessions
+
+(defcustom herdr-agent-claude-projects-directory "~/.claude/projects/"
+  "Where Claude Code keeps its sessions, one directory per working directory."
+  :type 'directory
+  :group 'herdr-agent)
+
+(defcustom herdr-agent-codex-directory "~/.codex/"
+  "Where Codex keeps its sessions and their index."
+  :type 'directory
+  :group 'herdr-agent)
+
+(defcustom herdr-agent-session-limit 200
+  "How many of a harness's most recent sessions are looked through."
+  :type 'natnum
+  :group 'herdr-agent)
+
+(defun herdr-agent--file-part (file from to)
+  "Return the bytes of FILE between FROM and TO, undecoded."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (ignore-errors (insert-file-contents-literally file nil from to))
+    (buffer-string)))
+
+(defun herdr-agent--json-field (key text &optional last)
+  "Return the string KEY holds in the JSON TEXT, the LAST one when non-nil."
+  (let ((regexp (concat "\"" (regexp-quote key)
+                        "\":\"\\(\\(?:[^\"\\\\]\\|\\\\.\\)*\\)\""))
+        found)
+    (with-temp-buffer
+      (insert text)
+      (goto-char (if last (point-max) (point-min)))
+      (when (if last
+                (re-search-backward regexp nil t)
+              (re-search-forward regexp nil t))
+        (setq found (ignore-errors
+                      (json-parse-string
+                       (decode-coding-string
+                        (concat "\"" (match-string 1) "\"") 'utf-8))))))
+    found))
+
+(defun herdr-agent--same-directory-p (one other)
+  "Return non-nil when ONE and OTHER name the same directory."
+  (equal (directory-file-name (expand-file-name one))
+         (directory-file-name (expand-file-name other))))
+
+(defun herdr-agent--newest-files (files)
+  "Return FILES newest first, at most `herdr-agent-session-limit' of them."
+  (seq-take (sort (mapcar (lambda (file)
+                            (cons file (file-attribute-modification-time
+                                        (file-attributes file))))
+                          files)
+                  (lambda (a b) (time-less-p (cdr b) (cdr a))))
+            herdr-agent-session-limit))
+
+(defun herdr-agent-claude-sessions (directory)
+  "Return the Claude Code sessions started in DIRECTORY, newest first.
+A session is titled by the last title Claude Code gave it, which it
+writes again as the conversation goes on, so the tail of its file holds
+it."
+  (let ((folder (expand-file-name
+                 (replace-regexp-in-string
+                  "[^[:alnum:]]" "-"
+                  (directory-file-name (expand-file-name directory)))
+                 herdr-agent-claude-projects-directory)))
+    (when (file-directory-p folder)
+      (mapcar
+       (lambda (cell)
+         (let* ((file (car cell))
+                (size (file-attribute-size (file-attributes file)))
+                (tail (herdr-agent--file-part file (max 0 (- size 65536)) size)))
+           (list (file-name-base file)
+                 (or (herdr-agent--json-field "aiTitle" tail t)
+                     (herdr-agent--json-field
+                      "aiTitle" (herdr-agent--file-part file 0 65536) t))
+                 (cdr cell))))
+       (herdr-agent--newest-files
+        (directory-files folder t "\\`[^.].*\\.jsonl\\'"))))))
+
+(defun herdr-agent--codex-titles ()
+  "Return the name Codex last gave each session, keyed by its id."
+  (let ((titles (make-hash-table :test #'equal))
+        (index (expand-file-name "session_index.jsonl" herdr-agent-codex-directory)))
+    (when (file-readable-p index)
+      (with-temp-buffer
+        (insert-file-contents index)
+        (dolist (line (split-string (buffer-string) "\n" t))
+          (when-let* ((record (ignore-errors
+                                (json-parse-string line :object-type 'alist)))
+                      (id (alist-get 'id record)))
+            (puthash id (alist-get 'thread_name record) titles)))))
+    titles))
+
+(defun herdr-agent-codex-sessions (directory)
+  "Return the Codex sessions started in DIRECTORY, newest first.
+Each rollout opens with the directory its session ran in; the most
+recent `herdr-agent-session-limit' rollouts are looked through."
+  (let ((root (expand-file-name "sessions" herdr-agent-codex-directory)))
+    (when (file-directory-p root)
+      (let ((titles (herdr-agent--codex-titles)))
+        (delq nil
+              (mapcar
+               (lambda (cell)
+                 (let ((head (herdr-agent--file-part (car cell) 0 4096)))
+                   (when-let* ((cwd (herdr-agent--json-field "cwd" head))
+                               ((herdr-agent--same-directory-p cwd directory))
+                               (id (herdr-agent--json-field "id" head)))
+                     (list id (gethash id titles) (cdr cell)))))
+               (herdr-agent--codex-rollouts root)))))))
+
+(defun herdr-agent--codex-rollouts (root)
+  "Return the newest rollouts under ROOT, at most `herdr-agent-session-limit'.
+Rollouts sit in year, month and day folders and are named after the
+time they began, so the newest are found by name without reading the
+rest.  Each comes as a cons of the file and when it was last written."
+  (let ((found nil)
+        (folders (list root)))
+    (dotimes (_ 3)
+      (setq folders
+            (mapcan (lambda (folder)
+                      (seq-filter #'file-directory-p
+                                  (nreverse (directory-files folder t "\\`[0-9]+\\'"))))
+                    folders)))
+    (catch 'enough
+      (dolist (folder folders)
+        (dolist (file (nreverse (directory-files folder t "\\`rollout-.*\\.jsonl\\'")))
+          (push (cons file (file-attribute-modification-time (file-attributes file)))
+                found)
+          (when (>= (length found) herdr-agent-session-limit)
+            (throw 'enough nil)))))
+    (nreverse found)))
+
+(defun herdr-agent-read-session (kind directory)
+  "Read one of the KIND sessions started in DIRECTORY and return its reference.
+Sessions are offered newest first by title and date; a harness that
+lists none asks for the reference instead."
+  (let* ((function (plist-get (cdr (assoc kind herdr-agent-harnesses)) :sessions))
+         (sessions (and function (funcall function directory))))
+    (if (null sessions)
+        (read-string (format "%s session reference: " kind))
+      (let* ((choices (mapcar (lambda (session)
+                                (pcase-let ((`(,id ,title ,time) session))
+                                  (cons (format "%s  %s  %s"
+                                                (format-time-string "%Y-%m-%d %H:%M" time)
+                                                (or title "(untitled)")
+                                                (substring id 0 (min 8 (length id))))
+                                        id)))
+                              sessions))
+             (choice (completing-read
+                      (format "Resume %s session: " kind)
+                      (lambda (string predicate action)
+                        (if (eq action 'metadata)
+                            '(metadata (display-sort-function . identity))
+                          (complete-with-action action choices string predicate)))
+                      nil t)))
+        (cdr (assoc choice choices))))))
 
 (defun herdr-agent--in-project-p (agent project)
   "Return non-nil when AGENT belongs to PROJECT."
@@ -1192,7 +1372,10 @@ up to `herdr-agent-prompt-rule'."
 (defun herdr-agent-screen-draft (screen)
   "Return the draft standing in the input line of SCREEN, or nil.
 Lines below the input line belong to the draft up to the rule closing
-its box.  A line that wrapped and one the agent was made to break look
+its box, and each of them is indented to the text after the marker: a
+line that is not belongs to the transcript, whose sent messages carry
+the marker too, and a screen caught before its box is drawn holds no
+draft.  A line that wrapped and one the agent was made to break look
 alike on a screen, and both are read as a break."
   (when screen
     (let* ((lines (split-string screen "\n"))
@@ -1205,19 +1388,31 @@ alike on a screen, and both are read as a break."
                             (lambda (line)
                               (not (string-match-p herdr-agent-prompt-rule line)))
                             (cdr rest))))
-               (draft (herdr-agent--screen-trim
+               (draft (and
+                       (seq-every-p
+                        (lambda (line)
+                          (string-match-p
+                           (format "\\`%s*\\'\\|\\`%s\\{%d\\}"
+                                   herdr-agent--prompt-blank
+                                   herdr-agent--prompt-blank width)
+                           line))
+                        (cdr body))
+                       (herdr-agent--screen-trim
                        (mapconcat
                         (lambda (line)
                           (herdr-agent--screen-trim
                            (herdr-agent--screen-unindent line width)))
-                        body "\n"))))
-          (unless (string-empty-p draft) draft))))))
+                        body "\n")))))
+          (unless (member draft '(nil "")) draft))))))
 
 (defun herdr-agent-draft (target)
   "Return the draft standing in TARGET's prompt, or nil.
 Only a terminal this Emacs holds and shows can be read."
   (when-let* ((buffer (herdr-terminal-buffer (cdr target) (car target))))
     (herdr-agent-screen-draft (herdr-terminal-screen buffer))))
+
+(defvar herdr-message--agent-shown nil
+  "Non-nil when the buffer the message is written from shows its agent.")
 
 (defun herdr-agent--prompt-locally (target text)
   "Send TEXT to TARGET's own terminal, under the draft its prompt holds.
@@ -1228,13 +1423,32 @@ reads as it was rather than as it is.  The clear, the message, its
 submission and the draft are written in that order by one writer, so
 none of them waits on the agent reacting."
   (when-let* ((buffer (herdr-terminal-buffer (cdr target) (car target))))
-    (unless (get-buffer-window buffer t) (display-buffer buffer))
+    (unless (or (get-buffer-window buffer t) herdr-message--agent-shown)
+      (display-buffer buffer))
     (when-let* ((draft (herdr-agent-screen-draft (herdr-terminal-screen buffer)))
                 ((herdr-terminal-send herdr-agent-prompt-clear buffer)))
       (herdr-terminal-paste text buffer)
       (herdr-terminal-send herdr-agent-prompt-submit buffer)
       (herdr-terminal-paste draft buffer)
       t)))
+
+(defun herdr-agent-when-ready (session function)
+  "Call FUNCTION with SESSION once herdr reports its agent ready.
+SESSION is an agent session started without waiting."
+  (letrec ((ready (lambda (started)
+                    (when (eq started session)
+                      (remove-hook 'herdr-agent-ready-functions ready)
+                      (funcall function session)))))
+    (add-hook 'herdr-agent-ready-functions ready)))
+
+(defun herdr-agent-prompt-when-ready (session text)
+  "Send TEXT to the agent SESSION starts once herdr reports it ready."
+  (herdr-agent-when-ready
+   session
+   (lambda (session)
+     (herdr-agent-prompt (cons (herdr-agent-session-server session)
+                               (herdr-agent-session-terminal session))
+                         text))))
 
 (defun herdr-agent-prompt (target text)
   "Send TEXT to TARGET through herdr's agent API.
@@ -1263,7 +1477,9 @@ another provider handle it.  `herdr-default-send-context' is the fallback.")
     (cons (line-beginning-position) (line-end-position))))
 
 (defun herdr-default-send-context (_entry)
-  "Return the active region or current line as agent context."
+  "Return the active region or current line as agent context.
+A terminal is named without lines: what it shows is a screen that moves
+on, not a text a line number keeps pointing into."
   (let* ((bounds (herdr-agent--context-bounds))
          (beginning (car bounds))
          (end (cdr bounds))
@@ -1273,14 +1489,14 @@ another provider handle it.  `herdr-default-send-context' is the fallback.")
       (widen)
       (setq start-line (line-number-at-pos beginning)
             end-line (line-number-at-pos last-position)))
-    (format "Emacs context\n%s: %s:%s\nmode: %s\n\n```\n%s\n```"
+    (format "Emacs context\n%s: %s%s\nmode: %s\n\n```\n%s\n```"
             (if buffer-file-name "file" "buffer")
             (if buffer-file-name
                 (expand-file-name buffer-file-name)
               (buffer-name))
-            (if (= start-line end-line)
-                start-line
-              (format "%d-%d" start-line end-line))
+            (cond ((herdr-terminal-screen-p) "")
+                  ((= start-line end-line) (format ":%d" start-line))
+                  (t (format ":%d-%d" start-line end-line)))
             major-mode
             (string-trim-right (buffer-substring-no-properties beginning end)))))
 
@@ -1486,7 +1702,7 @@ barrier.")
                             (herdr-message--compose text context)))
     target))
 
-(defcustom herdr-message-show-agent 'focus
+(defcustom herdr-message-show-agent t
   "What sending a message does with the agent's terminal.
 `focus' shows it and takes the cursor to its prompt, t shows it and
 keeps the window sent from selected, and nil leaves it alone.  A
@@ -1501,10 +1717,17 @@ without taking the cursor anywhere, whatever this says."
 (defvar herdr-message--in-place nil
   "Non-nil when the message being sent leaves the cursor where it is.")
 
+(defvar herdr-message-shown-functions nil
+  "Functions telling whether the buffer written from stands for the agent.
+Each is called in the buffer a message is written from, with the agent
+target, and returns non-nil when that buffer already shows the agent - a
+transcript of the session it runs, say.  The agent's terminal is then
+left where it is, whatever `herdr-message-show-agent' says.")
+
 (defun herdr-message--show-target (target)
   "Show TARGET's terminal after a message, as `herdr-message-show-agent' says."
   (cond
-   ((null herdr-message-show-agent))
+   ((or (null herdr-message-show-agent) herdr-message--agent-shown))
    ((and (eq herdr-message-show-agent 'focus) (not herdr-message--in-place))
     (if-let* ((buffer (herdr-terminal-buffer (cdr target) (car target))))
         (herdr-agent--focus-buffer buffer)
@@ -1517,7 +1740,7 @@ without taking the cursor anywhere, whatever this says."
             (display-buffer buffer))
         (when-let* ((entry (herdr--entry-for-target target)))
           (herdr-visit entry)))
-      (when (window-live-p window)
+      (when (and (window-live-p window) (not (eq window (selected-window))))
         (select-window window))))))
 
 (defun herdr-message-send-in-place ()
@@ -1549,7 +1772,8 @@ the message buffer each send this way on this key."
 
 (defun herdr-message--edit (target draft context)
   "Open a message buffer for TARGET holding DRAFT, sending with CONTEXT."
-  (let ((configuration (current-window-configuration))
+  (let ((agent-shown herdr-message--agent-shown)
+        (configuration (current-window-configuration))
         (buffer (get-buffer-create "*herdr message*"))
         (summary (herdr-message--context-summary context)))
     (with-current-buffer buffer
@@ -1561,6 +1785,7 @@ the message buffer each send this way on this key."
             (format " Message to %s%s  —  C-c C-c send, C-c C-k cancel"
                     (herdr-message--target-label target)
                     (if summary (format "  [%s]" summary) "")))
+      (setq-local herdr-message--agent-shown agent-shown)
       (erase-buffer)
       (when draft (insert draft)))
     (pop-to-buffer buffer)
@@ -1581,9 +1806,11 @@ the message buffer each send this way on this key."
   (let ((target (herdr-message--send
                  herdr-message--target
                  (buffer-substring-no-properties (point-min) (point-max))
-                 herdr-message--context)))
+                 herdr-message--context))
+        (agent-shown herdr-message--agent-shown))
     (herdr-message--close)
-    (herdr-message--show-target target)))
+    (let ((herdr-message--agent-shown agent-shown))
+      (herdr-message--show-target target))))
 
 (defun herdr-message-cancel ()
   "Discard the current message buffer."
@@ -1645,13 +1872,17 @@ dashboard, draws the field bare."
 The field sits under the region or line CONTEXT was taken from, which is
 left unmarked — the region is its own highlight — and what is written
 into the field is sent with CONTEXT.  Cancelling the field quits.
-A buffer with a live process, where a terminal streams into what the
-field would sit in, asks in the minibuffer instead, as does a missing
-cera or the minibuffer itself."
+A buffer with a live process, where output streams into what the field
+would sit in, asks in the minibuffer instead, as does a missing cera or
+the minibuffer itself.  A terminal - a herdr attachment or any Ghostel
+buffer - gets the field all the same, its screen held still while the
+field is open where the backend can hold it."
   (if (and (not (minibufferp))
-           (not (get-buffer-process (current-buffer)))
+           (or (herdr-terminal-screen-p)
+               (not (get-buffer-process (current-buffer))))
            (or (fboundp 'cera-read) (require 'cera nil t)))
-      (let ((cera-input-prefix (herdr-message--field-prefix target))
+      (let ((thaw (herdr-terminal-freeze))
+            (cera-input-prefix (herdr-message--field-prefix target))
             (cera-session-keymap
              (if (bound-and-true-p cera-session-keymap)
                  (make-composed-keymap herdr-message-field-map cera-session-keymap)
@@ -1662,8 +1893,10 @@ cera or the minibuffer itself."
         (herdr-message--show-target
          (herdr-message--send
           target
-          (cera-read herdr-message-history nil
-                     (herdr-agent--context-bounds) nil)
+          (unwind-protect
+              (cera-read herdr-message-history nil
+                         (herdr-agent--context-bounds) nil)
+            (when thaw (funcall thaw)))
           context)))
     (herdr-message-read-minibuffer target context)))
 
@@ -1697,7 +1930,9 @@ minibuffer moves the draft to a `herdr-message-mode' buffer instead."
 (defun herdr-message--read (target context)
   "Read a message for TARGET and send it with CONTEXT.
 `herdr-message-read-function' decides where the message is written."
-  (funcall herdr-message-read-function target context))
+  (let ((herdr-message--agent-shown
+         (run-hook-with-args-until-success 'herdr-message-shown-functions target)))
+    (funcall herdr-message-read-function target context)))
 
 (defun herdr-message--session (scope last)
   "Message an agent in SCOPE, selecting by LAST when non-nil."

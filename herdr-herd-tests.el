@@ -6,7 +6,7 @@
 ;;   emacs -Q --batch -L . -l herdr-herd-tests.el -f ert-run-tests-batch-and-exit
 ;;
 ;; Every herdr call is stubbed, so no server is contacted and no pane is
-;; renamed or prompted.
+;; reported on or prompted.
 
 ;;; Code:
 
@@ -24,8 +24,9 @@
 
 (defun herdr-herd-tests--entry (cwd title &rest keys)
   "Return an agent entry in CWD whose terminal shows TITLE.
-KEYS may carry `:agent', `:name', `:status', `:session', `:pane', `:label'
-and `:on', the herdr session the agent runs on."
+KEYS may carry `:agent', `:name', `:status', `:session', `:pane', `:label',
+`:herd', the herd its pane is in, and `:on', the herdr session the agent
+runs on."
   (let ((agent (or (plist-get keys :agent) "claude"))
         (session (or (plist-get keys :session) "session-1")))
     `((kind . "herdr")
@@ -38,6 +39,8 @@ and `:on', the herdr session the agent runs on."
                         (value . ,session)))
       (name . ,(plist-get keys :name))
       (pane_label . ,(plist-get keys :label))
+      (tokens . ,(and (plist-get keys :herd)
+                      `((herd . ,(plist-get keys :herd)))))
       (terminal_title_stripped . ,title)
       (terminal_id . ,(concat "term-" session))
       (pane_id . ,(or (plist-get keys :pane) "w1:p1"))
@@ -45,6 +48,9 @@ and `:on', the herdr session the agent runs on."
 
 (defvar herdr-herd-tests--renames nil
   "Pane renames the stubs recorded, newest first, as (PANE . LABEL).")
+
+(defvar herdr-herd-tests--reports nil
+  "Metadata reports the stubs recorded, newest first, as (PANE . TOKENS).")
 
 (defvar herdr-herd-tests--agent-renames nil
   "Agent renames the stubs recorded, newest first.")
@@ -56,6 +62,7 @@ and `:on', the herdr session the agent runs on."
   "Run BODY with AGENTS as the live agents and every herdr call stubbed."
   (declare (indent 1) (debug (form body)))
   `(let ((herdr-herd-tests--renames nil)
+         (herdr-herd-tests--reports nil)
          (herdr-herd-tests--agent-renames nil)
          (herdr-herd-tests--prompts nil))
      (cl-letf (((symbol-function 'herdr-sessions) (lambda () ,agents))
@@ -67,6 +74,12 @@ and `:on', the herdr session the agent runs on."
                 (lambda (pane &rest keys)
                   (push (cons pane (plist-get keys :label))
                         herdr-herd-tests--renames)
+                  nil))
+               ((symbol-function 'herdr-api-pane-report-metadata)
+                (lambda (pane source &rest keys)
+                  (should (equal source herdr-herd-metadata-source))
+                  (push (cons pane (plist-get keys :tokens))
+                        herdr-herd-tests--reports)
                   nil))
                ((symbol-function 'herdr-agent-rename)
                 (lambda (target name)
@@ -80,19 +93,6 @@ and `:on', the herdr session the agent runs on."
        ,@body)))
 
 ;;;; The label a pane carries
-
-(ert-deftest herdr-herd-a-label-names-the-herd-ahead-of-its-own-text ()
-  (should (equal '("refactor" . nil) (herdr-herd--split "herd:refactor")))
-  (should (equal '("refactor" . "my own label")
-                 (herdr-herd--split "herd:refactor my own label")))
-  (should (equal '(nil . "my own label") (herdr-herd--split "my own label")))
-  (should (equal '(nil . nil) (herdr-herd--split nil))))
-
-(ert-deftest herdr-herd-a-label-keeps-what-it-already-said ()
-  (should (equal "herd:refactor" (herdr-herd--compose "refactor" nil)))
-  (should (equal "herd:refactor mine" (herdr-herd--compose "refactor" "mine")))
-  (should (equal "mine" (herdr-herd--compose nil "mine")))
-  (should-not (herdr-herd--compose nil nil)))
 
 (ert-deftest herdr-herd-a-label-word-is-read-and-rewritten-in-place ()
   (should (equal "finished,exited"
@@ -114,42 +114,37 @@ and `:on', the herdr session the agent runs on."
 
 (ert-deftest herdr-herd-a-name-with-whitespace-is-refused ()
   (should (herdr-herd--valid-name-p "refactor"))
-  (should-not (herdr-herd--valid-name-p "two words"))
-  (should-not (herdr-herd--valid-name-p "herd:nested")))
+  (should-not (herdr-herd--valid-name-p "two words")))
 
-(ert-deftest herdr-herd-joining-preserves-the-label-a-pane-already-had ()
+(ert-deftest herdr-herd-joining-reports-the-herd-and-id-and-renames-nothing ()
   (let ((entry (herdr-herd-tests--entry "/tmp/projects/memex/" "index"
                                         :name "one" :label "hand written")))
     (herdr-herd-tests--with-stubs (list entry)
       (herdr-herd-add (list entry) '("alpha" . "refactor"))
-      (should (equal '("w1:p1" . "herd:refactor hand written")
-                     (car herdr-herd-tests--renames))))))
+      (should (equal '(("w1:p1" (herd . "refactor")))
+                     herdr-herd-tests--reports))
+      (should-not herdr-herd-tests--renames)
+      (should-not herdr-herd-tests--agent-renames))))
 
-(ert-deftest herdr-herd-leaving-clears-a-label-that-said-nothing-else ()
+(ert-deftest herdr-herd-leaving-clears-the-herd-and-id ()
   (let ((entry (herdr-herd-tests--entry "/tmp/projects/memex/" "index"
-                                        :name "one" :label "herd:refactor")))
+                                        :name "one" :label "hand written"
+                                        :herd "refactor")))
     (herdr-herd-tests--with-stubs (list entry)
       (herdr-herd-remove entry)
-      (should (equal '("w1:p1" . nil) (car herdr-herd-tests--renames))))))
-
-(ert-deftest herdr-herd-leaving-keeps-the-rest-of-a-label ()
-  (let ((entry (herdr-herd-tests--entry "/tmp/projects/memex/" "index"
-                                        :name "one"
-                                        :label "herd:refactor hand written")))
-    (herdr-herd-tests--with-stubs (list entry)
-      (herdr-herd-remove entry)
-      (should (equal '("w1:p1" . "hand written")
-                     (car herdr-herd-tests--renames))))))
+      (should (equal '(("w1:p1" (herd . "")))
+                     herdr-herd-tests--reports))
+      (should-not herdr-herd-tests--renames))))
 
 ;;;; Reading the herds
 
-(ert-deftest herdr-herd-herds-come-from-the-labels-agents-carry ()
+(ert-deftest herdr-herd-herds-come-from-the-tokens-panes-carry ()
   (let ((one (herdr-herd-tests--entry "/tmp/projects/memex/" "a" :name "one"
                                       :session "s1" :pane "w1:p1"
-                                      :label "herd:refactor"))
+                                      :herd "refactor"))
         (two (herdr-herd-tests--entry "/tmp/projects/nmnm/" "b" :name "two"
                                       :session "s2" :pane "w2:p1"
-                                      :label "herd:refactor notes"))
+                                      :herd "refactor"))
         (loose (herdr-herd-tests--entry "/tmp/dotfiles/" "c" :name "three"
                                         :session "s3" :pane "w3:p1")))
     (herdr-herd-tests--with-stubs (list one two loose)
@@ -161,9 +156,9 @@ and `:on', the herdr session the agent runs on."
 
 (ert-deftest herdr-herd-herds-come-out-in-name-order ()
   (let ((z (herdr-herd-tests--entry "/tmp/dotfiles/" "z" :name "z"
-                                    :session "s1" :label "herd:zeta"))
+                                    :session "s1" :herd "zeta"))
         (a (herdr-herd-tests--entry "/tmp/projects/nmnm/" "a" :name "a"
-                                    :session "s2" :label "herd:alpha")))
+                                    :session "s2" :herd "alpha")))
     (herdr-herd-tests--with-stubs (list z a)
       (should (equal '("alpha" "zeta") (herdr-herd-names))))))
 
@@ -172,78 +167,67 @@ and `:on', the herdr session the agent runs on."
     (should-not (herdr-herd-names))
     (should-not (herdr-herd-member-entries '("alpha" . "refactor")))))
 
-;;;; Deriving an agent name
-
-(ert-deftest herdr-herd-names-carry-the-repository-and-the-task ()
-  (pcase-dolist
-      (`(,cwd ,title ,expected)
-       '(("/tmp/projects/herdr.el/.worktrees/feat-native/"
-          "improve-search-navigation-display" "herdr-el-improve-search")
-         ("/tmp/projects/memex/"
-          "Incremental index building cost model" "memex-incremental-index")
-         ("/tmp/projects/memex/"
-          "two-phase-checkpoint-state" "memex-two-phase")
-         ("/tmp/projects/sira/scopes/active/durable-compaction/"
-          "feat/unified-kv-model branch changes" "sira-unified-kv")
-         ("/tmp/dotfiles/"
-          "Doom Emacs cooked package with SPC o keybindings"
-          "dotfiles-doom-emacs")
-         ("/tmp/projects/nmnm/" "nmnm" "nmnm")))
-    (herdr-herd-tests--with-stubs nil
-      (should (equal expected
-                     (herdr-herd-derive-name
-                      (herdr-herd-tests--entry cwd title)))))))
-
-(ert-deftest herdr-herd-names-stay-inside-herdr-s-grammar ()
-  (herdr-herd-tests--with-stubs nil
-    (let ((name (herdr-herd-derive-name
-                 (herdr-herd-tests--entry
-                  "/tmp/projects/memex/"
-                  "Extraordinarily Long Title Of Considerable Length Indeed"))))
-      (should (herdr-agent--name-valid-p name))
-      (should (<= (length name) 32)))))
-
-(ert-deftest herdr-herd-names-fall-back-to-the-harness-without-a-title ()
-  (herdr-herd-tests--with-stubs nil
-    (should (equal "claude"
-                   (herdr-herd-derive-name
-                    (herdr-herd-tests--entry nil nil))))))
-
 ;;;; Joining
 
-(ert-deftest herdr-herd-adding-names-only-an-unnamed-agent ()
+(ert-deftest herdr-herd-adding-renames-nobody-and-reports-only-the-herd ()
   (let ((named (herdr-herd-tests--entry "/tmp/projects/memex/" "index work"
                                         :name "chosen-by-hand" :session "s1"
                                         :pane "w1:p1"))
         (unnamed (herdr-herd-tests--entry "/tmp/projects/nmnm/" "nmnm"
                                           :session "s2" :pane "w2:p1")))
     (herdr-herd-tests--with-stubs (list named unnamed)
-      (cl-letf (((symbol-function 'read-string)
-                 (lambda (_prompt &optional initial &rest _) initial)))
-        (herdr-herd-add (list named unnamed) '("alpha" . "refactor")))
-      (should (equal 1 (length herdr-herd-tests--agent-renames)))
-      (should (equal "nmnm" (cdr (car herdr-herd-tests--agent-renames))))
-      (should (equal '("w1:p1" "w2:p1")
-                     (sort (mapcar #'car herdr-herd-tests--renames) #'string<))))))
+      (herdr-herd-add (list named unnamed) '("alpha" . "refactor"))
+      (should-not herdr-herd-tests--agent-renames)
+      (should-not herdr-herd-tests--renames)
+      (should (equal '(("w1:p1" (herd . "refactor"))
+                       ("w2:p1" (herd . "refactor")))
+                     (sort (copy-sequence herdr-herd-tests--reports)
+                           (lambda (a b) (string< (car a) (car b)))))))))
 
-(ert-deftest herdr-herd-adding-the-same-agent-twice-renames-no-pane ()
+(ert-deftest herdr-herd-enlisting-reports-at-once-and-welcomes-once-ready ()
+  (let* ((session (herdr-agent--make-session
+                   :server "/tmp/alpha.sock" :kind "claude" :pane "w2:p1"
+                   :project "/tmp/projects/nmnm/"))
+         (old (herdr-herd-tests--entry "/tmp/projects/memex/" "index"
+                                       :name "one" :session "s1" :pane "w1:p1"
+                                       :herd "refactor"))
+         (new (herdr-herd-tests--entry "/tmp/projects/nmnm/" "nmnm"
+                                       :session "s2" :pane "w2:p1"
+                                       :herd "refactor"))
+         (agents (list old))
+         (herdr-agent-ready-functions nil))
+    (herdr-herd-tests--with-stubs agents
+      (herdr-herd-enlist session '("alpha" . "refactor"))
+      (should (equal '(("w2:p1" (herd . "refactor")))
+                     herdr-herd-tests--reports))
+      (should-not herdr-herd-tests--prompts)
+      (setq agents (list old new))
+      (run-hook-with-args 'herdr-agent-ready-functions 'another-session)
+      (should-not herdr-herd-tests--prompts)
+      (run-hook-with-args 'herdr-agent-ready-functions session)
+      (should (string-match-p
+               "you are nmnm in pane w2:p1"
+               (cdr (assoc (herdr--entry-target new) herdr-herd-tests--prompts))))
+      (should-not herdr-agent-ready-functions))))
+
+(ert-deftest herdr-herd-adding-the-same-agent-twice-reports-nothing ()
   (let ((entry (herdr-herd-tests--entry "/tmp/projects/memex/" "index work"
-                                        :name "one" :label "herd:refactor")))
+                                        :name "one" :herd "refactor")))
     (herdr-herd-tests--with-stubs (list entry)
       (herdr-herd-add (list entry) '("alpha" . "refactor"))
-      (should-not herdr-herd-tests--renames))))
+      (should-not herdr-herd-tests--reports))))
 
 (ert-deftest herdr-herd-a-name-with-whitespace-never-reaches-herdr ()
   (let ((entry (herdr-herd-tests--entry "/tmp/projects/memex/" "index"
                                         :name "one")))
     (herdr-herd-tests--with-stubs (list entry)
       (should-error (herdr-herd-add (list entry) '("alpha" . "two words")) :type 'user-error)
-      (should-not herdr-herd-tests--renames))))
+      (should-not herdr-herd-tests--reports))))
 
 (ert-deftest herdr-herd-joining-tells-the-joiner-the-roster-and-the-others-one-line ()
   (let ((old (herdr-herd-tests--entry "/tmp/projects/memex/" "index"
                                       :name "one" :session "s1" :pane "w1:p1"
-                                      :label "herd:refactor"))
+                                      :herd "refactor"))
         (new (herdr-herd-tests--entry "/tmp/projects/nmnm/" "nmnm"
                                       :name "two" :session "s2" :pane "w2:p1")))
     (herdr-herd-tests--with-stubs (list old new)
@@ -251,15 +235,15 @@ and `:on', the herdr session the agent runs on."
       (let ((to-old (cdr (assoc (herdr--entry-target old) herdr-herd-tests--prompts)))
             (to-new (cdr (assoc (herdr--entry-target new) herdr-herd-tests--prompts))))
         (should (equal 2 (length herdr-herd-tests--prompts)))
-        (should (equal "[herd refactor] two joined (claude, /tmp/projects/nmnm/). No reply needed."
+        (should (equal "[herd refactor] two joined (claude in w2:p1, /tmp/projects/nmnm/). No reply needed."
                        to-old))
         (should (string-match-p "you are two" to-new))
         (should (string-match-p "herdr agent prompt" to-new))
-        (should (string-match-p "^  one " to-new))))))
+        (should (string-match-p "^  w1:p1 +one " to-new))))))
 
 (ert-deftest herdr-herd-the-roster-carries-what-protocol-functions-add ()
   (let ((entry (herdr-herd-tests--entry "/tmp/projects/memex/" "index"
-                                        :name "one" :label "herd:refactor"))
+                                        :name "one" :herd "refactor"))
         (herdr-herd-protocol-functions
          (list (lambda (herd) (format "Extra about %s." (cdr herd)))
                #'ignore)))
@@ -271,10 +255,10 @@ and `:on', the herdr session the agent runs on."
 (ert-deftest herdr-herd-leaving-tells-the-others-one-line ()
   (let ((one (herdr-herd-tests--entry "/tmp/projects/memex/" "index"
                                       :name "one" :session "s1" :pane "w1:p1"
-                                      :label "herd:refactor"))
+                                      :herd "refactor"))
         (two (herdr-herd-tests--entry "/tmp/projects/nmnm/" "nmnm"
                                       :name "two" :session "s2" :pane "w2:p1"
-                                      :label "herd:refactor")))
+                                      :herd "refactor")))
     (herdr-herd-tests--with-stubs (list one two)
       (herdr-herd-remove two)
       (should (equal (list (cons (herdr--entry-target one)
@@ -284,39 +268,39 @@ and `:on', the herdr session the agent runs on."
 (ert-deftest herdr-herd-announcing-tells-every-member-of-its-peers ()
   (let ((one (herdr-herd-tests--entry "/tmp/projects/memex/" "index"
                                       :name "one" :session "s1" :pane "w1:p1"
-                                      :label "herd:refactor"))
+                                      :herd "refactor"))
         (two (herdr-herd-tests--entry "/tmp/projects/nmnm/" "nmnm"
                                       :name "two" :session "s2" :pane "w2:p1"
-                                      :label "herd:refactor")))
+                                      :herd "refactor")))
     (herdr-herd-tests--with-stubs (list one two)
       (herdr-herd-announce '("alpha" . "refactor"))
       (let ((texts (mapcar #'cdr herdr-herd-tests--prompts)))
         (should (equal 2 (length texts)))
         (should (seq-find (lambda (text)
                             (and (string-match-p "you are one" text)
-                                 (string-match-p "^  two " text)))
+                                 (string-match-p "^  w2:p1 +two " text)))
                           texts))
         (should (seq-find (lambda (text)
                             (and (string-match-p "you are two" text)
-                                 (string-match-p "^  one " text)))
+                                 (string-match-p "^  w1:p1 +one " text)))
                           texts))))))
 
 (ert-deftest herdr-herd-the-roster-tells-a-member-the-raw-cli-form ()
   (let ((one (herdr-herd-tests--entry "/tmp/projects/memex/" "index"
-                                      :name "one" :label "herd:refactor")))
+                                      :name "one" :herd "refactor")))
     (herdr-herd-tests--with-stubs (list one)
       (herdr-herd-announce '("alpha" . "refactor"))
       (let ((text (cdr (car herdr-herd-tests--prompts))))
-        (should (string-match-p "herdr pane rename" text))
+        (should (string-match-p "herdr pane report-metadata" text))
         (should (string-match-p "herdr agent prompt" text))))))
 
 (ert-deftest herdr-herd-announcing-skips-an-agent-mid-turn ()
   (let ((busy (herdr-herd-tests--entry "/tmp/projects/memex/" "index"
                                        :name "one" :session "s1" :pane "w1:p1"
-                                       :status "working" :label "herd:refactor"))
+                                       :status "working" :herd "refactor"))
         (idle (herdr-herd-tests--entry "/tmp/projects/nmnm/" "nmnm"
                                        :name "two" :session "s2" :pane "w2:p1"
-                                       :label "herd:refactor")))
+                                       :herd "refactor")))
     (herdr-herd-tests--with-stubs (list busy idle)
       (herdr-herd-announce '("alpha" . "refactor"))
       (should (equal 1 (length herdr-herd-tests--prompts)))
@@ -326,10 +310,10 @@ and `:on', the herdr session the agent runs on."
 (ert-deftest herdr-herd-sending-tells-sent-functions-who-got-what ()
   (let ((idle (herdr-herd-tests--entry "/tmp/projects/memex/" "index"
                                        :name "one" :session "s1" :pane "w1:p1"
-                                       :label "herd:refactor"))
+                                       :herd "refactor"))
         (busy (herdr-herd-tests--entry "/tmp/projects/nmnm/" "nmnm"
                                        :name "two" :session "s2" :pane "w2:p1"
-                                       :status "working" :label "herd:refactor"))
+                                       :status "working" :herd "refactor"))
         (seen nil))
     (herdr-herd-tests--with-stubs (list idle busy)
       (let ((herdr-herd-sent-functions
@@ -341,29 +325,31 @@ and `:on', the herdr session the agent runs on."
 (ert-deftest herdr-herd-broadcast-reaches-only-the-idle-members ()
   (let ((idle (herdr-herd-tests--entry "/tmp/projects/memex/" "index"
                                        :name "one" :session "s1" :pane "w1:p1"
-                                       :label "herd:refactor"))
+                                       :herd "refactor"))
         (busy (herdr-herd-tests--entry "/tmp/projects/nmnm/" "nmnm"
                                        :name "two" :session "s2" :pane "w2:p1"
-                                       :status "blocked" :label "herd:refactor")))
+                                       :status "blocked" :herd "refactor")))
     (herdr-herd-tests--with-stubs (list idle busy)
       (herdr-herd-broadcast '("alpha" . "refactor") "ping")
       (should (equal '("ping") (mapcar #'cdr herdr-herd-tests--prompts))))))
 
 ;;;; Dissolving
 
-(ert-deftest herdr-herd-dissolving-clears-every-member-s-label ()
+(ert-deftest herdr-herd-dissolving-clears-every-member-s-tokens ()
   (let ((one (herdr-herd-tests--entry "/tmp/projects/memex/" "index"
                                       :name "one" :session "s1" :pane "w1:p1"
-                                      :label "herd:refactor"))
+                                      :herd "refactor"))
         (two (herdr-herd-tests--entry "/tmp/projects/nmnm/" "nmnm"
                                       :name "two" :session "s2" :pane "w2:p1"
-                                      :label "herd:refactor keep me")))
+                                      :herd "refactor")))
     (herdr-herd-tests--with-stubs (list one two)
       (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
         (herdr-herd-dissolve '("alpha" . "refactor")))
-      (should (equal '(("w1:p1" . nil) ("w2:p1" . "keep me"))
-                     (sort herdr-herd-tests--renames
-                           (lambda (a b) (string< (car a) (car b)))))))))
+      (should (equal '(("w1:p1" (herd . ""))
+                       ("w2:p1" (herd . "")))
+                     (sort herdr-herd-tests--reports
+                           (lambda (a b) (string< (car a) (car b))))))
+      (should-not herdr-herd-tests--renames))))
 
 
 ;;;; The session a herd lives on
@@ -379,9 +365,9 @@ and `:on', the herdr session the agent runs on."
   "`herdr agent prompt' reaches one server, so a member on another session
 could neither be reached nor reach back."
   (let ((here (herdr-herd-tests--entry "/tmp/projects/memex/" "a" :name "one"
-                                       :session "s1" :label "herd:refactor"))
+                                       :session "s1" :herd "refactor"))
         (there (herdr-herd-tests--entry "/tmp/projects/nmnm/" "b" :name "two"
-                                        :session "s2" :label "herd:refactor"
+                                        :session "s2" :herd "refactor"
                                         :on "beta")))
     (herdr-herd-tests--with-stubs (list here there)
       (should (equal 2 (length (herdr-herds))))
@@ -394,9 +380,9 @@ could neither be reached nor reach back."
 
 (ert-deftest herdr-herd-names-are-those-of-one-session ()
   (let ((here (herdr-herd-tests--entry "/tmp/projects/memex/" "a" :name "one"
-                                       :session "s1" :label "herd:here"))
+                                       :session "s1" :herd "here"))
         (there (herdr-herd-tests--entry "/tmp/projects/nmnm/" "b" :name "two"
-                                        :session "s2" :label "herd:there"
+                                        :session "s2" :herd "there"
                                         :on "beta")))
     (herdr-herd-tests--with-stubs (list here there)
       (should (equal '("here") (herdr-herd-names "alpha")))
@@ -411,7 +397,7 @@ could neither be reached nor reach back."
                                         :on "beta")))
     (herdr-herd-tests--with-stubs (list here there)
       (herdr-herd-add (list here there) '("alpha" . "refactor"))
-      (should (equal '("w1:p1") (mapcar #'car herdr-herd-tests--renames))))))
+      (should (equal '("w1:p1") (mapcar #'car herdr-herd-tests--reports))))))
 
 (ert-deftest herdr-herd-live-agents-narrow-to-one-session ()
   (let ((here (herdr-herd-tests--entry "/tmp/projects/memex/" "a" :name "one"
@@ -426,7 +412,7 @@ could neither be reached nor reach back."
 
 (ert-deftest herdr-herd-the-session-comes-from-point-where-point-names-one ()
   (let ((entry (herdr-herd-tests--entry "/tmp/projects/memex/" "a" :name "one"
-                                        :label "herd:refactor")))
+                                        :herd "refactor")))
     (cl-letf (((symbol-function 'herdr-herd--section-value)
                (lambda (type)
                  (when (eq type 'herdr-status-agent) entry)))

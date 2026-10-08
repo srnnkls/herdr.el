@@ -1310,19 +1310,23 @@ key it wants is free, so taking either silently costs the transcript entry."
 
 ;;;; Herds
 
-(defmacro herdr-status-tests--with-herds (labels &rest body)
-  "Run BODY with LABELS on the fixture agents, keyed by agent name.
-Herd membership is the pane label herdr reports, so a herd is set up by
-labelling the panes the fixture agents occupy."
+(defmacro herdr-status-tests--with-herds (herds &rest body)
+  "Run BODY with the fixture agents in HERDS, herd names keyed by agent name.
+Herd membership is the pane tokens herdr reports, so a herd is set up by
+giving the panes the fixture agents occupy a herd."
   (declare (indent 1) (debug (form body)))
   `(let ((entries (herdr-status-tests--entries))
-         (table ,labels))
+         (table ,herds))
      (cl-letf (((symbol-function 'herdr-status-tests--entries)
                 (lambda ()
                   (mapcar (lambda (entry)
-                            (let ((label (cdr (assoc (alist-get 'name entry)
-                                                     table))))
-                              (cons (cons 'pane_label label) entry)))
+                            (if-let* ((herd (cdr (assoc (alist-get 'name entry)
+                                                        table))))
+                                (cons (cons 'tokens
+                                            (cons (cons 'herd herd)
+                                                  (alist-get 'tokens entry)))
+                                      entry)
+                              entry))
                           entries))))
        ,@body)))
 
@@ -1342,7 +1346,7 @@ labelling the panes the fixture agents occupy."
 
 (ert-deftest herdr-status-draws-a-herd-with-its-live-members ()
   (herdr-status-tests--with-herds
-      '(("api-review" . "herd:refactor") ("docs" . "herd:refactor"))
+      '(("api-review" . "refactor") ("docs" . "refactor"))
     (herdr-status-tests--with-dashboard
       (let ((herds (herdr-status-tests--section-text "Herds 1")))
         (should (string-match-p "refactor  · 2 members" herds))
@@ -1355,7 +1359,7 @@ labelling the panes the fixture agents occupy."
     (buffer-substring-no-properties (oref section start) (oref section end))))
 
 (ert-deftest herdr-status-leaves-an-unlabelled-agent-out-of-every-herd ()
-  (herdr-status-tests--with-herds '(("api-review" . "herd:refactor"))
+  (herdr-status-tests--with-herds '(("api-review" . "refactor"))
     (herdr-status-tests--with-dashboard
       (should (string-match-p "refactor  · 1 member"
                               (herdr-status-tests--section-text "Herds 1")))
@@ -1364,15 +1368,76 @@ labelling the panes the fixture agents occupy."
         (should-not (string-match-p "beta-work" herd))
         (should-not (string-match-p "docs" herd))))))
 
-(ert-deftest herdr-status-reads-a-herd-past-the-rest-of-a-pane-label ()
-  (herdr-status-tests--with-herds
-      '(("api-review" . "herd:refactor  a label of its own"))
+(ert-deftest herdr-status-resume-reads-a-past-session-of-the-row-s-directory ()
+  (herdr-status-tests--with-dashboard
+    (let ((started (herdr-agent--make-session :pane "%8"))
+          read starts)
+      (cl-letf (((symbol-function 'herdr-agent-read-session)
+                 (lambda (kind directory) (push (list kind directory) read) "past"))
+                ((symbol-function 'herdr-agent-start-session)
+                 (lambda (kind name &rest arguments)
+                   (push (list kind name herdr-session
+                               (plist-get arguments :project-root)
+                               (plist-get arguments :args)
+                               (plist-get arguments :wait))
+                         starts)
+                   started))
+                ((symbol-function 'herdr-status-refresh) #'ignore))
+        (should (re-search-forward "⌬ codex" nil t))
+        (herdr-status-resume (herdr-status--new-harness))
+        (should (equal read '(("codex" "/tmp/proj/"))))
+        (should (equal starts '(("codex" nil "alpha" "/tmp/proj/"
+                                 ("resume" "past") nil))))))))
+
+(ert-deftest herdr-status-restart-resumes-the-agent-in-a-fresh-pane ()
+  (herdr-status-tests--with-herds '(("api-review" . "refactor"))
     (herdr-status-tests--with-dashboard
-      (should (string-match-p "refactor  · 1 member"
-                              (herdr-status-tests--section-text "Herds 1"))))))
+      (let ((started (herdr-agent--make-session :pane "%7"))
+            stopped starts enlisted)
+        (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
+                  ((symbol-function 'herdr-agent-stop)
+                   (lambda (target) (push target stopped)))
+                  ((symbol-function 'herdr-agent-start-session)
+                   (lambda (kind name &rest arguments)
+                     (push (list kind name herdr-session
+                                 (plist-get arguments :project-root)
+                                 (plist-get arguments :args)
+                                 (plist-get arguments :wait))
+                           starts)
+                     started))
+                  ((symbol-function 'herdr-herd-enlist)
+                   (lambda (session herd) (push (cons session herd) enlisted)))
+                  ((symbol-function 'herdr-status-refresh) #'ignore))
+          (goto-char (point-max))
+          (re-search-backward "api-review")
+          (herdr-status-restart)
+          (should (equal stopped '(("/tmp/alpha.sock" . "t1"))))
+          (should (equal starts
+                         '(("claude" "api-review" "alpha" "/tmp/proj/"
+                            ("--resume" "s1") nil))))
+          (should (equal enlisted `((,started "alpha" . "refactor")))))))))
+
+(ert-deftest herdr-status-new-agent-in-a-herd-s-section-joins-that-herd ()
+  (herdr-status-tests--with-herds '(("api-review" . "refactor"))
+    (herdr-status-tests--with-dashboard
+      (let ((started (herdr-agent--make-session :pane "w9:p1"))
+            enlisted)
+        (cl-letf (((symbol-function 'herdr-agent-start)
+                   (lambda (&rest _) started))
+                  ((symbol-function 'herdr-herd-enlist)
+                   (lambda (session herd) (push (cons session herd) enlisted)))
+                  ((symbol-function 'herdr-status-refresh) #'ignore))
+          (goto-char (oref (herdr-status-tests--herd-section "refactor") start))
+          (herdr-status-new-agent "claude")
+          (should (equal enlisted `((,started "alpha" . "refactor"))))
+          (goto-char (point-max))
+          (re-search-backward "api-review")
+          (should-not (herdr-herd--section-value 'herdr-status-herd))
+          (herdr-status-new-agent "claude")
+          (should (= (length enlisted) 1)))))))
 
 (ert-deftest herdr-status-keeps-a-herd-collapsed-across-a-refresh ()
-  (herdr-status-tests--with-herds '(("api-review" . "herd:refactor"))
+  (herdr-status-tests--with-herds '(("api-review" . "refactor"))
     (herdr-status-tests--with-dashboard
       (should-not (oref (herdr-status-tests--herd-section "refactor") hidden))
       (magit-section-hide (herdr-status-tests--herd-section "refactor"))
@@ -1527,7 +1592,7 @@ Emacs releases the attachment first and the two go together."
     (setf (alist-get 'foreground_cwd (nth 2 (alist-get 'panes snapshot)))
           "/tmp/proj/src/")
     (herdr-status-tests--with-herds
-        '(("api-review" . "herd:local") ("beta-work" . "herd:foreign"))
+        '(("api-review" . "local") ("beta-work" . "foreign"))
       (herdr-status-tests--with-dashboard
         (save-window-excursion
           (let ((herdr-status-buffer-name (buffer-name))
@@ -1687,6 +1752,18 @@ Emacs releases the attachment first and the two go together."
             (should (eq herdr-status--deferred 'cached)))
         (when herdr-status--deferred-timer
           (cancel-timer herdr-status--deferred-timer))))))
+
+(ert-deftest herdr-status-new-agent-starts-from-outside-the-dashboard ()
+  (with-temp-buffer
+    (let (started)
+      (cl-letf (((symbol-function 'herdr-agent-start)
+                 (lambda (kind _name &rest arguments)
+                   (setq started (list kind (plist-get arguments :project-root)
+                                       (plist-get arguments :args) herdr-session))
+                   'session)))
+        (should (eq (herdr-status-new-agent "claude" "/tmp/wt/" '("--x") "beta")
+                    'session)))
+      (should (equal started '("claude" "/tmp/wt/" ("--x") "beta"))))))
 
 (provide 'herdr-status-tests)
 ;;; herdr-status-tests.el ends here

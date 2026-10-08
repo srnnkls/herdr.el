@@ -1536,6 +1536,8 @@ are bound by that package and unbound where it is not installed."
   "K" #'herdr-status-close-pane
   "d" #'herdr-status-detach
   "x" #'herdr-status-stop
+  "X" #'herdr-status-restart
+  "r" #'herdr-status-resume
   "f" #'herdr-status-filter
   "O" #'herdr-status-sort
   "h" #'herdr-herd-dispatch
@@ -2118,38 +2120,68 @@ does."
 
 (defun herdr-status-new-agent-session ()
   "Return the herdr session a new agent from point opens on.
-A row at point names its own.  Away from one the session is read when
-the dashboard is global, or when more than one session is running;
-otherwise it is the dashboard's."
+A row at point names its own and a herd's section its herd's.  Away from
+both the session is read when the dashboard is global, or when more than
+one session is running; otherwise it is the dashboard's."
   (if-let* ((entry (herdr-status-entry-at-point)))
       (alist-get 'session entry)
-    (if (or (null herdr-status--project-root)
-            (> (seq-count (lambda (record) (alist-get 'reachable record))
-                          herdr-status--session-records)
-               1))
-        (herdr-read-session "Start in herdr session: " herdr-session)
-      herdr-session)))
+    (or (car (herdr-herd--section-value 'herdr-status-herd))
+        (if (or (null herdr-status--project-root)
+                (> (seq-count (lambda (record) (alist-get 'reachable record))
+                              herdr-status--session-records)
+                   1))
+            (herdr-read-session "Start in herdr session: " herdr-session)
+          herdr-session))))
 
-(defun herdr-status-new-agent (&optional kind root args session)
+(defun herdr-status-new-agent (&optional kind root args session resume)
   "Open a herdr pane and start KIND in it, and return its session.
 The row at point says which directory to work in; away from a row the
 dashboard's own project scope answers.  SESSION is the herdr session to
 open the pane on, by default `herdr-status-new-agent-session'.  ROOT
-works elsewhere instead, and ARGS follow KIND's start arguments.  KIND
-defaults to the harness at point, then to `herdr-status-new-harness'."
+works elsewhere instead, and ARGS follow KIND's start arguments.  Inside
+a herd's section the agent joins that herd.  KIND defaults to the
+harness at point, then to `herdr-status-new-harness'.  RESUME non-nil
+reads one of KIND's sessions started in that directory and resumes it
+instead of starting afresh."
   (interactive)
   (let* ((entry (herdr-status-entry-at-point))
+         (herd (herdr-herd--section-value 'herdr-status-herd))
          (kind (or kind (herdr-status--new-harness)))
          (root (or root
                    (and entry (herdr-entry-directory entry))
                    herdr-status--project-root
                    default-directory))
          (session (or session (herdr-status-new-agent-session)))
+         (reference (and resume (herdr-agent-read-session kind root)))
          (started (herdr-with-session session
-                    (herdr-agent-start kind nil :project-root root :args args :wait nil))))
-    (herdr-status-refresh)
-    (message "Started %s in %s" kind (abbreviate-file-name root))
+                    (if reference
+                        (herdr-agent-start-session
+                         kind nil :project-root root :wait nil
+                         :args (herdr-agent--native-args kind 'resume reference))
+                      (herdr-agent-start kind nil :project-root root :args args
+                                         :wait nil)))))
+    (when herd (herdr-herd-enlist started herd))
+    (when (derived-mode-p 'herdr-status-mode)
+      (herdr-status-refresh))
+    (message "%s %s in %s%s" (if reference "Resumed" "Started") kind
+             (abbreviate-file-name root)
+             (if herd
+                 (format " in herd %s, pane %s" (herdr-herd-label herd)
+                         (herdr-agent-session-pane started))
+               ""))
     started))
+
+(defun herdr-status-resume (kind)
+  "Resume one of KIND's past sessions in a new herdr pane, read with completion.
+The sessions offered are the ones started in the directory the row at
+point works in, and the pane opens as `herdr-status-new-agent' opens
+one.  KIND is the harness at point, or read with a prefix argument."
+  (interactive
+   (list (if current-prefix-arg
+             (completing-read "Harness: " (mapcar #'car herdr-agent-harnesses)
+                              nil t nil nil (herdr-status--new-harness))
+           (herdr-status--new-harness))))
+  (herdr-status-new-agent kind nil nil nil t))
 
 (defun herdr-status-new-agent-of-harness (kind)
   "Open a herdr pane and start the harness KIND in it, read with completion."
@@ -2216,6 +2248,33 @@ running."
       (herdr-agent-stop (herdr--entry-target entry))
       (herdr-status-refresh)
       (message "Stopped %s" label))))
+
+(defun herdr-status-restart ()
+  "Restart the agent at point in a fresh pane, resuming its conversation.
+Its pane closes, and its harness resumes the same session in a new pane,
+in the same directory, on the same herdr session and under the same
+name; an agent in a herd rejoins it there."
+  (interactive)
+  (let* ((entry (herdr-status--entry-at-point))
+         (label (herdr--entry-label entry))
+         (kind (alist-get 'agent entry))
+         (reference (alist-get 'value (alist-get 'agent_session entry)))
+         (herd (herdr-herd-of-entry entry)))
+    (unless reference
+      (user-error "%s reports no session to resume" label))
+    (when (yes-or-no-p (format "Restart %s? " label))
+      (when-let* ((session (herdr-status--attachment-at-point)))
+        (herdr-agent-detach session))
+      (herdr-agent-stop (herdr--entry-target entry))
+      (let ((started (herdr-with-session (alist-get 'session entry)
+                       (herdr-agent-start-session
+                        kind (alist-get 'name entry)
+                        :project-root (herdr-entry-directory entry)
+                        :args (herdr-agent--native-args kind 'resume reference)
+                        :wait nil))))
+        (when herd (herdr-herd-enlist started herd)))
+      (herdr-status-refresh)
+      (message "Restarted %s" label))))
 
 (defun herdr-status-detach ()
   "Let go of the agent at point, leaving its herdr pane running.
@@ -2400,10 +2459,12 @@ Every suffix here is bound directly in `herdr-status-mode-map' as well."
     ("n" herdr-status-new-agent
      :description (lambda () (format "new %s" (herdr-status--new-harness))))
     ("N" "new, choosing the harness" herdr-status-new-agent-of-harness)
+    ("r" "resume a past session" herdr-status-resume)
     ("P" "prompt" herdr-status-prompt)
     ("R" "rename" herdr-status-rename)
     ("d" "detach, pane runs on" herdr-status-detach)
-    ("x" "stop, pane closes" herdr-status-stop)]
+    ("x" "stop, pane closes" herdr-status-stop)
+    ("X" "restart, resuming in a fresh pane" herdr-status-restart)]
    ["List"
     ("f" "filter" herdr-status-filter)
     ("O" "sort" herdr-status-sort)

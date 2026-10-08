@@ -99,12 +99,14 @@ While a message is being written:
 | `herdr-status-refresh` | `g` | fetch every server and redraw |
 | `herdr-status-visit` | `RET` | show the row's agent or pane, attaching it; attach the whole session on a session row; `C-u` also moves herdr's focus to the agent |
 | `herdr-status-visit-other-window` | `o` | show the row's agent or pane in another window |
-| `herdr-status-new-agent` | `n` | start the harness at point, or `herdr-status-new-harness`, where the row works |
+| `herdr-status-new-agent` | `n` | start the harness at point, or `herdr-status-new-harness`, where the row works; inside a herd's section the agent joins that herd |
 | `herdr-status-new-agent-of-harness` | `N` | as `n`, reading the harness |
 | `herdr-status-prompt` | `P` | send a prompt to the agent at point |
 | `herdr-status-rename` | `R` | rename the agent at point, or relabel the pane at point |
 | `herdr-status-detach` | `d` | let go of the agent's terminal and buffer; the pane runs on |
 | `herdr-status-stop` | `x` | stop the agent at point, after confirmation |
+| `herdr-status-restart` | `X` | stop the agent at point and resume its conversation in a fresh pane; a herd member rejoins its herd |
+| `herdr-status-resume` | `r` | read one of the harness's past sessions started in the row's directory, by title and date, and resume it in a new pane; `C-u` reads the harness |
 | `herdr-status-close-pane` | `K` | close the pane at point and any agent in it, after confirmation |
 | `herdr-status-toggle-expanded` | `e` | open every row `herdr-status-expanded-states` names, or close them all |
 | `herdr-status-toggle-details` | `t` | show or hide agent metadata under expanded rows |
@@ -182,6 +184,8 @@ on the agent at point; elsewhere they read one.
 | `R` | `herdr-status-rename` |
 | `d` | `herdr-status-detach` |
 | `x` | `herdr-status-stop` |
+| `X` | `herdr-status-restart` |
+| `r` | `herdr-status-resume` |
 | `K` | `herdr-status-close-pane` |
 | `e` | `herdr-status-toggle-expanded` |
 | `t` | `herdr-status-toggle-details` |
@@ -276,7 +280,7 @@ is `$XDG_CONFIG_HOME/herdr/sessions/NAME/herdr.sock`; `XDG_CONFIG_HOME` defaults
 | Option | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `herdr-message-read-function` | function | `herdr-message-read-minibuffer` | where a message is written; `herdr-message-read-field` writes it in a cera field |
-| `herdr-message-show-agent` | `focus`, t or nil | `focus` | after sending: show the agent and go to its prompt, show it, or leave it |
+| `herdr-message-show-agent` | `focus`, t or nil | t | after sending: show the agent and go to its prompt, show it, or leave it |
 
 ### Dashboard options
 
@@ -329,13 +333,14 @@ is `$XDG_CONFIG_HOME/herdr/sessions/NAME/herdr.sock`; `XDG_CONFIG_HOME` defaults
 
 | Option | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `herdr-herd-label-prefix` | string | `"herd:"` | marks the herd at the head of a pane label |
+| `herdr-agent-placement` | `workspace` or `tab` | `workspace` | whether an agent started from Emacs gets a herdr workspace of its own or a tab in the project's workspace |
+| `herdr-agent-claude-projects-directory` | directory | `"~/.claude/projects/"` | where Claude Code keeps its sessions, read by resume |
+| `herdr-agent-codex-directory` | directory | `"~/.codex/"` | where Codex keeps its sessions and their index |
+| `herdr-agent-session-limit` | natnum | 200 | how many recent sessions of a harness resume looks through |
 | `herdr-herd-notice-prefix` | string | `"[herd "` | opens a notice to members |
 | `herdr-herd-busy-states` | list of strings | `("working" "blocked")` | states herd commands do not prompt into |
 | `herdr-herd-protocol` | string | the protocol text | what a joining agent is told |
 | `herdr-herd-command` | function, file or nil | finds `bin/herdr-herd` beside the package | the helper path agents are told; nil tells them none |
-| `herdr-herd-name-stopwords` | list of strings | articles, prepositions, commit-type words | words dropped when a name is derived from a title |
-| `herdr-herd-name-title-words` | natnum | 2 | title words a derived name keeps |
 
 ## Faces
 
@@ -371,10 +376,12 @@ is `$XDG_CONFIG_HOME/herdr/sessions/NAME/herdr.sock`; `XDG_CONFIG_HOME` defaults
 | `herdr-agent-event-functions` | server key, event type, event data | after each pane event |
 | `herdr-send-context-functions` | the agent entry | to provide context; the first string wins |
 | `herdr-message-compose-functions` | target, message, context | to build the prompt; the first string wins |
+| `herdr-message-shown-functions` | the agent target, in the buffer written from | to say that buffer already shows the agent, which leaves its terminal alone |
 | `herdr-status-sections-functions` | agents, widths, tab index, workspace index | inside the dashboard, above `Recent` |
 | `herdr-status-refresh-hook` | nothing, in the dashboard | after a redraw |
 | `herdr-status-redraw-inhibit-functions` | nothing, in the dashboard | before a redraw; any non-nil answer defers it |
 | `herdr-herd-protocol-functions` | the herd | when a member joins; return a paragraph to add |
+| `herdr-agent-ready-functions` | the agent session | once an agent started without waiting is ready for a prompt |
 | `herdr-herd-sent-functions` | the entry, the text | after each prompt a herd command sends |
 
 ## Variables
@@ -452,6 +459,7 @@ recent one.
 | `herdr-status-cached-agents`, `herdr-status-visible-agents` | the last redraw's agents, all or filtered |
 | `herdr-status-harness-glyph` | a harness's vendor mark |
 | `herdr-herds`, `herdr-herd-member-entries`, `herdr-herd-of-entry` | herds and their members |
+| `herdr-herd-enlist` | put an agent being started in a herd and welcome it once it is ready |
 | `herdr-herd-notice` | a one-line notice to a herd member |
 | `herdr-herd-label-token`, `herdr-herd-label-with-token` | read and write `PREFIX:VALUE` words in a pane label |
 

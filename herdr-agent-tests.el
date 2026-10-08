@@ -4,8 +4,12 @@
 (require 'cl-lib)
 (require 'json)
 (require 'herdr)
+(defvar ghostel--input-mode)
 (require 'herdr-api)
 (require 'herdr-agent nil t)
+
+;; The startup fixtures stub tab creation, so they start agents in tabs.
+(setq herdr-agent-placement 'tab)
 
 (defconst herdr-agent-tests--root
   (file-name-directory (or load-file-name buffer-file-name)))
@@ -2409,17 +2413,21 @@ functions scheduled, and `refusals', how many renames herdr turns down."
 (ert-deftest herdr-agent-start-without-waiting-drops-the-placeholder-once-herdr-allows ()
   (herdr-agent-tests--with-placeholder-server
     (setq refusals 1)
-    (let ((session (herdr-agent-start "claude" nil :project-root root
-                                      :attach nil :wait nil)))
+    (let* ((ready nil)
+           (herdr-agent-ready-functions (list (lambda (session) (push session ready))))
+           (session (herdr-agent-start "claude" nil :project-root root
+                                       :attach nil :wait nil)))
       (push session sessions)
       (should-not renames)
       (should (herdr-agent-session-placeholder session))
       (funcall (pop timers))
       (should (= (length renames) 1))
       (should (herdr-agent-session-placeholder session))
+      (should-not ready)
       (funcall (pop timers))
       (should (= (length renames) 2))
       (should-not (herdr-agent-session-placeholder session))
+      (should (equal ready (list session)))
       (should-not timers))))
 
 (ert-deftest herdr-agent-start-preflights-names-on-the-resolved-project-server ()
@@ -2702,6 +2710,123 @@ functions scheduled, and `refusals', how many renames herdr turns down."
     (should (equal (herdr-default-send-context nil)
                    "Emacs context\nbuffer: herdr context scratch:1\nmode: fundamental-mode\n\n```\nscratch\n```"))))
 
+(ert-deftest herdr-send-context-names-a-terminal-without-lines ()
+  (with-temp-buffer
+    (rename-buffer "herdr context terminal" t)
+    (setq herdr-terminal-id "term_1")
+    (insert "screen\nrow")
+    (should (equal (herdr-default-send-context nil)
+                   "Emacs context\nbuffer: herdr context terminal\nmode: fundamental-mode\n\n```\nrow\n```"))))
+
+(ert-deftest herdr-message-read-writes-a-field-in-a-terminal-it-streams-into ()
+  (let ((herdr-message-history nil)
+        (herdr-message-read-function #'herdr-message-read-field)
+        (target '("/servers/a.sock" . "shared"))
+        fields)
+    (cl-letf (((symbol-function 'herdr-agent-prompt) #'ignore)
+              ((symbol-function 'herdr-sessions) (lambda () nil))
+              ((symbol-function 'cera-read)
+               (lambda (_table &optional _initial bounds _face)
+                 (push bounds fields)
+                 "from the field"))
+              ((symbol-function 'read-string)
+               (lambda (&rest _) (error "Asked in the minibuffer"))))
+      (with-temp-buffer
+        (insert "prompt")
+        (setq herdr-terminal-id "term_1")
+        (let ((process (make-process :name "herdr-terminal-field-test"
+                                     :buffer (current-buffer)
+                                     :command '("cat") :noquery t)))
+          (unwind-protect
+              (herdr-message--read target nil)
+            (delete-process process)))))
+    (should (equal fields '((1 . 7))))))
+
+(ert-deftest herdr-message-read-writes-a-field-over-a-frozen-ghostel-screen ()
+  (let ((herdr-message-history nil)
+        (herdr-message-read-function #'herdr-message-read-field)
+        (target '("/servers/a.sock" . "shared"))
+        frozen-while-reading context)
+    (cl-letf (((symbol-function 'herdr-agent-prompt) #'ignore)
+              ((symbol-function 'herdr-sessions) (lambda () nil))
+              ((symbol-function 'ghostel-copy-mode)
+               (lambda () (setq ghostel--input-mode 'copy)))
+              ((symbol-function 'ghostel-readonly-exit)
+               (lambda () (setq ghostel--input-mode 'semi-char)))
+              ((symbol-function 'cera-read)
+               (lambda (&rest _)
+                 (setq frozen-while-reading ghostel--input-mode)
+                 "from the field"))
+              ((symbol-function 'read-string)
+               (lambda (&rest _) (error "Asked in the minibuffer"))))
+      (with-temp-buffer
+        (rename-buffer "*ghostel shell*" t)
+        (setq-local major-mode 'ghostel-mode)
+        (setq-local ghostel--input-mode 'semi-char)
+        (insert "$ make")
+        (setq context (herdr-default-send-context nil))
+        (let ((process (make-process :name "herdr-ghostel-field-test"
+                                     :buffer (current-buffer)
+                                     :command '("cat") :noquery t)))
+          (unwind-protect
+              (herdr-message--read target nil)
+            (delete-process process)))
+        (should (eq ghostel--input-mode 'semi-char))))
+    (should (eq frozen-while-reading 'copy))
+    (should (string-prefix-p "Emacs context\nbuffer: *ghostel shell*\nmode:" context))))
+
+(ert-deftest herdr-agent-lists-claude-sessions-of-a-directory-by-title ()
+  (let* ((root (make-temp-file "herdr-claude" t))
+         (herdr-agent-claude-projects-directory root)
+         (folder (expand-file-name "-tmp-proj-app" root)))
+    (unwind-protect
+        (progn
+          (make-directory folder)
+          (with-temp-file (expand-file-name "old.jsonl" folder)
+            (insert "{\"type\":\"ai-title\",\"aiTitle\":\"First\"}\n"))
+          (set-file-times (expand-file-name "old.jsonl" folder) '(0 1))
+          (with-temp-file (expand-file-name "new.jsonl" folder)
+            (insert "{\"type\":\"ai-title\",\"aiTitle\":\"Draft\"}\n"
+                    "{\"type\":\"user\"}\n"
+                    "{\"type\":\"ai-title\",\"aiTitle\":\"Probeläufe \\\"quoted\\\"\"}\n"))
+          (should (equal (mapcar (lambda (session) (seq-take session 2))
+                                 (herdr-agent-claude-sessions "/tmp/proj.app/"))
+                         '(("new" "Probeläufe \"quoted\"") ("old" "First"))))
+          (should-not (herdr-agent-claude-sessions "/tmp/elsewhere")))
+      (delete-directory root t))))
+
+(ert-deftest herdr-agent-lists-codex-sessions-started-in-a-directory ()
+  (let* ((root (make-temp-file "herdr-codex" t))
+         (herdr-agent-codex-directory root)
+         (day (expand-file-name "sessions/2026/10/07" root)))
+    (unwind-protect
+        (progn
+          (make-directory day t)
+          (with-temp-file (expand-file-name "session_index.jsonl" root)
+            (insert "{\"id\":\"a1\",\"thread_name\":\"Old name\"}\n"
+                    "{\"id\":\"a1\",\"thread_name\":\"New name\"}\n"))
+          (with-temp-file (expand-file-name "rollout-2026-10-07T01-00-00-a1.jsonl" day)
+            (insert "{\"type\":\"session_meta\",\"payload\":{\"id\":\"a1\",\"cwd\":\"/tmp/proj/\"}}\n"))
+          (with-temp-file (expand-file-name "rollout-2026-10-07T02-00-00-b2.jsonl" day)
+            (insert "{\"type\":\"session_meta\",\"payload\":{\"id\":\"b2\",\"cwd\":\"/tmp/other\"}}\n"))
+          (should (equal (mapcar (lambda (session) (seq-take session 2))
+                                 (herdr-agent-codex-sessions "/tmp/proj"))
+                         '(("a1" "New name")))))
+      (delete-directory root t))))
+
+(ert-deftest herdr-agent-reads-a-session-by-title-or-asks-for-a-reference ()
+  (let ((herdr-agent-harnesses
+         `(("claude" :arguments ((resume "--resume" :reference))
+            :sessions ,(lambda (_directory)
+                         (list (list "abcdef123456" "Fix the parser" '(0 0)))))
+           ("pi" :arguments ((resume "--session" :reference))))))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt table &rest _)
+                 (car (all-completions "" table))))
+              ((symbol-function 'read-string) (lambda (&rest _) "typed")))
+      (should (equal "abcdef123456" (herdr-agent-read-session "claude" "/tmp/")))
+      (should (equal "typed" (herdr-agent-read-session "pi" "/tmp/"))))))
+
 (ert-deftest herdr-message-composes-text-and-file-context-and-records-history ()
   (let ((herdr-message-history nil)
         (herdr-send-context-functions nil)
@@ -2967,6 +3092,42 @@ functions scheduled, and `refusals', how many renames herdr turns down."
                     (should-not (eq (window-buffer (selected-window)) terminal))
                     (should-not herdr-message--in-place)
                     (should (= (length prompted) 1))))
+              (delete-process process))))
+      (kill-buffer terminal))))
+
+(ert-deftest herdr-message-leaves-the-terminal-of-an-agent-the-buffer-shows ()
+  (let ((herdr-message-history nil)
+        (herdr-message-show-agent 'focus)
+        (herdr-message-read-function #'herdr-message-read-minibuffer)
+        (herdr-message-shown-functions
+         (list (lambda (target) (equal (cdr target) "shown"))))
+        (terminal (generate-new-buffer " *herdr shown agent*"))
+        prompted)
+    (unwind-protect
+        (cl-letf (((symbol-function 'herdr-agent-prompt) #'ignore)
+                  ((symbol-function 'herdr-sessions) (lambda () nil))
+                  ((symbol-function 'herdr-terminal-goto-prompt)
+                   (lambda (buffer) (push buffer prompted)))
+                  ((symbol-function 'read-string) (lambda (&rest _) "hello")))
+          (with-current-buffer terminal
+            (setq herdr-terminal-id "shown"
+                  herdr-terminal-server-key "/servers/a.sock"))
+          (let ((process (make-process :name "herdr-shown-agent" :buffer terminal
+                                       :command '("cat") :noquery t))
+                (target '("/servers/a.sock" . "shown")))
+            (unwind-protect
+                (save-window-excursion
+                  (delete-other-windows)
+                  (herdr-message--read target nil)
+                  (should-not (get-buffer-window terminal))
+                  (let ((herdr-message--agent-shown t))
+                    (with-current-buffer (herdr-message--edit target "draft" nil)
+                      (herdr-message-commit)))
+                  (should-not (get-buffer-window terminal))
+                  (should-not prompted)
+                  (setq herdr-message-shown-functions nil)
+                  (herdr-message--read target nil)
+                  (should (equal prompted (list terminal))))
               (delete-process process))))
       (kill-buffer terminal))))
 
@@ -3346,6 +3507,14 @@ functions scheduled, and `refusals', how many renames herdr turns down."
     (should-not (herdr-agent-screen-draft
                  (herdr-agent-tests--box (concat "\u276f" hard hard))))))
 
+(ert-deftest herdr-agent-a-sent-message-in-the-transcript-is-no-draft ()
+  "A screen caught before its prompt box is drawn shows only sent messages."
+  (let ((rule (make-string 40 ?─)))
+    (should-not (herdr-agent-screen-draft
+                 (string-join (list "❯ an earlier message" ""
+                                    "⏺ a reply to it" "" rule)
+                                "\n")))))
+
 (ert-deftest herdr-agent-an-empty-prompt-holds-no-draft ()
   (should-not (herdr-agent-screen-draft (herdr-agent-tests--box "\u276f ")))
   (should-not (herdr-agent-screen-draft "a screen with no prompt at all"))
@@ -3381,6 +3550,22 @@ A nil SCREEN stands for a session this Emacs holds no terminal for."
                 (should-not (herdr-agent--prompt-locally '("local" . "w1:p1") "a message"))))
   (should-not (herdr-agent-tests--sending nil
                 (should-not (herdr-agent--prompt-locally '("local" . "w1:p1") "a message")))))
+
+(ert-deftest herdr-agent-prompt-when-ready-prompts-only-its-own-agent-once ()
+  (let ((session (herdr-agent--make-session :server "srv" :terminal "term-1"
+                                            :kind "claude" :state 'attached))
+        (herdr-agent-ready-functions nil)
+        prompts)
+    (cl-letf (((symbol-function 'herdr-agent-prompt)
+               (lambda (target text) (push (list target text) prompts))))
+      (herdr-agent-prompt-when-ready session "line one\nline two")
+      (run-hook-with-args 'herdr-agent-ready-functions
+                          (herdr-agent--make-session :kind "claude"))
+      (should-not prompts)
+      (run-hook-with-args 'herdr-agent-ready-functions session)
+      (run-hook-with-args 'herdr-agent-ready-functions session))
+    (should (equal prompts '((("srv" . "term-1") "line one\nline two"))))
+    (should-not herdr-agent-ready-functions)))
 
 (provide 'herdr-agent-tests)
 ;;; herdr-agent-tests.el ends here

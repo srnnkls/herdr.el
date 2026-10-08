@@ -1,10 +1,12 @@
 #!/bin/sh
 # herdr-herd — read and change the herd an agent's pane belongs to.
 #
-# Membership is the pane's own manual label, as `herd:NAME' ahead of
-# whatever else the label says. Everything here is `herdr pane rename',
-# `herdr pane list' and `herdr agent prompt'; nothing is stored outside
-# herdr, and every command below can be typed by hand instead.
+# Membership is pane metadata: a member's pane carries the token `herd',
+# naming its herd, reported under the source `herdr-herd'. Neither the
+# pane's label nor the agent's name is touched, and peers are addressed by
+# pane id. Everything here is `herdr pane report-metadata', `herdr pane
+# list' and `herdr agent prompt'; nothing is stored outside herdr, and
+# every command below can be typed by hand instead.
 #
 # A pane argument defaults to $HERDR_PANE_ID, which herdr injects into
 # every pane it manages, so an agent addresses itself with no arguments.
@@ -12,7 +14,7 @@
 set -eu
 
 HERDR=${HERDR_BIN_PATH:-herdr}
-PREFIX=herd:
+SOURCE=herdr-herd
 
 die() {
 	printf '%s\n' "$*" >&2
@@ -23,16 +25,16 @@ usage() {
 	cat <<'EOF'
 usage: herdr-herd <command> [argument ...]
 
-  list                     every herd and the agents in it
-  members [<herd>]         the agents in <herd>, this pane's herd by default
-  peers                    the other agents in this pane's herd
+  list                     every herd and its members as pane, name, status
+  members [<herd>]         the members of <herd>, this pane's herd by default
+  peers                    the other members of this pane's herd
   of [<pane>]              the herd a pane is in
-  join <herd> [<pane>]     put a pane in <herd>, keeping the rest of its label
+  join <herd>              put this pane in <herd>
   leave [<pane>]           take a pane out of its herd
   say <message>            send <message> to every idle peer
-  tell <name> <message>    send <message> to one agent by name
+  tell <pane> <message>    send <message> to one member of this pane's herd
 
-A pane defaults to $HERDR_PANE_ID. Names come from `herdr agent list'.
+A pane defaults to $HERDR_PANE_ID.
 EOF
 }
 
@@ -46,89 +48,74 @@ require_pane() {
 	fi
 }
 
-# Read every agent as tab-separated PANE, NAME, HERD, STATUS, REST-OF-LABEL.
-# The label lives on the pane and the name on the agent, so both are read
-# and joined on the pane id.
+# Read every agent as tab-separated PANE, HERD, STATUS, NAME, where NAME
+# is the agent's name, else its terminal title, else its kind.
 agents() {
 	panes=$("$HERDR" pane list)
 	list=$("$HERDR" agent list)
-	PREFIX="$PREFIX" PANES="$panes" AGENTS="$list" python3 -c '
+	PANES="$panes" AGENTS="$list" python3 -c '
 import json, os
 
-prefix = os.environ["PREFIX"]
 panes = json.loads(os.environ["PANES"])["result"]["panes"]
 agents = json.loads(os.environ["AGENTS"])["result"]["agents"]
 
-labels = {p.get("pane_id"): p.get("label") for p in panes}
-
-def split(label):
-    if not label:
-        return None, ""
-    head, _, rest = label.partition(" ")
-    if head.startswith(prefix) and len(head) > len(prefix):
-        return head[len(prefix):], rest.strip()
-    return None, label
+herds = {p.get("pane_id"): (p.get("tokens") or {}).get("herd") or "" for p in panes}
 
 for agent in agents:
     pane = agent.get("pane_id") or ""
-    herd, rest = split(labels.get(pane))
+    name = (agent.get("name") or agent.get("terminal_title_stripped")
+            or agent.get("agent") or "?")
     print("\t".join([
         pane,
-        agent.get("name") or "",
-        herd or "",
+        herds.get(pane, ""),
         agent.get("agent_status") or "",
-        rest,
+        " ".join(name.split()),
     ]))
 '
 }
 
 herd_of() {
 	pane=$(require_pane "${1:-}")
-	agents | awk -F '\t' -v p="$pane" '$1 == p { print $3 }'
+	agents | awk -F '\t' -v p="$pane" '$1 == p { print $2 }'
 }
 
-rest_of() {
-	pane=$1
-	agents | awk -F '\t' -v p="$pane" '$1 == p { print $5 }'
+in_herd() {
+	herd=$(herd_of "")
+	[ -n "$herd" ] || die "this pane is in no herd"
+	printf '%s\n' "$herd"
 }
 
 cmd_list() {
-	agents | awk -F '\t' '$3 != "" { printf "%s\t%s\t%s\n", $3, ($2 == "" ? $1 : $2), $4 }' |
+	agents | awk -F '\t' '$2 != "" { printf "%s\t%s\t%s\t%s\n", $2, $1, $4, $3 }' |
 		sort |
 		awk -F '\t' '
 			$1 != herd { herd = $1; printf "%s\n", herd }
-			{ printf "  %-24s %s\n", $2, $3 }
+			{ printf "  %-10s %-32s %s\n", $2, $3, $4 }
 		'
 }
 
 cmd_members() {
-	herd=${1:-$(herd_of "")}
-	[ -n "$herd" ] || die "this pane is in no herd"
-	agents | awk -F '\t' -v h="$herd" '$3 == h { print ($2 == "" ? $1 : $2) }'
+	herd=${1:-}
+	[ -n "$herd" ] || herd=$(in_herd)
+	agents | awk -F '\t' -v h="$herd" '$2 == h { printf "%-10s %s\n", $1, $4 }'
 }
 
 cmd_peers() {
 	pane=$(require_pane "")
-	herd=$(herd_of "$pane")
-	[ -n "$herd" ] || die "this pane is in no herd"
+	herd=$(in_herd)
 	agents | awk -F '\t' -v h="$herd" -v p="$pane" \
-		'$3 == h && $1 != p { print ($2 == "" ? $1 : $2) }'
+		'$2 == h && $1 != p { printf "%-10s %s\n", $1, $4 }'
 }
 
 cmd_join() {
 	herd=${1:-}
-	[ -n "$herd" ] || die "usage: herdr-herd join <herd> [<pane>]"
+	[ -n "$herd" ] || die "usage: herdr-herd join <herd>"
 	case $herd in
 	*[[:space:]]*) die "a herd name carries no whitespace: $herd" ;;
-	"$PREFIX"*) die "a herd name does not start with $PREFIX: $herd" ;;
 	esac
-	pane=$(require_pane "${2:-}")
-	rest=$(rest_of "$pane")
-	if [ -n "$rest" ]; then
-		"$HERDR" pane rename "$pane" "$PREFIX$herd $rest" >/dev/null
-	else
-		"$HERDR" pane rename "$pane" "$PREFIX$herd" >/dev/null
-	fi
+	pane=$(require_pane "")
+	"$HERDR" pane report-metadata "$pane" --source "$SOURCE" \
+		--token "herd=$herd" >/dev/null
 	printf '%s is in herd %s\n' "$pane" "$herd"
 }
 
@@ -136,42 +123,36 @@ cmd_leave() {
 	pane=$(require_pane "${1:-}")
 	herd=$(herd_of "$pane")
 	[ -n "$herd" ] || die "$pane is in no herd"
-	rest=$(rest_of "$pane")
-	if [ -n "$rest" ]; then
-		"$HERDR" pane rename "$pane" "$rest" >/dev/null
-	else
-		"$HERDR" pane rename "$pane" --clear >/dev/null
-	fi
+	"$HERDR" pane report-metadata "$pane" --source "$SOURCE" \
+		--clear-token herd --clear-token herd_id >/dev/null
 	printf '%s left herd %s\n' "$pane" "$herd"
 }
 
 cmd_say() {
 	[ "$#" -gt 0 ] || die "usage: herdr-herd say <message>"
 	pane=$(require_pane "")
-	herd=$(herd_of "$pane")
-	[ -n "$herd" ] || die "this pane is in no herd"
-	me=$(agents | awk -F '\t' -v p="$pane" '$1 == p { print ($2 == "" ? $1 : $2) }')
+	herd=$(in_herd)
 	agents |
 		awk -F '\t' -v h="$herd" -v p="$pane" \
-			'$3 == h && $1 != p { print $2 "\t" $4 }' |
-		while IFS="$(printf '\t')" read -r name status; do
-			if [ -z "$name" ]; then
-				printf 'skipped an unnamed peer\n' >&2
-			elif [ "$status" = working ] || [ "$status" = blocked ]; then
-				printf 'skipped %s (%s)\n' "$name" "$status" >&2
+			'$2 == h && $1 != p { print $1 "\t" $3 }' |
+		while IFS="$(printf '\t')" read -r peer status; do
+			if [ "$status" = working ] || [ "$status" = blocked ]; then
+				printf 'skipped %s (%s)\n' "$peer" "$status" >&2
 			else
-				"$HERDR" agent prompt "$name" "[$herd] $me: $*" >/dev/null
-				printf 'told %s\n' "$name"
+				"$HERDR" agent prompt "$peer" "[$herd] $pane: $*" >/dev/null
+				printf 'told %s\n' "$peer"
 			fi
 		done
 }
 
 cmd_tell() {
-	[ "$#" -ge 2 ] || die "usage: herdr-herd tell <name> <message>"
-	name=$1
+	[ "$#" -ge 2 ] || die "usage: herdr-herd tell <pane> <message>"
+	peer=$1
 	shift
-	"$HERDR" agent prompt "$name" "$*" >/dev/null
-	printf 'told %s\n' "$name"
+	herd=$(in_herd)
+	[ "$(herd_of "$peer")" = "$herd" ] || die "$peer is not in herd $herd"
+	"$HERDR" agent prompt "$peer" "$*" >/dev/null
+	printf 'told %s\n' "$peer"
 }
 
 [ "${HERDR_ENV:-}" = 1 ] ||
@@ -190,7 +171,7 @@ list) cmd_list ;;
 members) cmd_members "${1:-}" ;;
 peers) cmd_peers ;;
 of) printf '%s\n' "$(herd_of "${1:-}")" ;;
-join) cmd_join "${1:-}" "${2:-}" ;;
+join) cmd_join "${1:-}" ;;
 leave) cmd_leave "${1:-}" ;;
 say) cmd_say "$@" ;;
 tell) cmd_tell "$@" ;;

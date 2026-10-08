@@ -163,9 +163,10 @@ buffer's `default-directory` left where it was, and a message says so.
 A name is lowercase letters, digits, `-` and `_`, starting with a letter and at most 32
 characters. An empty name becomes `agent`, and a name already in use gets a numeric suffix.
 
-The agent starts in the current project on the session that project routes to. It gets a tab
-labelled with its name, in the herdr workspace named by `herdr-workspace-label` for the project;
-the workspace is created when it does not exist yet. Emacs attaches the terminal and shows it.
+The agent starts in the current project on the session that project routes to, in a herdr
+workspace of its own labelled by `herdr-workspace-label` for the project, its tab labelled with
+its name. With `herdr-agent-placement` set to `tab`, it opens as a tab in the project's workspace
+instead, which is created for the first agent. Emacs attaches the terminal and shows it.
 
 In the dashboard, `n` starts the harness of the row at point, or `herdr-status-new-harness` away
 from a row, in that row's directory and session. `N` asks for the harness first. Neither waits for
@@ -280,9 +281,9 @@ is about. `RET` or `C-c C-c` sends, `C-c C-k` or `C-g` cancels, and `C-<return>`
 The field is marked with the vendor glyph of the harness it writes to, in that harness's colour.
 A buffer that a process writes into, such as a terminal, still uses the minibuffer.
 
-After sending, `herdr-message-show-agent` decides what happens to the agent's terminal: `focus`,
-the default, shows it and moves the cursor to its prompt, `t` shows it and keeps the cursor where
-it was, and nil leaves it alone. A terminal Emacs has no buffer for is attached first.
+After sending, `herdr-message-show-agent` decides what happens to the agent's terminal: `t`,
+the default, shows it and keeps the cursor where it was, `focus` shows it and moves the cursor to
+its prompt, and nil leaves it alone. A terminal Emacs has no buffer for is attached first.
 
 ### Keeping a half-written prompt
 
@@ -499,7 +500,7 @@ to nil to avoid boxes.
 
 ## Herds
 
-A *herd* is a named group of agents that know each other's names and reach one another with the
+A *herd* is a named group of agents that know each other's panes and reach one another with the
 `herdr` CLI. `h` in the dashboard opens the herd menu:
 
 | Key | Does |
@@ -507,7 +508,7 @@ A *herd* is a named group of agents that know each other's names and reach one a
 | `a` | add the agent at point to a herd, or name a new one |
 | `A` | add several: the rows the region covers, or agents picked from the session |
 | `r` | take the agent at point out of its herd |
-| `d` | dissolve a herd, leaving its agents running and named |
+| `d` | dissolve a herd, leaving its agents running |
 | `b` | send one prompt to every member that is not busy |
 | `R` | send the roster again, after membership changed |
 
@@ -526,9 +527,17 @@ joins on the same terms.
 An agent in a state listed in `herdr-herd-busy-states`, `working` or `blocked` by default, is
 skipped and named instead of being interrupted mid-turn.
 
-Members address each other by name. An agent without one is named when it joins, from its
-repository and the task its terminal title shows, as in `memex-incremental-index`; the name is
-offered for editing and made unique on its server. A linked worktree is named after its repository.
+Members address each other by pane id, which every `herdr agent` command takes and the roster
+lists beside each member's name:
+
+```text
+  w69:p3   cmw-migrations-probel            claude   ~/getml/projects/cmw
+```
+
+Joining renames neither the pane nor the agent; a member keeps the name it had.
+
+`n` in the dashboard, with point inside a herd's section, starts the new agent in that herd: it is
+drawn there at once and gets the roster once herdr reports it ready.
 
 ### A herd lives on one session
 
@@ -547,20 +556,20 @@ Adding an agent from another session is refused.
 
 ### Membership lives in herdr
 
-A member's pane carries its herd in its manual label, as `herd:NAME` ahead of anything else the
-label says. herdr keeps the label across restarts and reports it with the pane, so agents join,
-leave and read herds with the same CLI they use for everything else, with no editor running:
+A member's pane carries the metadata token `herd`, reported under the source `herdr-herd`. herdr
+reports it with the pane and the agent, so agents join, leave and read herds with the same CLI
+they use for everything else, with no editor running:
 
 ```console
-$ herdr pane rename w71:p1 "herd:refactor"      # join
-$ herdr pane list | jq -r '.result.panes[].label'
-$ herdr pane rename w71:p1 --clear              # leave
+$ herdr pane report-metadata w71:p1 --source herdr-herd --token herd=refactor   # join
+$ herdr pane list | jq '.result.panes[] | {pane_id, herd: .tokens.herd}'
+$ herdr pane report-metadata w71:p1 --source herdr-herd --clear-token herd      # leave
 ```
 
-A herd exists as long as some live pane names it. herdr draws a pane's label only where the pane
-has no terminal title, and agent panes always have one, so the label stays out of sight. Herd
-commands keep the rest of the label intact. Other packages store their own per-pane settings in
-the same label as further `PREFIX:VALUE` words, read with `herdr-herd-label-token` and written with
+A herd exists as long as some live pane carries it. The token lasts as long as the pane, through
+detaches and an update with `--handoff`; a herdr server restart starts the panes, and so the herds,
+over. A pane's label stays its own: other packages store per-pane settings there as
+`PREFIX:VALUE` words, read with `herdr-herd-label-token` and written with
 `herdr-herd-label-with-token`.
 
 `bin/herdr-herd` wraps these calls for agents. Every pane argument defaults to `$HERDR_PANE_ID`,
@@ -570,6 +579,7 @@ so an agent talks about itself without arguments:
 $ herdr-herd join refactor
 $ herdr-herd peers
 $ herdr-herd say "rebased onto main, your turn"
+$ herdr-herd tell w71:p2 "the index tests pass again"
 ```
 
 The roster gives the script's absolute path, so agents need no `PATH` setup. `herdr-herd-command`
@@ -650,6 +660,7 @@ records.
 | --- | --- |
 | provide the context a message carries | `herdr-send-context-functions` |
 | build the prompt a message becomes | `herdr-message-compose-functions` |
+| keep an agent's terminal hidden when the buffer shows the agent | `herdr-message-shown-functions` |
 | claim an entry before it is attached as a plain terminal | `herdr-attach-functions` |
 | act on every buffer that starts showing a terminal | `herdr-buffer-functions` |
 | run code once point is at a terminal's prompt | `herdr-terminal-focus-functions` |

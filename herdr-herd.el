@@ -20,12 +20,14 @@
 ;; its session and its own name.
 ;;
 ;; Membership lives in herdr, not in Emacs: a member's pane carries the
-;; herd in its manual label, as `herd:NAME' ahead of whatever else the
-;; label says.  Herdr persists that label across a restart and reports it
-;; with the pane, so an agent joins or reads a herd with `herdr pane
-;; rename' and `herdr pane list' and needs no editor running.  The label
-;; is drawn only where a pane has no terminal title, which an agent pane
-;; always has.
+;; metadata token `herd', reported under the source
+;; `herdr-herd-metadata-source'.  Neither the pane's label nor the
+;; agent's name is touched, and peers reach each other by pane id, which
+;; every `herdr agent' command takes.  Herdr reports the token with the
+;; pane and the agent, so an agent joins or reads a herd with `herdr pane
+;; report-metadata' and `herdr pane list' and needs no editor running.
+;; The token lasts as long as the pane, a handoff included; a server
+;; restart starts the panes, and so the herds, over.
 
 ;;; Code:
 
@@ -44,13 +46,8 @@
   "Sets of herdr agents made aware of each other."
   :group 'herdr)
 
-(defcustom herdr-herd-label-prefix "herd:"
-  "What marks the herd a pane belongs to at the head of its label.
-A pane label starting with this and a name puts that pane in that herd;
-whatever follows the first space is the label's own text and survives
-every herd command."
-  :type 'string
-  :group 'herdr-herd)
+(defconst herdr-herd-metadata-source "herdr-herd"
+  "The source herd membership is reported to herdr under.")
 
 (defcustom herdr-herd-notice-prefix "[herd "
   "What opens a one-line notice sent to a herd's members.
@@ -64,19 +61,6 @@ reading the prompt an agent received, can tell a notice from a task."
 A prompt sent to an agent in one of these interleaves with the turn it
 is in the middle of."
   :type '(repeat string)
-  :group 'herdr-herd)
-
-(defcustom herdr-herd-name-stopwords
-  '("a" "an" "and" "the" "for" "with" "from" "into" "of" "to" "in" "on"
-    "feat" "feature" "fix" "chore" "refactor" "docs" "doc" "test" "tests"
-    "wip" "branch" "branches" "change" "changes" "add" "adds" "update")
-  "Words dropped from a terminal title before it becomes part of a name."
-  :type '(repeat string)
-  :group 'herdr-herd)
-
-(defcustom herdr-herd-name-title-words 2
-  "How many words of an agent's terminal title its derived name carries."
-  :type 'natnum
   :group 'herdr-herd)
 
 (defcustom herdr-herd-command
@@ -95,29 +79,29 @@ agents only the plain `herdr' commands the helper wraps."
 You are part of a herd: a set of coding agents working in the same herdr
 session, each in its own pane, that know each other by name.
 
-Reach a peer by name with the herdr CLI:
+Every member is reached through the pane it runs in, listed in the
+roster below beside its name. Reach a peer with the herdr CLI:
 
-    herdr agent prompt <name> \"<message>\"
-    herdr agent read <name>          # what that peer's terminal shows
-    herdr agent get <name>           # its state: idle, working, blocked, done
+    herdr agent prompt <pane> \"<message>\"
+    herdr agent read <pane>          # what that peer's terminal shows
+    herdr agent get <pane>           # its state: idle, working, blocked, done
 
-Membership is the pane's own label, so you can read and change it with
-the same CLI:
+Membership is pane metadata: a member's pane carries the token herd,
+which `herdr pane list' reports under tokens. Change it with
 
-    herdr pane list                  # a member's label starts with herd:<name>
-    herdr pane rename <pane> \"herd:<name>\"   # join, or move to another herd
-    herdr pane rename <pane> --clear          # leave every herd
+    herdr pane report-metadata <pane> --source herdr-herd --token herd=<herd>
+    herdr pane report-metadata <pane> --source herdr-herd --clear-token herd
 
 `herdr --help' and `herdr --skill' are the authority for CLI syntax; do
 not guess flags. Every control command needs HERDR_ENV=1 in this shell.
 
-Messaging a peer interrupts it. Check `herdr agent get <name>' first and
+Messaging a peer interrupts it. Check `herdr agent get <pane>' first and
 prefer a peer that is idle or done; a peer that is working or blocked
 will read your message in the middle of its own turn.
 
-A peer name that no longer resolves means that agent exited or was
-replaced. `herdr agent list' shows who is live. Do not invent names and
-do not address a peer by pane id.
+A pane that no longer answers means that peer exited. `herdr pane list'
+shows who is live. Do not guess pane ids; take them from the roster or
+from `herdr pane list'.
 
 Say who you are when you write to a peer, keep messages short, and state
 what you want back."
@@ -134,64 +118,38 @@ what a joining member is told.")
 (defvar herdr-herd-sent-functions nil
   "Functions called with the entry and text of every prompt a herd command sends.")
 
-(defconst herdr-herd--name-limit 32
-  "Longest agent name herdr accepts.")
-
 ;;;; The label a pane carries
 
-(defun herdr-herd--split (label)
-  "Return the herd LABEL names and what else it says, as a cons.
-The car is nil for a label naming no herd, and the cdr is the label's
-own text, which every herd command carries through untouched."
-  (if (and (stringp label)
-           (string-match (concat "\\`" (regexp-quote herdr-herd-label-prefix)
-                                 "\\([^[:space:]]+\\)"
-                                 "\\(?:[[:space:]]+\\(.*\\)\\)?\\'")
-                         label))
-      (cons (match-string 1 label) (match-string 2 label))
-    (cons nil (and (stringp label) label))))
-
-(defun herdr-herd--compose (herd rest)
-  "Return the pane label putting a pane in HERD while it still says REST.
-Nil for a pane that is in no herd and has nothing else to say, which is
-what clears a label."
-  (let ((parts (delq nil
-                     (list (and herd (concat herdr-herd-label-prefix herd))
-                           (and rest (not (string-empty-p rest)) rest)))))
-    (and parts (string-join parts " "))))
-
 (defun herdr-herd-label-token (label prefix)
-  "Return what the word of LABEL's own text opening with PREFIX says after it.
-Nil where no word does.  The herd word is not the label's own text."
-  (when-let* ((rest (cdr (herdr-herd--split label))))
+  "Return what the word of LABEL opening with PREFIX says after it.
+Nil where no word does."
+  (when (stringp label)
     (seq-some (lambda (word)
                 (and (string-prefix-p prefix word)
                      (substring word (length prefix))))
-              (split-string rest))))
+              (split-string label))))
 
 (defun herdr-herd-label-with-token (label prefix value)
   "Return LABEL with its word opening with PREFIX saying VALUE after it.
 The word keeps its place, is added at the end where there was none, and
-is dropped when VALUE is nil; the herd and every other word stay."
-  (pcase-let* ((`(,herd . ,rest) (herdr-herd--split label))
-               (word (and value (concat prefix value)))
-               (words (and rest (split-string rest)))
-               (placed nil)
-               (words (delq nil
-                            (mapcar (lambda (each)
-                                      (if (string-prefix-p prefix each)
-                                          (prog1 (and (not placed) word)
-                                            (setq placed t))
-                                        each))
-                                    words)))
-               (words (if (and word (not placed)) (append words (list word)) words)))
-    (herdr-herd--compose herd (and words (string-join words " ")))))
+is dropped when VALUE is nil; every other word stays.  Nil for a label
+left with no word, which is what clears a label."
+  (let* ((word (and value (concat prefix value)))
+         (placed nil)
+         (words (delq nil
+                      (mapcar (lambda (each)
+                                (if (string-prefix-p prefix each)
+                                    (prog1 (and (not placed) word)
+                                      (setq placed t))
+                                  each))
+                              (and (stringp label) (split-string label)))))
+         (words (if (and word (not placed)) (append words (list word)) words)))
+    (and words (string-join words " "))))
 
 (defun herdr-herd--valid-name-p (name)
-  "Return non-nil when NAME can head a pane label."
+  "Return non-nil when NAME can name a herd or a member of one."
   (and (stringp name)
-       (string-match-p "\\`[^[:space:]]+\\'" name)
-       (not (string-prefix-p herdr-herd-label-prefix name))))
+       (string-match-p "\\`[^[:space:]]+\\'" name)))
 
 (defun herdr-herd--rename (entry label)
   "Give ENTRY's pane LABEL, clearing it when LABEL is nil."
@@ -200,8 +158,17 @@ is dropped when VALUE is nil; the herd and every other word stay."
 
 (defun herdr-herd--put (entry herd)
   "Put ENTRY's pane in HERD, taking it out of every herd when HERD is nil."
-  (let ((rest (cdr (herdr-herd--split (alist-get 'pane_label entry)))))
-    (herdr-herd--rename entry (herdr-herd--compose herd rest))))
+  (herdr-with-session (alist-get 'session entry)
+    (herdr-api-pane-report-metadata
+     (alist-get 'pane_id entry) herdr-herd-metadata-source
+     :tokens `((herd . ,(or herd ""))))))
+
+(defun herdr-herd--with-membership (entry herd)
+  "Return ENTRY as herdr reports it once it is in HERD."
+  (cons (cons 'tokens (cons (cons 'herd herd)
+                            (assq-delete-all
+                             'herd (copy-alist (alist-get 'tokens entry)))))
+        entry))
 
 ;;;; Reading the herds
 
@@ -235,7 +202,7 @@ SESSION keeps only the agents on that herdr session."
 (defun herdr-herd-of-entry (entry)
   "Return the herd ENTRY's pane belongs to, or nil.
 A herd is the cons of the session it lives on and its own name."
-  (when-let* ((name (car (herdr-herd--split (alist-get 'pane_label entry)))))
+  (when-let* ((name (alist-get 'herd (alist-get 'tokens entry))))
     (cons (alist-get 'session entry) name)))
 
 (defun herdr-herd--same-p (one other)
@@ -282,94 +249,11 @@ AGENTS are the entries to read, the live ones by default."
   (cdr (seq-find (lambda (cell) (herdr-herd--same-p (car cell) herd))
                  (herdr-herds agents))))
 
-;;;; Deriving a name
-
-(defun herdr-herd--slug (string)
-  "Return STRING as lowercase words joined by hyphens, or nil when empty."
-  (when (stringp string)
-    (let ((slug (string-trim
-                 (replace-regexp-in-string "[^a-z0-9]+" "-" (downcase string))
-                 "-+" "-+")))
-      (unless (string-empty-p slug) slug))))
-
-(defun herdr-herd--repository (directory)
-  "Return the directory holding DIRECTORY's shared git directory, or nil."
-  (when (and directory (file-directory-p directory))
-    (with-temp-buffer
-      (let ((default-directory (file-name-as-directory directory)))
-        (when (eq 0 (ignore-errors
-                      (process-file "git" nil '(t nil) nil "rev-parse"
-                                    "--path-format=absolute"
-                                    "--git-common-dir")))
-          (let ((git-dir (string-trim (buffer-string))))
-            (unless (string-empty-p git-dir)
-              (file-name-directory (directory-file-name git-dir)))))))))
-
-(defun herdr-herd--project-slug (directory)
-  "Return the slug of the repository DIRECTORY belongs to, or nil.
-A linked worktree answers with the repository it was cut from rather than
-with its own directory name."
-  (when directory
-    (if (herdr--same-directory-p directory "~")
-        "home"
-      (herdr-herd--slug
-       (file-name-nondirectory
-        (directory-file-name (or (herdr-herd--repository directory)
-                                 directory)))))))
-
-(defun herdr-herd--tail (title head)
-  "Return the words of TITLE that follow HEAD in a name, or nil."
-  (when-let* ((slug (herdr-herd--slug title)))
-    (let ((room (- herdr-herd--name-limit (length head) 1))
-          (seen (split-string head "-" t))
-          (taken nil)
-          (used 0))
-      (catch 'full
-        (dolist (word (split-string slug "-" t))
-          (when (>= (length taken) herdr-herd-name-title-words)
-            (throw 'full nil))
-          (unless (or (member word herdr-herd-name-stopwords)
-                      (member word seen)
-                      (member word taken))
-            (let ((cost (+ (length word) (if taken 1 0))))
-              (when (> (+ used cost) room)
-                (throw 'full nil))
-              (push word taken)
-              (setq used (+ used cost))))))
-      (when taken (string-join (nreverse taken) "-")))))
-
-(defun herdr-herd--lead (slug)
-  "Return SLUG starting with a letter, as herdr requires."
-  (if (string-match-p "\\`[a-z]" slug) slug (concat "a" slug)))
-
-(defun herdr-herd-derive-name (entry)
-  "Return an unused herdr agent name derived from ENTRY."
-  (let* ((head (herdr-herd--lead
-                (or (herdr-herd--project-slug (alist-get 'cwd entry))
-                    (herdr-herd--slug (alist-get 'agent entry))
-                    "agent")))
-         (head (string-trim (substring head 0 (min (length head)
-                                                   herdr-herd--name-limit))
-                            "-+" "-+"))
-         (tail (herdr-herd--tail (alist-get 'terminal_title_stripped entry)
-                                 head)))
-    (herdr-agent--available-name (if tail (concat head "-" tail) head)
-                                 (herdr--entry-server entry))))
-
-;;;; Joining
-
-(defun herdr-herd--name (entry)
-  "Return the name ENTRY's agent carries, naming it where it has none.
-An agent that already has a name keeps it."
-  (or (alist-get 'name entry)
-      (let ((name (read-string "Agent name: " (herdr-herd-derive-name entry))))
-        (herdr-agent-rename (herdr--entry-target entry) name)
-        name)))
-
 (defun herdr-herd--roster-line (entry)
-  "Return ENTRY as one line of a roster."
-  (format "  %-24s %-8s %s"
-          (or (alist-get 'name entry) (herdr--entry-label entry))
+  "Return ENTRY as one line of a roster: its pane, name, harness and directory."
+  (format "  %-8s %-32s %-8s %s"
+          (or (alist-get 'pane_id entry) "?")
+          (herdr--entry-label entry)
           (or (alist-get 'agent entry) "?")
           (or (alist-get 'cwd entry) "")))
 
@@ -386,22 +270,22 @@ A helper wrapping those commands is at
     herdr-herd list                  # every herd and who is in it
     herdr-herd peers                 # your herd's other members
     herdr-herd of                    # the herd you are in
-    herdr-herd join <herd>           # join, keeping the rest of your label
+    herdr-herd join <herd>           # join a herd
     herdr-herd leave                 # leave the herd you are in
     herdr-herd say <message>         # send it to every idle peer
-    herdr-herd tell <name> <message> # send it to one peer
+    herdr-herd tell <pane> <message> # send it to one peer
 
 It defaults every pane to your own, so it needs no arguments to talk
 about you. It is a convenience over the commands above and nothing more,
 so use those directly whenever you prefer.")))
 
 (defun herdr-herd--roster (herd self members)
-  "Return the prompt telling SELF it is in HERD alongside MEMBERS."
-  (let ((peers (seq-remove (lambda (entry)
-                             (equal (alist-get 'name entry) self))
+  "Return the prompt telling SELF, an entry, it is in HERD alongside MEMBERS."
+  (let ((peers (seq-remove (lambda (entry) (herdr-herd--same-pane-p entry self))
                            members))
         (name (cdr herd)))
-    (concat "/herd " name " — you are " self "\n\n"
+    (concat "/herd " name " — you are " (herdr--entry-label self)
+            " in pane " (alist-get 'pane_id self) "\n\n"
             herdr-herd-protocol "\n\n"
             (mapconcat (lambda (paragraph) (concat paragraph "\n\n"))
                        (delq nil (mapcar (lambda (function) (funcall function herd))
@@ -460,7 +344,7 @@ MEMBERS are the entries to reach.  VERB heads the report."
         (skipped nil))
     (dolist (entry members)
       (if (herdr-herd--busy-p entry)
-          (push (cons (or (alist-get 'name entry) (herdr--entry-label entry))
+          (push (cons (herdr--entry-label entry)
                       (alist-get 'agent_status entry))
                 skipped)
         (let ((text (funcall text-function entry)))
@@ -475,7 +359,7 @@ MEMBERS are the entries to reach.  VERB heads the report."
     (herdr-herd--send
      herd members
      (lambda (entry)
-       (herdr-herd--roster herd (alist-get 'name entry) members))
+       (herdr-herd--roster herd entry members))
      "told")))
 
 (defun herdr-herd--welcome (herd joined)
@@ -488,7 +372,7 @@ MEMBERS are the entries to reach.  VERB heads the report."
                              members)))
     (herdr-herd--send herd joined
                       (lambda (entry)
-                        (herdr-herd--roster herd (alist-get 'name entry) members))
+                        (herdr-herd--roster herd entry members))
                       "welcomed")
     (when others
       (herdr-herd--send
@@ -497,9 +381,10 @@ MEMBERS are the entries to reach.  VERB heads the report."
          (herdr-herd-notice
           herd (string-join
                 (mapcar (lambda (entry)
-                          (format "%s joined (%s, %s)."
-                                  (alist-get 'name entry)
+                          (format "%s joined (%s in %s, %s)."
+                                  (herdr--entry-label entry)
                                   (or (alist-get 'agent entry) "?")
+                                  (alist-get 'pane_id entry)
                                   (abbreviate-file-name
                                    (or (alist-get 'cwd entry) ""))))
                         joined)
@@ -646,19 +531,32 @@ could neither be reached nor reach back."
        ((herdr-herd--same-p (herdr-herd-of-entry entry) herd)
         (message "herd %s: %s is already a member"
                  (herdr-herd-label herd) (herdr--entry-label entry)))
-       (t (let ((name (herdr-herd--name entry)))
-            (herdr-herd--put entry (cdr herd))
-            (push (cons (cons 'name name)
-                        (cons (cons 'pane_label
-                                    (herdr-herd--compose
-                                     (cdr herd)
-                                     (cdr (herdr-herd--split
-                                           (alist-get 'pane_label entry)))))
-                              entry))
-                  joined)))))
+       (t (herdr-herd--put entry (cdr herd))
+          (push (herdr-herd--with-membership entry (cdr herd)) joined))))
     (herdr-herd--refresh)
     (when joined
       (herdr-herd--welcome herd (nreverse joined)))))
+
+;;;###autoload
+(defun herdr-herd-enlist (session herd)
+  "Put the agent SESSION is starting in HERD, and welcome it once it is ready.
+SESSION is an agent session started without waiting, whose pane herdr
+already reports.  Its tokens go on now, so the dashboard draws it in
+HERD from the start; the roster waits for the agent to take a prompt."
+  (let* ((entry `((session . ,(car herd))
+                  (pane_id . ,(herdr-agent-session-pane session))
+                  (agent . ,(herdr-agent-session-kind session))
+                  (cwd . ,(herdr-agent-session-project session)))))
+    (herdr-herd--put entry (cdr herd))
+    (herdr-agent-when-ready
+     session
+     (lambda (_session)
+       (when-let* ((joined (seq-find
+                            (lambda (member)
+                              (equal (alist-get 'pane_id member)
+                                     (alist-get 'pane_id entry)))
+                            (herdr-herd-member-entries herd))))
+         (herdr-herd--welcome herd (list joined)))))))
 
 ;;;###autoload
 (defun herdr-herd-add-many (entries herd)
