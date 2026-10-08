@@ -1880,6 +1880,31 @@ Emacs releases the attachment first and the two go together."
                   '((tokens . ((context . "half full")))))
                  "")))
 
+(ert-deftest herdr-status-new-agent-asks-for-a-session-only-off-a-row ()
+  (herdr-status-tests--with-dashboard
+    (let (asked)
+      (cl-letf (((symbol-function 'herdr-read-session)
+                 (lambda (&rest _) (setq asked t) "beta")))
+        (goto-char (point-min))
+        (let ((herdr-status--project-root "/tmp/proj/")
+              (herdr-status--session-records '(((session . shared) (reachable . t)))))
+          (should (eq (herdr-status-new-agent-session) herdr-session))
+          (should-not asked)
+          (setq herdr-status--session-records
+                '(((session . shared) (reachable . t)) ((session . "beta") (reachable . t))
+                  ((session . "gone") (reachable))))
+          (should (equal (herdr-status-new-agent-session) "beta"))
+          (should asked))
+        (setq asked nil)
+        (let ((herdr-status--project-root nil)
+              (herdr-status--session-records '(((session . shared) (reachable . t)))))
+          (should (equal (herdr-status-new-agent-session) "beta"))
+          (should asked))
+        (setq asked nil)
+        (should (re-search-forward "⌬ codex" nil t))
+        (should (equal (herdr-status-new-agent-session) "alpha"))
+        (should-not asked)))))
+
 (ert-deftest herdr-status-new-agent-takes-its-harness-and-place-from-point ()
   (herdr-status-tests--with-dashboard
     (let ((herdr-status-new-harness "claude")
@@ -1887,14 +1912,17 @@ Emacs releases the attachment first and the two go together."
       (cl-letf (((symbol-function 'herdr-agent-start)
                  (lambda (kind name &rest arguments)
                    (should (equal (plist-member arguments :wait) '(:wait nil)))
-                   (push (list kind name (plist-get arguments :project-root)
-                               herdr-session)
+                   (push (append (list kind name (plist-get arguments :project-root)
+                                       herdr-session)
+                                 (and (plist-get arguments :args)
+                                      (list (plist-get arguments :args))))
                          starts)))
                 ((symbol-function 'herdr-status-refresh) #'ignore))
         (goto-char (point-min))
         (should-not (herdr-status-entry-at-point))
         (should (equal (herdr-status--new-harness) "claude"))
-        (let ((herdr-status--project-root "/tmp/scoped/"))
+        (let ((herdr-status--project-root "/tmp/scoped/")
+              (herdr-status--session-records '(((session . shared) (reachable . t)))))
           (herdr-status-new-agent))
         (should (equal (car starts) '("claude" nil "/tmp/scoped/" shared)))
 
@@ -1906,6 +1934,9 @@ Emacs releases the attachment first and the two go together."
 
         (herdr-status-new-agent "pi")
         (should (equal (car starts) '("pi" nil "/tmp/proj/" "alpha")))
+
+        (herdr-status-new-agent "codex" "/tmp/proj/.worktrees/x" '("go"))
+        (should (equal (car starts) '("codex" nil "/tmp/proj/.worktrees/x" "alpha" ("go"))))
 
         (cl-letf (((symbol-function 'completing-read)
                    (lambda (_prompt _collection &rest _) "claude")))

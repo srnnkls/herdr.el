@@ -2116,23 +2116,40 @@ does."
   (or (alist-get 'agent (herdr-status-entry-at-point))
       herdr-status-new-harness))
 
-(defun herdr-status-new-agent (&optional kind)
-  "Open a herdr pane and start KIND in it.
-The row at point says which directory to work in and which herdr session
-to open the pane on; away from a row the dashboard's own project scope
-answers.  KIND defaults to the harness at point, then to
-`herdr-status-new-harness'."
+(defun herdr-status-new-agent-session ()
+  "Return the herdr session a new agent from point opens on.
+A row at point names its own.  Away from one the session is read when
+the dashboard is global, or when more than one session is running;
+otherwise it is the dashboard's."
+  (if-let* ((entry (herdr-status-entry-at-point)))
+      (alist-get 'session entry)
+    (if (or (null herdr-status--project-root)
+            (> (seq-count (lambda (record) (alist-get 'reachable record))
+                          herdr-status--session-records)
+               1))
+        (herdr-read-session "Start in herdr session: " herdr-session)
+      herdr-session)))
+
+(defun herdr-status-new-agent (&optional kind root args session)
+  "Open a herdr pane and start KIND in it, and return its session.
+The row at point says which directory to work in; away from a row the
+dashboard's own project scope answers.  SESSION is the herdr session to
+open the pane on, by default `herdr-status-new-agent-session'.  ROOT
+works elsewhere instead, and ARGS follow KIND's start arguments.  KIND
+defaults to the harness at point, then to `herdr-status-new-harness'."
   (interactive)
   (let* ((entry (herdr-status-entry-at-point))
          (kind (or kind (herdr-status--new-harness)))
-         (root (or (and entry (herdr-entry-directory entry))
+         (root (or root
+                   (and entry (herdr-entry-directory entry))
                    herdr-status--project-root
                    default-directory))
-         (session (if entry (alist-get 'session entry) herdr-session)))
-    (herdr-with-session session
-      (herdr-agent-start kind nil :project-root root :wait nil))
+         (session (or session (herdr-status-new-agent-session)))
+         (started (herdr-with-session session
+                    (herdr-agent-start kind nil :project-root root :args args :wait nil))))
     (herdr-status-refresh)
-    (message "Started %s in %s" kind (abbreviate-file-name root))))
+    (message "Started %s in %s" kind (abbreviate-file-name root))
+    started))
 
 (defun herdr-status-new-agent-of-harness (kind)
   "Open a herdr pane and start the harness KIND in it, read with completion."
