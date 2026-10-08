@@ -207,6 +207,126 @@ Return nil when KIND has no registered adapter."
                  (member candidate occupied)))
         candidate))))
 
+;;;; Naming
+
+(defconst herdr-agent--name-limit 32
+  "Longest agent name herdr accepts.")
+
+(defcustom herdr-agent-name-stopwords
+  '("a" "an" "and" "the" "for" "with" "from" "into" "of" "to" "in" "on"
+    "feat" "feature" "fix" "chore" "refactor" "docs" "doc" "test" "tests"
+    "wip" "branch" "branches" "change" "changes" "add" "adds" "update")
+  "Words dropped from a terminal title before it becomes part of a name."
+  :type '(repeat string)
+  :group 'herdr)
+
+(defcustom herdr-agent-name-title-words 2
+  "How many words of an agent's terminal title its derived name carries."
+  :type 'natnum
+  :group 'herdr)
+
+(defcustom herdr-agent-name-function #'herdr-agent-derive-name
+  "Function returning the name offered to an agent that has none.
+It is called with the agent's entry and answers a herdr agent name or a
+title, whose slug is the name; the name is made unique on the agent's
+server and offered as `herdr-agent-title-function' shows it."
+  :type 'function
+  :group 'herdr)
+
+(defun herdr-agent--slug (string)
+  "Return STRING as lowercase words joined by hyphens, or nil when empty."
+  (when (stringp string)
+    (let ((slug (string-trim
+                 (replace-regexp-in-string "[^a-z0-9]+" "-" (downcase string))
+                 "-+" "-+")))
+      (unless (string-empty-p slug) slug))))
+
+(defun herdr-agent--repository (directory)
+  "Return the directory holding DIRECTORY's shared git directory, or nil."
+  (when (and directory (file-directory-p directory))
+    (with-temp-buffer
+      (let ((default-directory (file-name-as-directory directory)))
+        (when (eq 0 (ignore-errors
+                      (process-file "git" nil '(t nil) nil "rev-parse"
+                                    "--path-format=absolute"
+                                    "--git-common-dir")))
+          (let ((git-dir (string-trim (buffer-string))))
+            (unless (string-empty-p git-dir)
+              (file-name-directory (directory-file-name git-dir)))))))))
+
+(defun herdr-agent--project-slug (directory)
+  "Return the slug of the repository DIRECTORY belongs to, or nil.
+A linked worktree answers with the repository it was cut from rather than
+with its own directory name."
+  (when directory
+    (if (herdr--same-directory-p directory "~")
+        "home"
+      (herdr-agent--slug
+       (file-name-nondirectory
+        (directory-file-name (or (herdr-agent--repository directory)
+                                 directory)))))))
+
+(defun herdr-agent--tail (title head)
+  "Return the words of TITLE that follow HEAD in a name, or nil."
+  (when-let* ((slug (herdr-agent--slug title)))
+    (let ((room (- herdr-agent--name-limit (length head) 1))
+          (seen (split-string head "-" t))
+          (taken nil)
+          (used 0))
+      (catch 'full
+        (dolist (word (split-string slug "-" t))
+          (when (>= (length taken) herdr-agent-name-title-words)
+            (throw 'full nil))
+          (unless (or (member word herdr-agent-name-stopwords)
+                      (member word seen)
+                      (member word taken))
+            (let ((cost (+ (length word) (if taken 1 0))))
+              (when (> (+ used cost) room)
+                (throw 'full nil))
+              (push word taken)
+              (setq used (+ used cost))))))
+      (when taken (string-join (nreverse taken) "-")))))
+
+(defun herdr-agent--lead (slug)
+  "Return SLUG starting with a letter, as herdr requires."
+  (if (string-match-p "\\`[a-z]" slug) slug (concat "a" slug)))
+
+(defun herdr-agent-derive-name (entry)
+  "Return an unused herdr agent name derived from ENTRY."
+  (let* ((head (herdr-agent--lead
+                (or (herdr-agent--project-slug (alist-get 'cwd entry))
+                    (herdr-agent--slug (alist-get 'agent entry))
+                    "agent")))
+         (head (string-trim (substring head 0 (min (length head)
+                                                   herdr-agent--name-limit))
+                            "-+" "-+"))
+         (tail (herdr-agent--tail (alist-get 'terminal_title_stripped entry)
+                                 head)))
+    (herdr-agent--available-name (if tail (concat head "-" tail) head)
+                                 (herdr--entry-server entry))))
+
+(defun herdr-agent-name-slug (string)
+  "Return STRING as a herdr agent name, or nil when it holds no letter or digit.
+A valid name is its own; anything else is lowercased, its runs of other
+characters become hyphens, and it is cut at a word to herdr's length."
+  (if (herdr-agent--name-valid-p string)
+      string
+    (when-let* ((slug (herdr-agent--slug string)))
+      (let ((slug (herdr-agent--lead slug)))
+        (if (<= (length slug) herdr-agent--name-limit)
+            slug
+          (let ((cut (substring slug 0 herdr-agent--name-limit)))
+            (unless (eq (aref slug herdr-agent--name-limit) ?-)
+              (setq cut (replace-regexp-in-string "-[^-]*\\'" "" cut)))
+            (string-trim-right cut "-+")))))))
+
+(defun herdr-agent-offered-name (entry)
+  "Return the name `herdr-agent-name-function' offers ENTRY, made unique.
+The function may answer a title; its slug is the name."
+  (herdr-agent--available-name
+   (herdr-agent-name-slug (funcall herdr-agent-name-function entry))
+   (herdr--entry-server entry)))
+
 (defun herdr-agent--register (session)
   "Register SESSION and its derived indexes."
   (let* ((server-key (herdr-agent--canonical-server-key (herdr-agent-session-server session)))
@@ -342,7 +462,7 @@ DISPLAY shows the buffer once attached."
                                      (herdr-agent-session-kind session) t)
                                     :label)
                          (herdr-agent-session-kind session))
-                   (herdr-agent-session-name session))
+                   (herdr-agent-title (herdr-agent-session-name session)))
           :directory (herdr-agent-session-project session)
           :takeover herdr-attach-takeover :display display)))
     (herdr-agent-claim-attachment session buffer (get-buffer-process buffer))))
@@ -1229,7 +1349,9 @@ lists none asks for the reference instead."
       (herdr--record-session-target (cons server-key terminal)))))
 
 (defun herdr-agent-rename (target name)
-  "Rename TARGET to NAME."
+  "Rename TARGET to NAME, or to NAME's slug where NAME is a title."
+  (setq name (or (herdr-agent-name-slug name)
+                 (user-error "No agent name in %S" name)))
   (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
     (herdr-agent--with-server server-key
       (herdr-agent--call-with-request-target

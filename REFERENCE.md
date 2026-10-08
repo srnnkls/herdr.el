@@ -274,6 +274,10 @@ is `$XDG_CONFIG_HOME/herdr/sessions/NAME/herdr.sock`; `XDG_CONFIG_HOME` defaults
 | `herdr-agent-prompt-clear` | string | `"\C-u"` | sent to clear an agent's input line |
 | `herdr-agent-prompt-submit` | string | `"\r"` | sent to submit an agent's input line |
 | `herdr-agent-key-delay` | number | 0.05 | seconds `herdr-agent-type-keys` waits after each key |
+| `herdr-agent-name-function` | function | `herdr-agent-derive-name` | the name or title `R` offers an agent that has none; its slug is made unique before it is offered |
+| `herdr-agent-title-function` | function | `identity` | the title an agent's name is shown by in rows, prompts and buffer names |
+| `herdr-agent-name-stopwords` | list of strings | articles, prepositions, commit-type words | words dropped when a name is derived from a title |
+| `herdr-agent-name-title-words` | natnum | 2 | title words a derived name keeps |
 
 ### Message options
 
@@ -415,7 +419,8 @@ recent one.
 | `herdr-agent-detach` | let go of a session record, leaving the pane running |
 | `herdr-agent-stop`, `herdr-agent-stop-all` | close an agent's pane, or every agent's on the current server |
 | `herdr-agent-switch` | focus a target in herdr and show it |
-| `herdr-agent-rename` | rename a target |
+| `herdr-agent-rename` | rename a target; a title is renamed to its slug |
+| `herdr-agent-name-slug`, `herdr-agent-title` | a title as a herdr agent name, and a name as its title |
 | `herdr-agent-status` | a target's herdr record plus its adapter's `:status` fields |
 | `herdr-agent-prompt` | send text as a prompt, keeping a draft where it can |
 | `herdr-agent-send-text`, `herdr-agent-paste` | write text to the target's pane, raw or as a paste |

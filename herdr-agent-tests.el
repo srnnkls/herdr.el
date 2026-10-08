@@ -2395,6 +2395,29 @@ functions scheduled, and `refusals', how many renames herdr turns down."
        (remhash (herdr-agent--canonical-server-key server-key) herdr-agent--subscriptions)
        (delete-directory root t))))
 
+(ert-deftest herdr-agent-name-slug-turns-a-title-into-a-herdr-name ()
+  (should (equal (herdr-agent-name-slug "Limen Workon Scope") "limen-workon-scope"))
+  (should (equal (herdr-agent-name-slug "herdr.el: Status `n` Key") "herdr-el-status-n-key"))
+  (should (equal (herdr-agent-name-slug "my_agent") "my_agent"))
+  (should (equal (herdr-agent-name-slug "42 Things") "a42-things"))
+  (should (equal (herdr-agent-name-slug
+                  "Extraordinarily Long Title Of Considerable Length")
+                 "extraordinarily-long-title-of"))
+  (should-not (herdr-agent-name-slug "  !! "))
+  (should-not (herdr-agent-name-slug nil)))
+
+(ert-deftest herdr-agent-rename-sends-a-title-s-slug ()
+  (let (sent)
+    (cl-letf (((symbol-function 'herdr-agent--public-target)
+               (lambda (target) (cons "/tmp/s.sock" target)))
+              ((symbol-function 'herdr-agent--call-with-request-target)
+               (lambda (_server terminal function) (funcall function terminal)))
+              ((symbol-function 'herdr-api-agent-rename)
+               (lambda (target &rest keys) (setq sent (cons target (plist-get keys :name))))))
+      (herdr-agent-rename "t1" "Limen Workon Scope")
+      (should (equal sent '("t1" . "limen-workon-scope")))
+      (should-error (herdr-agent-rename "t1" "  ") :type 'user-error))))
+
 (ert-deftest herdr-agent-start-without-a-name-launches-under-a-placeholder ()
   (herdr-agent-tests--with-placeholder-server
     (let ((session (herdr-agent-start "claude" nil :project-root root :attach nil)))

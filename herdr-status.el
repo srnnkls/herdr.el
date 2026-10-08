@@ -2198,11 +2198,16 @@ one.  KIND is the harness at point, or read with a prefix argument."
 
 (defun herdr-status-rename (name &optional entry)
   "Rename what point stands for to NAME, or ENTRY when one is given.
-An agent has a name of its own, which herdr's agent API sets.  A plain
+An agent has a name of its own, which herdr's agent API sets; one that
+has none is offered what `herdr-agent-name-function' gives it.  A plain
 pane has the label its row reads by instead, and that is what is set."
   (interactive
    (let ((entry (herdr-status--attachable-at-point)))
-     (list (read-string (if (alist-get 'agent entry) "Agent name: " "Pane name: "))
+     (list (if (alist-get 'agent entry)
+               (read-string "Agent name: "
+                            (unless (alist-get 'name entry)
+                              (herdr-agent-title (herdr-agent-offered-name entry))))
+             (read-string "Pane name: "))
            entry)))
   (let ((entry (or entry (herdr-status--attachable-at-point))))
     (if (alist-get 'agent entry)

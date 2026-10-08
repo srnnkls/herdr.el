@@ -66,7 +66,7 @@ runs on."
          (herdr-herd-tests--agent-renames nil)
          (herdr-herd-tests--prompts nil))
      (cl-letf (((symbol-function 'herdr-sessions) (lambda () ,agents))
-               ((symbol-function 'herdr-herd--repository)
+               ((symbol-function 'herdr-agent--repository)
                 (lambda (directory)
                   (cdr (assoc directory herdr-herd-tests--repositories))))
                ((symbol-function 'herdr-agent--occupied-names) (lambda (_) nil))
@@ -166,6 +166,43 @@ runs on."
   (herdr-herd-tests--with-stubs nil
     (should-not (herdr-herd-names))
     (should-not (herdr-herd-member-entries '("alpha" . "refactor")))))
+
+;;;; Deriving an agent name
+
+(ert-deftest herdr-agent-derived-names-carry-the-repository-and-the-task ()
+  (pcase-dolist
+      (`(,cwd ,title ,expected)
+       '(("/tmp/projects/herdr.el/.worktrees/feat-native/"
+          "improve-search-navigation-display" "herdr-el-improve-search")
+         ("/tmp/projects/memex/"
+          "Incremental index building cost model" "memex-incremental-index")
+         ("/tmp/projects/memex/"
+          "two-phase-checkpoint-state" "memex-two-phase")
+         ("/tmp/projects/sira/scopes/active/durable-compaction/"
+          "feat/unified-kv-model branch changes" "sira-unified-kv")
+         ("/tmp/dotfiles/"
+          "Doom Emacs cooked package with SPC o keybindings"
+          "dotfiles-doom-emacs")
+         ("/tmp/projects/nmnm/" "nmnm" "nmnm")))
+    (herdr-herd-tests--with-stubs nil
+      (should (equal expected
+                     (herdr-agent-derive-name
+                      (herdr-herd-tests--entry cwd title)))))))
+
+(ert-deftest herdr-agent-derived-names-stay-inside-herdr-s-grammar ()
+  (herdr-herd-tests--with-stubs nil
+    (let ((name (herdr-agent-derive-name
+                 (herdr-herd-tests--entry
+                  "/tmp/projects/memex/"
+                  "Extraordinarily Long Title Of Considerable Length Indeed"))))
+      (should (herdr-agent--name-valid-p name))
+      (should (<= (length name) 32)))))
+
+(ert-deftest herdr-agent-derived-names-fall-back-to-the-harness-without-a-title ()
+  (herdr-herd-tests--with-stubs nil
+    (should (equal "claude"
+                   (herdr-agent-derive-name
+                    (herdr-herd-tests--entry nil nil))))))
 
 ;;;; Joining
 

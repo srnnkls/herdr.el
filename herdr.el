@@ -698,9 +698,20 @@ leaves something behind."
          herdr-entry-label-decorations)
         label)))
 
+(defcustom herdr-agent-title-function #'identity
+  "Function turning an agent's herdr name into the title it is shown by.
+The name stays what herdr knows the agent by and what a target or a herd
+addresses it with; only what is displayed changes."
+  :type 'function
+  :group 'herdr)
+
+(defun herdr-agent-title (name)
+  "Return the title `herdr-agent-title-function' shows agent NAME by."
+  (and name (funcall herdr-agent-title-function name)))
+
 (defun herdr--entry-label (entry)
   "Return a short label for pane or agent ENTRY."
-  (or (alist-get 'name entry)
+  (or (herdr-agent-title (alist-get 'name entry))
       (alist-get 'label entry)
       (herdr--undecorated-label (alist-get 'terminal_title_stripped entry))
       (alist-get 'agent entry)
