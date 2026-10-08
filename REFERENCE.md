@@ -103,6 +103,7 @@ While a message is being written:
 | `herdr-status-new-agent-of-harness` | `N` | as `n`, reading the harness |
 | `herdr-status-prompt` | `P` | send a prompt to the agent at point |
 | `herdr-status-rename` | `R` | rename the agent at point, or relabel the pane at point |
+| `herdr-status-rename-afresh` | `M-R` | rename the agent at point to the name `herdr-agent-name-function` gives it now, offered for editing |
 | `herdr-status-detach` | `d` | let go of the agent's terminal and buffer; the pane runs on |
 | `herdr-status-stop` | `x` | stop the agent at point, after confirmation |
 | `herdr-status-restart` | `X` | stop the agent at point and resume its conversation in a fresh pane; a herd member rejoins its herd |
@@ -182,6 +183,7 @@ on the agent at point; elsewhere they read one.
 | `N` | `herdr-status-new-agent-of-harness` |
 | `P` | `herdr-status-prompt` |
 | `R` | `herdr-status-rename` |
+| `M-R` | `herdr-status-rename-afresh` |
 | `d` | `herdr-status-detach` |
 | `x` | `herdr-status-stop` |
 | `X` | `herdr-status-restart` |

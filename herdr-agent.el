@@ -322,10 +322,12 @@ characters become hyphens, and it is cut at a word to herdr's length."
 
 (defun herdr-agent-offered-name (entry)
   "Return the name `herdr-agent-name-function' offers ENTRY, made unique.
-The function may answer a title; its slug is the name."
-  (herdr-agent--available-name
-   (herdr-agent-name-slug (funcall herdr-agent-name-function entry))
-   (herdr--entry-server entry)))
+The function may answer a title; its slug is the name.  The name ENTRY
+already has is its own, and is offered unchanged."
+  (let ((name (herdr-agent-name-slug (funcall herdr-agent-name-function entry))))
+    (if (and name (equal name (alist-get 'name entry)))
+        name
+      (herdr-agent--available-name name (herdr--entry-server entry)))))
 
 (defun herdr-agent--register (session)
   "Register SESSION and its derived indexes."

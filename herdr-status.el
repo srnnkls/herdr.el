@@ -1533,6 +1533,7 @@ are bound by that package and unbound where it is not installed."
   "o" #'herdr-status-visit-other-window
   "P" #'herdr-status-prompt
   "R" #'herdr-status-rename
+  "M-R" #'herdr-status-rename-afresh
   "K" #'herdr-status-close-pane
   "d" #'herdr-status-detach
   "x" #'herdr-status-stop
@@ -2216,6 +2217,19 @@ pane has the label its row reads by instead, and that is what is set."
         (herdr-api-pane-rename (alist-get 'pane_id entry) :label name))))
   (herdr-status-refresh))
 
+(defun herdr-status-rename-afresh (name &optional entry)
+  "Rename the agent at point, or ENTRY, to NAME, offered afresh.
+The name offered is the one `herdr-agent-name-function' gives the agent
+now, whatever it is called already."
+  (interactive
+   (let ((entry (herdr-status--attachable-at-point)))
+     (unless (alist-get 'agent entry)
+       (user-error "No agent at point"))
+     (list (read-string "Agent name: "
+                        (herdr-agent-title (herdr-agent-offered-name entry)))
+           entry)))
+  (herdr-status-rename name entry))
+
 (defun herdr-status-close-pane ()
   "Close the pane at point, after confirmation.
 An agent in that pane goes with it; `herdr-status-stop' is the same
@@ -2467,6 +2481,7 @@ Every suffix here is bound directly in `herdr-status-mode-map' as well."
     ("r" "resume a past session" herdr-status-resume)
     ("P" "prompt" herdr-status-prompt)
     ("R" "rename" herdr-status-rename)
+    ("M-R" "rename afresh" herdr-status-rename-afresh)
     ("d" "detach, pane runs on" herdr-status-detach)
     ("x" "stop, pane closes" herdr-status-stop)
     ("X" "restart, resuming in a fresh pane" herdr-status-restart)]

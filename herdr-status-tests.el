@@ -450,6 +450,25 @@
       (call-interactively #'herdr-status-rename)
       (should (equal offered "derived")))))
 
+(ert-deftest herdr-status-rename-afresh-offers-a-named-agent-a-new-name ()
+  (let ((entry '((agent . "claude") (name . "index-work") (terminal_id . "t9")
+                 (pane_id . "%9") (server_key . "/tmp/alpha.sock")))
+        (herdr-agent-name-function (lambda (_entry) "Index Work"))
+        (herdr-agent-title-function #'upcase)
+        offered renamed)
+    (cl-letf (((symbol-function 'herdr-status--attachable-at-point) (lambda () entry))
+              ((symbol-function 'herdr-agent--occupied-names) (lambda (_) '("index-work")))
+              ((symbol-function 'read-string)
+               (lambda (_prompt &optional initial &rest _) (setq offered initial) "Fresh One"))
+              ((symbol-function 'herdr-agent-rename)
+               (lambda (_target name) (setq renamed name)))
+              ((symbol-function 'herdr-status-refresh) #'ignore))
+      (call-interactively #'herdr-status-rename-afresh)
+      (should (equal offered "INDEX-WORK"))
+      (should (equal renamed "Fresh One"))
+      (should (eq (lookup-key herdr-status-mode-map (kbd "M-R"))
+                  #'herdr-status-rename-afresh)))))
+
 (ert-deftest herdr-status-recent-section-follows-the-mru-order ()
   (herdr-status-tests--with-dashboard
     (setq herdr--recent-session-targets

@@ -401,6 +401,7 @@ harness gave the session, and whatever fields the harness's adapter reports.
 | `o` | show it in another window |
 | `P` | send a prompt |
 | `R` | rename an agent, or relabel a pane |
+| `M-R` | rename an agent to a freshly derived name |
 | `d` | detach: Emacs lets go of the terminal, the pane runs on |
 | `x` | stop the agent, after confirmation |
 | `K` | close the pane at point, after confirmation |
@@ -409,7 +410,7 @@ harness gave the session, and whatever fields the harness's adapter reports.
 
 `?` opens a menu of these keys and `q` quits the dashboard.
 
-`R` on an agent without a name offers one: `herdr-agent-name-function` derives it from the agent's
+`R` on an agent without a name offers one, and `M-R` offers any agent a fresh one: `herdr-agent-name-function` derives it from the agent's
 repository and the task its terminal title shows, as in `memex-incremental-index`, and makes it
 unique on its server. herdr takes lowercase names only, so a title given or typed is renamed to its
 slug, `Index Work` to `index-work`, and `herdr-agent-title-function` shows a name as a title again.
