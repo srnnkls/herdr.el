@@ -176,15 +176,15 @@ name of the one owning the directory, so the two line up."
 
 (defvar herdr--open-tab-cleanup-failed-function nil)
 
-(cl-defun herdr-open-tab (&key cwd label workspace env focus)
+(cl-defun herdr-open-tab (&key cwd label workspace env focus fresh)
   "Open a tab labelled LABEL in the herdr workspace labelled WORKSPACE.
 CWD is its working directory.  Creates that workspace when it does not
-exist yet, and labels the tab it comes with rather than leaving an empty
-one behind.  Without a WORKSPACE the tab goes to the focused workspace,
-or to a new one when the session has none.  The reply carries
-`root_pane' and `tab'."
-  (let ((id (herdr-workspace-id workspace)))
-    (if (or id (and (not workspace) (herdr-workspaces)))
+exist yet, or always with FRESH non-nil, and labels the tab it comes
+with rather than leaving an empty one behind.  Without a WORKSPACE the
+tab goes to the focused workspace, or to a new one when the session has
+none.  The reply carries `root_pane' and `tab'."
+  (let ((id (and (not fresh) (herdr-workspace-id workspace))))
+    (if (or id (and (not workspace) (not fresh) (herdr-workspaces)))
         (herdr-api-tab-create :cwd cwd :label label :env env
                               :workspace-id id :focus focus)
       (let ((created (herdr-api-workspace-create

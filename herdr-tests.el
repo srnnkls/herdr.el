@@ -230,6 +230,22 @@ alist.  Returns the socket path."
         (should (equal (cdr (assq 'workspace_id (cdar calls))) "w1")))
     (herdr-tests--teardown)))
 
+(ert-deftest herdr-open-tab-opens-a-fresh-workspace-beside-one-of-the-same-label ()
+  (unwind-protect
+      (let* ((calls nil)
+             (herdr-socket-path
+              (herdr-tests--start-server
+               (lambda (request)
+                 (push (alist-get 'method request) calls)
+                 `((id . ,(alist-get 'id request))
+                   (result . ((type . "ok")
+                              (tab . ((tab_id . "w3:t1")))
+                              (workspaces . ,(vector '((workspace_id . "w1")
+                                                       (label . "app")))))))))))
+        (herdr-open-tab :cwd "/tmp" :label "feat-x" :workspace "app" :fresh t)
+        (should (equal (reverse calls) '("workspace.create" "tab.rename"))))
+    (herdr-tests--teardown)))
+
 (ert-deftest herdr-open-tab-creates-a-missing-workspace-and-names-its-tab ()
   (unwind-protect
       (let* ((calls nil)
