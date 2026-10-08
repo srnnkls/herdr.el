@@ -422,7 +422,7 @@ recent one.
 | `herdr-agent-detach` | let go of a session record, leaving the pane running |
 | `herdr-agent-stop`, `herdr-agent-stop-all` | close an agent's pane, or every agent's on the current server |
 | `herdr-agent-switch` | focus a target in herdr and show it |
-| `herdr-agent-rename` | rename a target; a title is renamed to its slug |
+| `herdr-agent-rename` | rename a target; herdr takes a title as its slug, and Emacs shows it as typed until it restarts |
 | `herdr-agent-name-slug`, `herdr-agent-title` | a title as a herdr agent name, and a name as its title |
 | `herdr-agent-status` | a target's herdr record plus its adapter's `:status` fields |
 | `herdr-agent-prompt` | send text as a prompt, keeping a draft where it can |

@@ -706,9 +706,17 @@ addresses it with; only what is displayed changes."
   :type 'function
   :group 'herdr)
 
+(defvar herdr-agent--titles (make-hash-table :test #'equal)
+  "The title each agent name was last given as, keyed by the name.
+A title herdr cannot take as a name is set as its slug, and shown as it
+was typed for as long as this Emacs runs.")
+
 (defun herdr-agent-title (name)
-  "Return the title `herdr-agent-title-function' shows agent NAME by."
-  (and name (funcall herdr-agent-title-function name)))
+  "Return the title agent NAME is shown by.
+That is the title NAME was given as in this Emacs, and otherwise what
+`herdr-agent-title-function' makes of it."
+  (and name (or (gethash name herdr-agent--titles)
+                (funcall herdr-agent-title-function name))))
 
 (defun herdr--entry-label (entry)
   "Return a short label for pane or agent ENTRY."

@@ -2406,7 +2406,7 @@ functions scheduled, and `refusals', how many renames herdr turns down."
   (should-not (herdr-agent-name-slug "  !! "))
   (should-not (herdr-agent-name-slug nil)))
 
-(ert-deftest herdr-agent-rename-sends-a-title-s-slug ()
+(ert-deftest herdr-agent-rename-sends-a-title-s-slug-and-shows-the-title ()
   (let (sent)
     (cl-letf (((symbol-function 'herdr-agent--public-target)
                (lambda (target) (cons "/tmp/s.sock" target)))
@@ -2414,9 +2414,14 @@ functions scheduled, and `refusals', how many renames herdr turns down."
                (lambda (_server terminal function) (funcall function terminal)))
               ((symbol-function 'herdr-api-agent-rename)
                (lambda (target &rest keys) (setq sent (cons target (plist-get keys :name))))))
-      (herdr-agent-rename "t1" "Limen Workon Scope")
-      (should (equal sent '("t1" . "limen-workon-scope")))
-      (should-error (herdr-agent-rename "t1" "  ") :type 'user-error))))
+      (let ((herdr-agent--titles (make-hash-table :test #'equal))
+            (herdr-agent-title-function #'upcase))
+        (herdr-agent-rename "t1" "API Review: v2 ")
+        (should (equal sent '("t1" . "api-review-v2")))
+        (should (equal (herdr-agent-title "api-review-v2") "API Review: v2"))
+        (herdr-agent-rename "t1" "api-review-v2")
+        (should (equal (herdr-agent-title "api-review-v2") "API-REVIEW-V2"))
+        (should-error (herdr-agent-rename "t1" "  ") :type 'user-error)))))
 
 (ert-deftest herdr-agent-start-without-a-name-launches-under-a-placeholder ()
   (herdr-agent-tests--with-placeholder-server

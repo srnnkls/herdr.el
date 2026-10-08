@@ -1350,16 +1350,20 @@ lists none asks for the reference instead."
                  (herdr-attach-entry (cons (cons 'server_key server-key) agent)))))))
       (herdr--record-session-target (cons server-key terminal)))))
 
-(defun herdr-agent-rename (target name)
-  "Rename TARGET to NAME, or to NAME's slug where NAME is a title."
-  (setq name (or (herdr-agent-name-slug name)
-                 (user-error "No agent name in %S" name)))
-  (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
-    (herdr-agent--with-server server-key
-      (herdr-agent--call-with-request-target
-       server-key terminal
-       (lambda (request-target)
-         (herdr-api-agent-rename request-target :name name))))))
+(defun herdr-agent-rename (target title)
+  "Rename TARGET to TITLE, which herdr takes as its slug.
+TITLE stays what the agent is shown by, as `herdr-agent-title' answers."
+  (let ((name (or (herdr-agent-name-slug title)
+                  (user-error "No agent name in %S" title))))
+    (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
+      (prog1 (herdr-agent--with-server server-key
+               (herdr-agent--call-with-request-target
+                server-key terminal
+                (lambda (request-target)
+                  (herdr-api-agent-rename request-target :name name))))
+        (if (equal name title)
+            (remhash name herdr-agent--titles)
+          (puthash name (string-trim title) herdr-agent--titles))))))
 
 (defun herdr-agent-status (target)
   "Return the status of TARGET."
