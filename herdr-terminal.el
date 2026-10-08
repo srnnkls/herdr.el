@@ -86,6 +86,43 @@ Returns non-nil when a backend took it."
            (bound-and-true-p eat-terminal))
       (eat-term-send-string eat-terminal text) t))))
 
+(defvar ghostel--input-mode)
+(defvar ghostel--pre-readonly-mode)
+(declare-function ghostel-copy-mode "ext:ghostel" ())
+(declare-function ghostel-emacs-mode "ext:ghostel" ())
+(declare-function ghostel-readonly-exit "ext:ghostel" ())
+
+(defun herdr-terminal-screen-p (&optional buffer)
+  "Return non-nil when BUFFER shows a terminal screen rather than a text.
+A herdr attachment does, and so does any Ghostel buffer."
+  (with-current-buffer (or buffer (current-buffer))
+    (or (bound-and-true-p herdr-terminal-id)
+        (derived-mode-p 'ghostel-mode))))
+
+(defun herdr-terminal-freeze (&optional buffer)
+  "Stop the terminal BUFFER shows from repainting, and return what resumes it.
+Nil where the backend cannot be frozen, or the terminal already is.  A
+Ghostel buffer read in Emacs mode, as point leaving the terminal's
+cursor puts it, still repaints, and is put back in that mode on thaw."
+  (with-current-buffer (or buffer (current-buffer))
+    (when (and (derived-mode-p 'ghostel-mode)
+               (fboundp 'ghostel-copy-mode)
+               (not (eq (bound-and-true-p ghostel--input-mode) 'copy)))
+      (let ((reading (eq ghostel--input-mode 'emacs))
+            (before (bound-and-true-p ghostel--pre-readonly-mode))
+            (frozen (current-buffer)))
+        (let ((inhibit-message t))
+          (ghostel-copy-mode))
+        (lambda ()
+          (when (buffer-live-p frozen)
+            (with-current-buffer frozen
+              (when (eq (bound-and-true-p ghostel--input-mode) 'copy)
+                (let ((inhibit-message t))
+                  (if (not reading)
+                      (ghostel-readonly-exit)
+                    (ghostel-emacs-mode)
+                    (setq ghostel--pre-readonly-mode before)))))))))))
+
 (defun herdr-terminal-paste (text &optional buffer)
   "Send TEXT to the terminal BUFFER shows as a bracketed paste.
 Returns non-nil when a backend took it."

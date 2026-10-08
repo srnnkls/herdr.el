@@ -3,6 +3,7 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'herdr-terminal)
+(defvar ghostel--input-mode)
 
 (defmacro herdr-terminal-tests--as (mode &rest body)
   "Run BODY in a buffer answering as MODE, shown in a window."
@@ -83,6 +84,53 @@
                    '((ghostel-send . "typed") (ghostel-paste . "pasted")
                      (vterm-send . "typed") (vterm-paste . "pasted")
                      (eat-send . "typed") (eat-paste . "pasted"))))))
+
+(ert-deftest herdr-terminal-freeze-holds-a-ghostel-screen-until-thawed ()
+  (let (calls)
+    (with-temp-buffer
+      (setq-local major-mode 'ghostel-mode)
+      (setq-local ghostel--input-mode 'semi-char)
+      (cl-letf (((symbol-function 'ghostel-copy-mode)
+                 (lambda () (push 'freeze calls) (setq ghostel--input-mode 'copy)))
+                ((symbol-function 'ghostel-readonly-exit)
+                 (lambda () (push 'thaw calls) (setq ghostel--input-mode 'semi-char))))
+        (should (herdr-terminal-screen-p))
+        (let ((thaw (herdr-terminal-freeze)))
+          (should (eq ghostel--input-mode 'copy))
+          (should-not (herdr-terminal-freeze))
+          (funcall thaw))
+        (should (eq ghostel--input-mode 'semi-char))))
+    (should (equal (nreverse calls) '(freeze thaw)))))
+
+(ert-deftest herdr-terminal-freeze-holds-a-screen-read-in-emacs-mode ()
+  (let (calls)
+    (with-temp-buffer
+      (setq-local major-mode 'ghostel-mode)
+      (setq-local ghostel--input-mode 'emacs)
+      (setq-local ghostel--pre-readonly-mode 'semi-char)
+      (cl-letf (((symbol-function 'ghostel-copy-mode)
+                 (lambda ()
+                   (push 'freeze calls)
+                   (setq ghostel--pre-readonly-mode ghostel--input-mode
+                         ghostel--input-mode 'copy)))
+                ((symbol-function 'ghostel-emacs-mode)
+                 (lambda ()
+                   (push 'read calls)
+                   (setq ghostel--pre-readonly-mode ghostel--input-mode
+                         ghostel--input-mode 'emacs)))
+                ((symbol-function 'ghostel-readonly-exit)
+                 (lambda () (push 'exit calls))))
+        (let ((thaw (herdr-terminal-freeze)))
+          (should (eq ghostel--input-mode 'copy))
+          (funcall thaw))
+        (should (eq ghostel--input-mode 'emacs))
+        (should (eq ghostel--pre-readonly-mode 'semi-char))))
+    (should (equal (nreverse calls) '(freeze read)))))
+
+(ert-deftest herdr-terminal-freeze-leaves-other-buffers-alone ()
+  (with-temp-buffer
+    (should-not (herdr-terminal-screen-p))
+    (should-not (herdr-terminal-freeze))))
 
 (provide 'herdr-terminal-tests)
 ;;; herdr-terminal-tests.el ends here
