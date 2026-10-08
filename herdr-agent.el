@@ -935,14 +935,15 @@ returns without waiting for the agent to be ready, as in
             (cdr entry))))
 
 (cl-defun herdr-agent-start
-    (kind name &key server-key project-root workspace (attach t) timeout-ms (wait t))
+    (kind name &key server-key project-root workspace args (attach t) timeout-ms (wait t))
   "Start native KIND named NAME on SERVER-KEY for PROJECT-ROOT in WORKSPACE.
-ATTACH controls terminal attachment; TIMEOUT-MS limits startup; WAIT nil
-returns without waiting for the agent to be ready."
+ARGS follow KIND's own start arguments.  ATTACH controls terminal
+attachment; TIMEOUT-MS limits startup; WAIT nil returns without waiting
+for the agent to be ready."
   (herdr-agent-start-session
    kind name :server-key server-key :project-root project-root :workspace workspace
-   :args (herdr-agent--native-args kind 'start) :attach attach :timeout-ms timeout-ms
-   :wait wait))
+   :args (append (herdr-agent--native-args kind 'start) args)
+   :attach attach :timeout-ms timeout-ms :wait wait))
 
 (cl-defun herdr-agent-continue
     (kind name &key server-key project-root workspace (attach t) timeout-ms)
@@ -1095,22 +1096,31 @@ attachment; TIMEOUT-MS limits startup."
     (herdr-agent--with-server (herdr-agent-session-server session)
       (herdr-api-pane-send-text (herdr-agent-session-pane session) text))))
 
-(defun herdr-agent-paste (target text)
-  "Paste TEXT into TARGET's pane through `pane.send_input'.
-TEXT is passed unchanged, without an added submit key.  Bracketed-paste
-protection depends on the receiving terminal's mode; without it, newlines
-may submit input."
+(defun herdr-agent--with-pane (target function)
+  "Call FUNCTION with the pane TARGET's agent runs in, on TARGET's server."
   (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
     (herdr-agent--with-server server-key
       (herdr-agent--call-with-request-target
        server-key terminal
        (lambda (request-target)
-         (let ((pane (if-let* ((session (herdr-agent-find server-key terminal)))
-                         (herdr-agent-session-pane session)
-                       (alist-get 'pane_id
-                                  (alist-get 'agent
-                                             (herdr-api-agent-get request-target))))))
-           (herdr-api-pane-send-input pane :text text)))))))
+         (funcall function
+                  (if-let* ((session (herdr-agent-find server-key terminal)))
+                      (herdr-agent-session-pane session)
+                    (alist-get 'pane_id
+                               (alist-get 'agent
+                                          (herdr-api-agent-get request-target))))))))))
+
+(defun herdr-agent-paste (target text)
+  "Paste TEXT into TARGET's pane through `pane.send_input'.
+TEXT is passed unchanged, without an added submit key.  Bracketed-paste
+protection depends on the receiving terminal's mode; without it, newlines
+may submit input."
+  (herdr-agent--with-pane
+   target (lambda (pane) (herdr-api-pane-send-input pane :text text))))
+
+(defun herdr-agent-run (target text)
+  "Type TEXT into TARGET's pane and submit it, as `herdr-pane-run' does."
+  (herdr-agent--with-pane target (lambda (pane) (herdr-pane-run pane text))))
 
 (defun herdr-agent-read (target)
   "Return TARGET's current screen text with ANSI escapes stripped."
@@ -1869,21 +1879,11 @@ Without a binding, read an agent and bind it to the current project."
 
 (defun herdr-agent-escape (target)
   "Send escape to TARGET through herdr's agent API."
-  (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
-    (herdr-agent--with-server server-key
-      (herdr-agent--call-with-request-target
-       server-key terminal
-       (lambda (request-target)
-         (herdr-api-agent-send-keys '("esc") request-target))))))
+  (herdr-agent-send-keys target '("esc")))
 
 (defun herdr-agent-newline (target)
   "Send return to TARGET through herdr's agent API."
-  (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
-    (herdr-agent--with-server server-key
-      (herdr-agent--call-with-request-target
-       server-key terminal
-       (lambda (request-target)
-         (herdr-api-agent-send-keys '("enter") request-target))))))
+  (herdr-agent-send-keys target '("enter")))
 
 (defun herdr-agent-send-keys (target keys)
   "Send KEYS, a list of key names, to TARGET through herdr's agent API.

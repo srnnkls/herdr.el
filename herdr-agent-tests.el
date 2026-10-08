@@ -126,6 +126,26 @@
                    `((,server "pane.send_input"
                               ((pane_id . "pane-1") (text . ,text))))))))
 
+(ert-deftest herdr-agent-run-types-and-submits-in-one-encodable-input ()
+  (let* ((herdr-agent--sessions (make-hash-table :test #'equal))
+         (server (herdr-agent--canonical-server-key "/tmp/herdr-run.sock"))
+         calls)
+    (puthash (cons server "terminal-1")
+             (herdr-agent--make-session :server server :terminal "terminal-1"
+                                        :pane "pane-1" :state 'attached)
+             herdr-agent--sessions)
+    (cl-letf (((symbol-function 'herdr-request)
+               (lambda (method &optional params _timeout)
+                 (json-serialize params)
+                 (push (list method params) calls))))
+      (herdr-agent-run (cons server "terminal-1") "/model")
+      (herdr-pane-run "pane-2" "workon 12"))
+    (should (equal (nreverse calls)
+                   '(("pane.send_input"
+                      ((pane_id . "pane-1") (keys . ["enter"]) (text . "/model")))
+                     ("pane.send_input"
+                      ((pane_id . "pane-2") (keys . ["enter"]) (text . "workon 12"))))))))
+
 (ert-deftest herdr-agent-paste-unregistered-target-resolves-pane ()
   (let* ((herdr-agent--sessions (make-hash-table :test #'equal))
          (herdr-socket-path "/tmp/herdr-paste.sock")
@@ -1949,8 +1969,8 @@ to be reached through the server it was found on."
       (should
        (equal (nreverse calls)
               '((prompt "term-a" "Write the tests" nil)
-                (keys ("esc") "term-a")
-                (keys ("enter") "term-a")
+                (keys ["esc"] "term-a")
+                (keys ["enter"] "term-a")
                 (keys ["2" "right"] "term-a")))))))
 
 (ert-deftest herdr-agent-native-switch-focuses-the-visible-owned-terminal ()
@@ -2089,8 +2109,8 @@ to be reached through the server it was found on."
                   (,server-a close "a:pane")
                   (,server-b buffer "shared" ,server-a)
                   (,server-a prompt "shared" "Write the tests" nil)
-                  (,server-a keys ("esc") "shared")
-                  (,server-a keys ("enter") "shared")
+                  (,server-a keys ["esc"] "shared")
+                  (,server-a keys ["enter"] "shared")
                   (,server-a list)
                   (,server-a close "a:pane")))))))
       (herdr-agent-tests--detach session-a)

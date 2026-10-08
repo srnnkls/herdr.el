@@ -209,6 +209,10 @@ or to a new one when the session has none.  The reply carries
                   (funcall herdr--open-tab-cleanup-failed-function created)))))
            (signal (car err) (cdr err))))))))
 
+(defun herdr-pane-run (pane-id command)
+  "Type COMMAND into PANE-ID and press Enter, in one input as `herdr pane run' does."
+  (herdr-api-pane-send-input pane-id :text command :keys ["enter"]))
+
 (defun herdr-pane-text (pane-id &optional source lines)
   "Return terminal output of PANE-ID.
 SOURCE is one of `visible' (default), `recent', `recent_unwrapped'
