@@ -210,7 +210,8 @@ none.  The reply carries `root_pane' and `tab'."
            (signal (car err) (cdr err))))))))
 
 (defun herdr-pane-run (pane-id command)
-  "Type COMMAND into PANE-ID and press Enter, in one input as `herdr pane run' does."
+  "Type COMMAND into PANE-ID and press Enter in one input.
+This is what `herdr pane run' does."
   (herdr-api-pane-send-input pane-id :text command :keys ["enter"]))
 
 (defun herdr-pane-text (pane-id &optional source lines)
