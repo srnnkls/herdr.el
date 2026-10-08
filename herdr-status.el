@@ -2214,9 +2214,9 @@ pane has the label its row reads by instead, and that is what is set.
    (let ((entry (herdr-status--attachable-at-point)))
      (list (if (alist-get 'agent entry)
                (read-string "Agent name: "
-                            (if-let* ((current (alist-get 'name entry)))
+                            (if (alist-get 'name entry)
                                 (and herdr-status-rename-prefill
-                                     (herdr-agent-title current))
+                                     (herdr-agent-entry-title entry))
                               (herdr-agent-title (herdr-agent-offered-name entry))))
              (read-string "Pane name: "
                           (and herdr-status-rename-prefill

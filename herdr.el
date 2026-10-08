@@ -699,6 +699,8 @@ leaves something behind."
          herdr-entry-label-decorations)
         label)))
 
+(declare-function herdr-agent-name-slug "herdr-agent" (string))
+
 (defcustom herdr-agent-title-function #'identity
   "Function turning an agent's herdr name into the title it is shown by.
 The name stays what herdr knows the agent by and what a target or a herd
@@ -706,21 +708,26 @@ addresses it with; only what is displayed changes."
   :type 'function
   :group 'herdr)
 
-(defvar herdr-agent--titles (make-hash-table :test #'equal)
-  "The title each agent name was last given as, keyed by the name.
-A title herdr cannot take as a name is set as its slug, and shown as it
-was typed for as long as this Emacs runs.")
-
 (defun herdr-agent-title (name)
-  "Return the title agent NAME is shown by.
-That is the title NAME was given as in this Emacs, and otherwise what
-`herdr-agent-title-function' makes of it."
-  (and name (or (gethash name herdr-agent--titles)
-                (funcall herdr-agent-title-function name))))
+  "Return the title `herdr-agent-title-function' shows agent NAME by."
+  (and name (funcall herdr-agent-title-function name)))
+
+(defun herdr-agent-entry-title (entry)
+  "Return the title agent ENTRY is shown by, or nil where it has no name.
+That is the title its name was given as, kept in its pane's `title'
+token, while the name is still that title's slug; otherwise what
+`herdr-agent-title-function' makes of the name."
+  (when-let* ((name (alist-get 'name entry)))
+    (let ((title (alist-get 'title (alist-get 'tokens entry))))
+      (if (and (stringp title) (not (string-empty-p title))
+               (fboundp 'herdr-agent-name-slug)
+               (equal (herdr-agent-name-slug title) name))
+          title
+        (herdr-agent-title name)))))
 
 (defun herdr--entry-label (entry)
   "Return a short label for pane or agent ENTRY."
-  (or (herdr-agent-title (alist-get 'name entry))
+  (or (herdr-agent-entry-title entry)
       (alist-get 'label entry)
       (herdr--undecorated-label (alist-get 'terminal_title_stripped entry))
       (alist-get 'agent entry)

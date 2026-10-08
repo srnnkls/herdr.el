@@ -328,9 +328,16 @@ alist.  Returns the socket path."
       (delete-directory root t))))
 
 (ert-deftest herdr-entry-label-shows-an-agent-name-by-its-title ()
+  (require 'herdr-agent)
   (let ((herdr-agent-title-function #'upcase))
     (should (equal (herdr--entry-label '((name . "api-review") (label . "x")))
                    "API-REVIEW"))
+    (should (equal (herdr--entry-label
+                    '((name . "api-review-v2") (tokens . ((title . "API Review: v2")))))
+                   "API Review: v2"))
+    (should (equal (herdr--entry-label
+                    '((name . "renamed") (tokens . ((title . "API Review: v2")))))
+                   "RENAMED"))
     (should (equal (herdr--entry-label '((label . "x"))) "x"))))
 
 (ert-deftest herdr-buffer-names-make-room-for-repeated-labels ()

@@ -1350,20 +1350,30 @@ lists none asks for the reference instead."
                  (herdr-attach-entry (cons (cons 'server_key server-key) agent)))))))
       (herdr--record-session-target (cons server-key terminal)))))
 
+(defconst herdr-agent-metadata-source "herdr-agent"
+  "The source an agent's title is reported to herdr under.")
+
 (defun herdr-agent-rename (target title)
   "Rename TARGET to TITLE, which herdr takes as its slug.
-TITLE stays what the agent is shown by, as `herdr-agent-title' answers."
-  (let ((name (or (herdr-agent-name-slug title)
-                  (user-error "No agent name in %S" title))))
+TITLE goes to the pane's `title' token as typed, for
+`herdr-agent-entry-title' to show; a TITLE that is its own slug clears
+the token."
+  (let* ((name (or (herdr-agent-name-slug title)
+                   (user-error "No agent name in %S" title)))
+         (title (string-trim title)))
     (pcase-let ((`(,server-key . ,terminal) (herdr-agent--public-target target)))
       (prog1 (herdr-agent--with-server server-key
                (herdr-agent--call-with-request-target
                 server-key terminal
                 (lambda (request-target)
                   (herdr-api-agent-rename request-target :name name))))
-        (if (equal name title)
-            (remhash name herdr-agent--titles)
-          (puthash name (string-trim title) herdr-agent--titles))))))
+        (ignore-error herdr-error
+          (herdr-agent--with-pane
+           target
+           (lambda (pane)
+             (herdr-api-pane-report-metadata
+              pane herdr-agent-metadata-source
+              :tokens `((title . ,(if (equal name title) :null title)))))))))))
 
 (defun herdr-agent-status (target)
   "Return the status of TARGET."

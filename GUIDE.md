@@ -413,8 +413,9 @@ harness gave the session, and whatever fields the harness's adapter reports.
 `R` on an agent without a name offers one, and `M-R` offers any agent a fresh one: `herdr-agent-name-function` derives it from the agent's
 repository and the task its terminal title shows, as in `memex-incremental-index`, and makes it
 unique on its server. herdr takes lowercase names only, so a title given or typed is renamed to its
-slug, `Index Work` to `index-work`. Emacs shows the title as it was typed until it restarts, and
-after that `herdr-agent-title-function` makes a title of the name again.
+slug, `Index Work` to `index-work`, and the title as typed goes to the pane's `title` token under
+the source `herdr-agent`, where every view shows it while the name is still its slug. A name with
+no title of its own is shown as `herdr-agent-title-function` makes it.
 
 ### Filtering, ordering and grouping
 
