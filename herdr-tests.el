@@ -1144,5 +1144,35 @@ looks for a replacement buffer runs into."
                      "\e_herdr-yield;show\e\\")))
     (should (seq-every-p (lambda (pair) (eq (car pair) buffer)) sent))))
 
+(ert-deftest herdr-tell-appearance-reports-each-change-to-listed-agents ()
+  (let ((claude (generate-new-buffer " *herdr-claude-test*"))
+        (codex (generate-new-buffer " *herdr-codex-test*"))
+        (hidden (generate-new-buffer " *herdr-hidden-test*"))
+        (appearance 'dark)
+        (sent nil))
+    (unwind-protect
+        (progn
+          (with-current-buffer claude (setq herdr-terminal-id "term_a"))
+          (with-current-buffer codex (setq herdr-terminal-id "term_b"))
+          (with-current-buffer hidden
+            (setq herdr-terminal-id "term_c" herdr--yield 'hidden))
+          (cl-letf (((symbol-function 'get-buffer-process) (lambda (_) 'process))
+                    ((symbol-function 'process-live-p) #'identity)
+                    ((symbol-function 'herdr--appearance) (lambda () appearance))
+                    ((symbol-function 'herdr-agents)
+                     (lambda ()
+                       '(((terminal_id . "term_a") (agent . "claude"))
+                         ((terminal_id . "term_b") (agent . "codex"))
+                         ((terminal_id . "term_c") (agent . "claude")))))
+                    ((symbol-function 'herdr-terminal-send)
+                     (lambda (text &optional _) (push (cons (current-buffer) text) sent))))
+            (herdr-tell-appearance)
+            (herdr-tell-appearance)
+            (setq appearance 'light)
+            (herdr-tell-appearance)))
+      (mapc #'kill-buffer (list claude codex hidden)))
+    (should (equal (reverse sent)
+                   `((,claude . "\e[?997;1n") (,claude . "\e[?997;2n"))))))
+
 (provide 'herdr-tests)
 ;;; herdr-tests.el ends here

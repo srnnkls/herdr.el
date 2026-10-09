@@ -28,6 +28,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'color)
 
 (defconst herdr-version "0.1.0"
   "Herdr package version.")
@@ -397,6 +398,9 @@ fallback."
       (when window (select-window window))
       window))))
 
+(defvar herdr-appearance-retry-delay 10
+  "Seconds after an attach to tell an agent herdr had not yet detected.")
+
 (defvar-local herdr--yield nil
   "Whether this attachment through `herdr-yield' was last told it is shown.
 One of `shown', `hidden' and `unknown'; nil for any other attachment.")
@@ -613,6 +617,7 @@ the buffer when non-nil.  Returns the buffer."
       (herdr-claim-buffer buffer terminal-id session)
       (when display (herdr-display-buffer buffer))
       (herdr--yield-sync)
+      (run-with-timer herdr-appearance-retry-delay nil #'herdr-tell-appearance)
       buffer)))
 
 ;;;; Yielding the size
@@ -621,7 +626,8 @@ the buffer when non-nil.  Returns the buffer."
   "Tell every attachment through `herdr-yield' whether Emacs shows it.
 One a window shows while an Emacs frame has focus keeps Emacs's size;
 the rest hand it to whichever other client looks at their tab."
-  (let ((focused (seq-some #'frame-focus-state (visible-frame-list))))
+  (let ((focused (seq-some #'frame-focus-state (visible-frame-list)))
+        revealed)
     (dolist (buffer (buffer-list))
       (when-let* ((state (buffer-local-value 'herdr--yield buffer))
                   (process (get-buffer-process buffer))
@@ -630,13 +636,72 @@ the rest hand it to whichever other client looks at their tab."
                           'shown
                         'hidden)))
           (unless (eq state wanted)
+            (when (eq wanted 'shown)
+              (setq revealed t))
             (with-current-buffer buffer
               (setq herdr--yield wanted)
               (herdr-terminal-send (format "\e_herdr-yield;%s\e\\"
-                                           (if (eq wanted 'shown) "show" "hide"))))))))))
+                                           (if (eq wanted 'shown) "show" "hide"))))))))
+    (when revealed
+      (herdr-tell-appearance))))
 
 (add-hook 'window-buffer-change-functions #'herdr--yield-sync)
 (add-function :after after-focus-change-function #'herdr--yield-sync)
+
+;;;; Telling agents the appearance
+
+(defcustom herdr-appearance-agents '("claude")
+  "Agents an attached terminal tells whether Emacs is light or dark.
+Herdr passes a pane the color scheme its own terminal clients report,
+and an attachment reports none, so Emacs reports its own to these
+agents, as a terminal does when its color scheme changes."
+  :type '(repeat string)
+  :group 'herdr)
+
+(defvar-local herdr--appearance nil
+  "Appearance this attachment's agent was last told, `light' or `dark'.")
+(put 'herdr--appearance 'permanent-local t)
+
+(defun herdr--appearance ()
+  "Return `dark' or `light' after the default face's background, or nil."
+  (when-let* ((rgb (color-name-to-rgb (face-background 'default nil t))))
+    (if (color-dark-p rgb) 'dark 'light)))
+
+(defun herdr--appearance-pending (appearance)
+  "Return the live attachments whose agent was not told APPEARANCE.
+One `herdr-yield' hides drops its input, so it waits until shown."
+  (seq-filter (lambda (buffer)
+                (and (buffer-local-value 'herdr-terminal-id buffer)
+                     (not (eq (buffer-local-value 'herdr--yield buffer) 'hidden))
+                     (not (eq (buffer-local-value 'herdr--appearance buffer)
+                              appearance))
+                     (process-live-p (get-buffer-process buffer))))
+              (buffer-list)))
+
+(defun herdr-tell-appearance (&rest _)
+  "Tell each attached agent of `herdr-appearance-agents' Emacs's appearance.
+The report is the one a terminal sends an application that asked to
+hear of color scheme changes: CSI ? 997 ; 1 n for dark, 2 for light."
+  (when-let* ((appearance (herdr--appearance)))
+    (pcase-dolist (`(,session . ,buffers)
+                   (seq-group-by (lambda (buffer)
+                                   (buffer-local-value 'herdr-terminal-session buffer))
+                                 (herdr--appearance-pending appearance)))
+      (let ((agents (condition-case nil
+                        (herdr-with-session session (herdr-agents))
+                      (herdr-error nil))))
+        (dolist (buffer buffers)
+          (let* ((terminal-id (buffer-local-value 'herdr-terminal-id buffer))
+                 (agent (seq-find (lambda (agent)
+                                    (equal (alist-get 'terminal_id agent) terminal-id))
+                                  agents)))
+            (when (member (alist-get 'agent agent) herdr-appearance-agents)
+              (with-current-buffer buffer
+                (setq herdr--appearance appearance)
+                (herdr-terminal-send
+                 (if (eq appearance 'dark) "\e[?997;1n" "\e[?997;2n"))))))))))
+
+(add-hook 'enable-theme-functions #'herdr-tell-appearance)
 
 ;;;; Completion
 
