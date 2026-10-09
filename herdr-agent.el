@@ -301,7 +301,7 @@ with its own directory name."
                                                    herdr-agent--name-limit))
                             "-+" "-+"))
          (tail (herdr-agent--tail (alist-get 'terminal_title_stripped entry)
-                                 head)))
+                                  head)))
     (herdr-agent--available-name (if tail (concat head "-" tail) head)
                                  (herdr--entry-server entry))))
 
@@ -1536,11 +1536,11 @@ alike on a screen, and both are read as a break."
                            line))
                         (cdr body))
                        (herdr-agent--screen-trim
-                       (mapconcat
-                        (lambda (line)
-                          (herdr-agent--screen-trim
-                           (herdr-agent--screen-unindent line width)))
-                        body "\n")))))
+                        (mapconcat
+                         (lambda (line)
+                           (herdr-agent--screen-trim
+                            (herdr-agent--screen-unindent line width)))
+                         body "\n")))))
           (unless (member draft '(nil "")) draft))))))
 
 (defun herdr-agent-draft (target)
