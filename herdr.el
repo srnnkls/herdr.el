@@ -517,6 +517,115 @@ focus-in still goes through."
 
 (advice-add 'ghostel--focus-event :around #'herdr--ghostel-focus-event)
 
+(defcustom herdr-scroll-read-only t
+  "Whether a read-only Ghostel attachment scrolls the history herdr keeps.
+An attachment's buffer holds only its terminal's screen; what scrolled
+off it stays with herdr, which the wheel reaches while keys go to the
+terminal.  Non-nil sends the wheel, the scroll commands, line motion and
+a mouse drag past the buffer's edge there in `ghostel-emacs-mode' too."
+  :type 'boolean
+  :group 'herdr)
+
+(declare-function ghostel--mouse-event "ext:ghostel-module" (term action button row col mods))
+(defvar ghostel--input-mode)
+(defvar mouse-scroll-delay)
+
+(defconst herdr--wheel-lines 3
+  "Lines herdr scrolls a terminal for one wheel step.")
+
+(defun herdr--scroll-history-p ()
+  "Return non-nil when scrolling this buffer scrolls herdr's history."
+  (and herdr-scroll-read-only
+       herdr-terminal-id
+       (derived-mode-p 'ghostel-mode)
+       (eq (bound-and-true-p ghostel--input-mode) 'emacs)
+       (bound-and-true-p ghostel--term)))
+
+(defun herdr--scroll-history (lines)
+  "Scroll herdr's history of this buffer's terminal LINES lines back.
+Negative LINES scroll forward, toward the live screen.  Returns non-nil
+when the terminal took the wheel steps doing so."
+  (let ((sent nil))
+    (dotimes (_ (ceiling (abs lines) herdr--wheel-lines) sent)
+      (when (ghostel--mouse-event ghostel--term 0 (if (> lines 0) 4 5) 0 0 0)
+        (setq sent t)))))
+
+(defun herdr--page-lines (arg)
+  "Return the lines `scroll-up' scrolls for ARG."
+  (pcase arg
+    ('nil (max 1 (- (window-body-height) next-screen-context-lines)))
+    ('- (- (herdr--page-lines nil)))
+    (_ (prefix-numeric-value arg))))
+
+(defun herdr--ghostel-scroll-event (function event button)
+  "Call FUNCTION with EVENT and BUTTON, or scroll herdr's history instead.
+Ghostel forwards the wheel only while keys reach the terminal."
+  (or (funcall function event button)
+      (and (herdr--scroll-history-p)
+           (herdr--scroll-history
+            (if (eq button 4) herdr--wheel-lines (- herdr--wheel-lines))))))
+
+(defun herdr--scroll-up (function &optional arg)
+  "Call FUNCTION with ARG, or scroll herdr's history forward instead."
+  (unless (and (herdr--scroll-history-p)
+               (herdr--scroll-history (- (herdr--page-lines arg))))
+    (funcall function arg)))
+
+(defun herdr--scroll-down (function &optional arg)
+  "Call FUNCTION with ARG, or scroll herdr's history back instead."
+  (unless (and (herdr--scroll-history-p)
+               (herdr--scroll-history (herdr--page-lines arg)))
+    (funcall function arg)))
+
+(defun herdr--half-page-lines (count)
+  "Return the lines evil's half-page scroll moves for COUNT."
+  (if (and count (> count 0)) count (max 1 (/ (window-body-height) 2))))
+
+(defun herdr--evil-scroll-up (function &optional count)
+  "Call FUNCTION with COUNT, or scroll herdr's history back half a page."
+  (unless (and (herdr--scroll-history-p)
+               (herdr--scroll-history (herdr--half-page-lines count)))
+    (funcall function count)))
+
+(defun herdr--evil-scroll-down (function &optional count)
+  "Call FUNCTION with COUNT, or scroll herdr's history forward half a page."
+  (unless (and (herdr--scroll-history-p)
+               (herdr--scroll-history (- (herdr--half-page-lines count))))
+    (funcall function count)))
+
+(defun herdr--line-move (function arg &rest args)
+  "Call FUNCTION with ARG and ARGS, scrolling herdr's history past an edge.
+Point moves as far as the screen goes, and the lines beyond it scroll
+the history under it."
+  (if (not (herdr--scroll-history-p))
+      (apply function arg args)
+    (let* ((target (+ (line-number-at-pos) arg))
+           (last (line-number-at-pos (point-max)))
+           (past (cond ((< target 1) (- 1 target))
+                       ((> target last) (- last target))
+                       (t 0))))
+      (unless (= arg (- past))
+        (apply function (+ arg past) args))
+      (unless (or (zerop past) (herdr--scroll-history past))
+        (signal (if (> past 0) 'beginning-of-buffer 'end-of-buffer) nil)))))
+
+(defun herdr--mouse-scroll (function window jump &rest args)
+  "Call FUNCTION with WINDOW, JUMP and ARGS, or scroll herdr's history.
+A drag past WINDOW's edge scrolls until new input arrives."
+  (if (with-current-buffer (window-buffer window) (herdr--scroll-history-p))
+      (with-current-buffer (window-buffer window)
+        (while (and (herdr--scroll-history (- jump))
+                    (sit-for mouse-scroll-delay))))
+    (apply function window jump args)))
+
+(advice-add 'ghostel--forward-scroll-event :around #'herdr--ghostel-scroll-event)
+(advice-add 'scroll-up :around #'herdr--scroll-up)
+(advice-add 'scroll-down :around #'herdr--scroll-down)
+(advice-add 'evil-scroll-up :around #'herdr--evil-scroll-up)
+(advice-add 'evil-scroll-down :around #'herdr--evil-scroll-down)
+(advice-add 'line-move :around #'herdr--line-move)
+(advice-add 'mouse-scroll-subr :around #'herdr--mouse-scroll)
+
 (defvar herdr-buffer-functions nil
   "Functions called with each buffer that starts showing a herdr terminal.
 Runs for plain attachments and for the buffers other integrations build

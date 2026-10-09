@@ -252,6 +252,7 @@ is `$XDG_CONFIG_HOME/herdr/sessions/NAME/herdr.sock`; `XDG_CONFIG_HOME` defaults
 | `herdr-window-slot-base` | integer | 100 | first side-window slot attached terminals take |
 | `herdr-display-buffer-action` | `display-buffer` action or nil | nil | replaces the side window when set |
 | `herdr-report-focus-loss` | boolean | nil | report Emacs focus-out to Ghostel terminals |
+| `herdr-scroll-read-only` | boolean | t | scroll herdr's history from a read-only Ghostel buffer |
 | `herdr-terminal-quiet-exit-regexps` | list of regexps | detach and exited-terminal lines | CLI lines that end an attachment without a warning |
 | `herdr-entry-label-decorations` | list of regexps | Oh My Pi's title preamble | taken off the front of a terminal title used as a label |
 

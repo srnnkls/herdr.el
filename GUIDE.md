@@ -132,6 +132,13 @@ With Ghostel, an Emacs window losing focus is not reported to the process by def
 herdr's own client does not report focus again until its own focus changes, and the agent would
 believe nobody is looking. `herdr-report-focus-loss` reports it anyway.
 
+An attachment's buffer holds only the terminal's screen; what scrolled off it stays with herdr.
+While keys reach the terminal, Ghostel hands the wheel to herdr, which scrolls that history. In
+`ghostel-emacs-mode` Emacs would scroll the buffer instead and stop at the screen's top, so
+`herdr-scroll-read-only`, on by default, sends herdr the wheel there too, along with the page and
+half-page scroll commands, line motion past the top or bottom row, and a mouse drag past the
+window's edge.
+
 An attachment also owns its terminal's size for as long as it lasts, so a phone or another client
 showing the same tab draws into the size Emacs left. Setting `herdr-executable` to
 `bin/herdr-yield` keeps the size only while a window of a focused Emacs frame shows the buffer;
