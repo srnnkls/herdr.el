@@ -76,35 +76,13 @@ agents only the plain `herdr' commands the helper wraps."
   :group 'herdr-herd)
 
 (defcustom herdr-herd-protocol "\
-You are part of a herd: a set of coding agents working in the same herdr
-session, each in its own pane, that know each other by name.
-
-Every member is reached through the pane it runs in, listed in the
-roster below beside its name. Reach a peer with the herdr CLI:
-
-    herdr agent prompt <pane> \"<message>\"
-    herdr agent read <pane>          # what that peer's terminal shows
-    herdr agent get <pane>           # its state: idle, working, blocked, done
-
-Membership is pane metadata: a member's pane carries the token herd,
-which `herdr pane list' reports under tokens. Change it with
-
-    herdr pane report-metadata <pane> --source herdr-herd --token herd=<herd>
-    herdr pane report-metadata <pane> --source herdr-herd --clear-token herd
-
-`herdr --help' and `herdr --skill' are the authority for CLI syntax; do
-not guess flags. Every control command needs HERDR_ENV=1 in this shell.
-
-Messaging a peer interrupts it. Check `herdr agent get <pane>' first and
-prefer a peer that is idle or done; a peer that is working or blocked
-will read your message in the middle of its own turn.
-
-A pane that no longer answers means that peer exited. `herdr pane list'
-shows who is live. Do not guess pane ids; take them from the roster or
-from `herdr pane list'.
-
-Say who you are when you write to a peer, keep messages short, and state
-what you want back."
+You are in a herd: agents in this herdr session, reached by pane.
+  herdr agent prompt <pane> \"<msg>\"   # interrupts; `herdr agent get <pane>' first
+  herdr agent read <pane>
+Join or leave: herdr pane report-metadata <pane> --source herdr-herd
+--token herd=<herd> | --clear-token herd. Needs HERDR_ENV=1; `herdr
+--help' for syntax. Lines opening `[herd' are notices: do not reply.
+Name yourself and keep messages short."
   "What a joining agent is told about being in a herd.
 The live roster is appended to this when a member joins."
   :type 'string
@@ -249,35 +227,27 @@ AGENTS are the entries to read, the live ones by default."
   (cdr (seq-find (lambda (cell) (herdr-herd--same-p (car cell) herd))
                  (herdr-herds agents))))
 
-(defun herdr-herd--roster-line (entry)
-  "Return ENTRY as one line of a roster: its pane, name, harness and directory."
-  (format "  %-8s %-32s %-8s %s"
-          (or (alist-get 'pane_id entry) "?")
+(defun herdr-herd-entry-brief (entry)
+  "Return ENTRY as its name, harness and pane, for a one-line notice."
+  (format "%s (%s, %s)"
           (herdr--entry-label entry)
           (or (alist-get 'agent entry) "?")
-          (or (alist-get 'cwd entry) "")))
+          (alist-get 'pane_id entry)))
+
+(defun herdr-herd--roster-line (entry)
+  "Return ENTRY as one line of a roster: its pane, name and harness."
+  (format "  %-8s %s (%s)"
+          (or (alist-get 'pane_id entry) "?")
+          (herdr--entry-label entry)
+          (or (alist-get 'agent entry) "?")))
 
 (defun herdr-herd--helper ()
   "Return what to tell a joining agent about the `herdr-herd' helper, or nil."
   (when-let* ((script (if (functionp herdr-herd-command)
                           (funcall herdr-herd-command)
                         herdr-herd-command)))
-    (concat "\
-A helper wrapping those commands is at
-
-    " script "
-
-    herdr-herd list                  # every herd and who is in it
-    herdr-herd peers                 # your herd's other members
-    herdr-herd of                    # the herd you are in
-    herdr-herd join <herd>           # join a herd
-    herdr-herd leave                 # leave the herd you are in
-    herdr-herd say <message>         # send it to every idle peer
-    herdr-herd tell <pane> <message> # send it to one peer
-
-It defaults every pane to your own, so it needs no arguments to talk
-about you. It is a convenience over the commands above and nothing more,
-so use those directly whenever you prefer.")))
+    (concat "Helper: " script
+            " list|peers|of|join <herd>|leave|say <msg>|tell <pane> <msg>")))
 
 (defun herdr-herd--roster (herd self members)
   "Return the prompt telling SELF, an entry, it is in HERD alongside MEMBERS."
@@ -285,26 +255,26 @@ so use those directly whenever you prefer.")))
                            members))
         (name (cdr herd)))
     (concat "/herd " name " — you are " (herdr--entry-label self)
-            " in pane " (alist-get 'pane_id self) "\n\n"
-            herdr-herd-protocol "\n\n"
-            (mapconcat (lambda (paragraph) (concat paragraph "\n\n"))
+            " in pane " (alist-get 'pane_id self) "\n"
+            herdr-herd-protocol "\n"
+            (mapconcat (lambda (paragraph) (concat paragraph "\n"))
                        (delq nil (mapcar (lambda (function) (funcall function herd))
                                          herdr-herd-protocol-functions))
                        "")
             (when-let* ((helper (herdr-herd--helper)))
-              (concat helper "\n\n"))
+              (concat helper "\n"))
             (if peers
-                (concat "Your peers in herd " name ":\n"
+                (concat "Peers:\n"
                         (string-join (mapcar #'herdr-herd--roster-line peers)
                                      "\n"))
-              (concat "You are the only member of herd " name " so far."))
+              "No peers yet.")
             "\n")))
 
 (defun herdr-herd-notice (herd text)
   "Return TEXT as a one-line notice to a member of HERD.
-It opens with `herdr-herd-notice-prefix' and HERD's name and asks for
-no reply, so the member reads it without acting on it."
-  (format "%s%s] %s No reply needed." herdr-herd-notice-prefix (cdr herd) text))
+It opens with `herdr-herd-notice-prefix' and HERD's name, which the
+protocol tells a member not to answer."
+  (format "%s%s] %s" herdr-herd-notice-prefix (cdr herd) text))
 
 (defun herdr-herd--same-pane-p (one other)
   "Return non-nil when entries ONE and OTHER name the same pane."
@@ -381,12 +351,7 @@ MEMBERS are the entries to reach.  VERB heads the report."
          (herdr-herd-notice
           herd (string-join
                 (mapcar (lambda (entry)
-                          (format "%s joined (%s in %s, %s)."
-                                  (herdr--entry-label entry)
-                                  (or (alist-get 'agent entry) "?")
-                                  (alist-get 'pane_id entry)
-                                  (abbreviate-file-name
-                                   (or (alist-get 'cwd entry) ""))))
+                          (format "%s joined." (herdr-herd-entry-brief entry)))
                         joined)
                 " ")))
        "told"))))

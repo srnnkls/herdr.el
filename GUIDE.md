@@ -525,7 +525,7 @@ A joining agent receives `herdr-herd-protocol`, any paragraphs from
 already there get a one-line notice:
 
 ```text
-[herd refactor] memex-index joined (claude, ~/src/memex). No reply needed.
+[herd refactor] memex-index (claude, w1:p2) joined.
 ```
 
 Leaving sends the same kind of notice. A notice opens with `herdr-herd-notice-prefix`, so an agent

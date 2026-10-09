@@ -272,7 +272,7 @@ runs on."
       (let ((to-old (cdr (assoc (herdr--entry-target old) herdr-herd-tests--prompts)))
             (to-new (cdr (assoc (herdr--entry-target new) herdr-herd-tests--prompts))))
         (should (equal 2 (length herdr-herd-tests--prompts)))
-        (should (equal "[herd refactor] two joined (claude in w2:p1, /tmp/projects/nmnm/). No reply needed."
+        (should (equal "[herd refactor] two (claude, w2:p1) joined."
                        to-old))
         (should (string-match-p "you are two" to-new))
         (should (string-match-p "herdr agent prompt" to-new))
@@ -286,7 +286,7 @@ runs on."
                #'ignore)))
     (herdr-herd-tests--with-stubs (list entry)
       (herdr-herd-announce '("alpha" . "refactor"))
-      (should (string-match-p "\n\nExtra about refactor\\.\n\n"
+      (should (string-match-p "\nExtra about refactor\\.\n"
                               (cdr (car herdr-herd-tests--prompts)))))))
 
 (ert-deftest herdr-herd-leaving-tells-the-others-one-line ()
@@ -299,7 +299,7 @@ runs on."
     (herdr-herd-tests--with-stubs (list one two)
       (herdr-herd-remove two)
       (should (equal (list (cons (herdr--entry-target one)
-                                 "[herd refactor] two left. No reply needed."))
+                                 "[herd refactor] two left."))
                      herdr-herd-tests--prompts)))))
 
 (ert-deftest herdr-herd-announcing-tells-every-member-of-its-peers ()
