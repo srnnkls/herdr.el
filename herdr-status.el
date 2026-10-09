@@ -1589,6 +1589,9 @@ value to the mouse, which reads it from `help-echo' either way."
       (let ((message-log-max nil))
         (message "%s" value)))))
 
+(defvar herdr-status--evil-set-up nil
+  "Non-nil once `herdr-status-evil-setup' has run.")
+
 (define-derived-mode herdr-status-mode magit-section-mode "Herdr"
   "Major mode for the herdr status dashboard."
   :group 'herdr-status
@@ -1605,7 +1608,10 @@ value to the mouse, which reads it from `help-echo' either way."
   (add-hook 'window-configuration-change-hook
             #'herdr-status--widen-fringe nil t)
   (add-hook 'post-command-hook #'herdr-status--echo-cut-field nil t)
-  (add-hook 'window-buffer-change-functions #'herdr-status--shown nil t))
+  (add-hook 'window-buffer-change-functions #'herdr-status--shown nil t)
+  (when (and (featurep 'evil) (not herdr-status--evil-set-up))
+    (herdr-status-evil-setup)
+    (setq herdr-status--evil-set-up t)))
 
 (defvar herdr-status--refreshing nil
   "Non-nil while a redraw is running anywhere.
@@ -2555,8 +2561,6 @@ too, since evil consults the keymap itself."
     (let ((command (keymap-lookup herdr-status-mode-map key)))
       (evil-define-key* 'normal herdr-status-mode-map (kbd moved) command)
       (transient-suffix-put 'herdr-status-dispatch command :key moved))))
-
-(with-eval-after-load 'evil (herdr-status-evil-setup))
 
 (provide 'herdr-status)
 ;;; herdr-status.el ends here
