@@ -2248,43 +2248,89 @@ now, whatever it is called already."
            entry)))
   (herdr-status-rename name entry))
 
+(defun herdr-status--region-values (types)
+  "Return the values of the TYPES sections the active region shows, or nil.
+A line inside such a section counts for the section; a line a collapsed
+section hides counts for nothing."
+  (when (use-region-p)
+    (let ((end (region-end))
+          (values nil))
+      (save-excursion
+        (goto-char (region-beginning))
+        (forward-line 0)
+        (while (< (point) end)
+          (unless (invisible-p (point))
+            (let ((section (magit-section-at)))
+              (while (and section (not (memq (oref section type) types)))
+                (setq section (oref section parent)))
+              (when section
+                (cl-pushnew (oref section value) values :test #'eq))))
+          (unless (zerop (forward-line 1))
+            (goto-char end))))
+      (nreverse values))))
+
+(defun herdr-status--agents-at-point ()
+  "Return the agent entries of the region, or the one at point."
+  (or (herdr-status--region-values '(herdr-status-agent))
+      (list (herdr-status--entry-at-point))))
+
+(defun herdr-status--attachables-at-point ()
+  "Return the agent or pane entries of the region, or the one at point."
+  (or (herdr-status--region-values '(herdr-status-agent herdr-status-pane))
+      (list (herdr-status--attachable-at-point))))
+
+(defun herdr-status--labels (entries)
+  "Return the labels of ENTRIES joined for a question or a message."
+  (mapconcat (lambda (entry)
+               (or (herdr--entry-label entry) (alist-get 'pane_id entry)))
+             entries ", "))
+
+(defun herdr-status--attachment (entry)
+  "Return the Emacs session attached to the agent ENTRY, or nil."
+  (when-let* ((target (herdr--entry-target entry)))
+    (ignore-error user-error
+      (herdr-agent-resolve-session target))))
+
 (defun herdr-status-close-pane ()
-  "Close the pane at point, after confirmation.
+  "Close the pane at point, or those of the region, after confirmation.
 An agent in that pane goes with it; `herdr-status-stop' is the same
 close said from the agent's side, and `herdr-status-detach' is the one
 that lets go without closing anything."
   (interactive)
-  (let* ((entry (herdr-status--attachable-at-point))
-         (label (or (herdr--entry-label entry) (alist-get 'pane_id entry))))
-    (when (yes-or-no-p (format "Close pane %s? " label))
-      (when-let* ((session (ignore-error user-error
-                             (herdr-agent-resolve-session
-                              (herdr--entry-target entry)))))
-        (herdr-agent-detach session))
-      (herdr-with-session (alist-get 'session entry)
-        (herdr-api-pane-close (alist-get 'pane_id entry)))
+  (let* ((entries (herdr-status--attachables-at-point))
+         (labels (herdr-status--labels entries))
+         (noun (if (cdr entries) "panes" "pane")))
+    (when (yes-or-no-p (format "Close %s %s? " noun labels))
+      (dolist (entry entries)
+        (when-let* ((session (herdr-status--attachment entry)))
+          (herdr-agent-detach session))
+        (herdr-with-session (alist-get 'session entry)
+          (herdr-api-pane-close (alist-get 'pane_id entry))))
+      (deactivate-mark)
       (herdr-status-refresh)
-      (message "Closed pane %s" label))))
+      (message "Closed %s %s" noun labels))))
 
 (defun herdr-status--attachment-at-point ()
   "Return the Emacs session attached to the agent at point, or nil."
-  (ignore-error user-error
-    (herdr-agent-resolve-session (herdr-status--target-at-point))))
+  (herdr-status--attachment (herdr-status--entry-at-point)))
 
 (defun herdr-status-stop ()
   "Close the herdr pane of the agent at point, after confirmation.
-Emacs lets go of the terminal and its buffer first, so the pane and the
-buffer go together; `herdr-status-detach' is the one that leaves the pane
+With an active region, close those of every agent it shows.  Emacs
+lets go of the terminal and its buffer first, so the pane and the buffer
+go together; `herdr-status-detach' is the one that leaves the pane
 running."
   (interactive)
-  (let* ((entry (herdr-status--entry-at-point))
-         (label (herdr--entry-label entry)))
-    (when (yes-or-no-p (format "Stop %s? " label))
-      (when-let* ((session (herdr-status--attachment-at-point)))
-        (herdr-agent-detach session))
-      (herdr-agent-stop (herdr--entry-target entry))
+  (let* ((entries (herdr-status--agents-at-point))
+         (labels (herdr-status--labels entries)))
+    (when (yes-or-no-p (format "Stop %s? " labels))
+      (dolist (entry entries)
+        (when-let* ((session (herdr-status--attachment entry)))
+          (herdr-agent-detach session))
+        (herdr-agent-stop (herdr--entry-target entry)))
+      (deactivate-mark)
       (herdr-status-refresh)
-      (message "Stopped %s" label))))
+      (message "Stopped %s" labels))))
 
 (defun herdr-status-restart ()
   "Restart the agent at point in a fresh pane, resuming its conversation.
@@ -2313,23 +2359,29 @@ name; an agent in a herd rejoins it there."
       (herdr-status-refresh)
       (message "Restarted %s" label))))
 
+(defun herdr-status--let-go (entry)
+  "Let go of the agent ENTRY, returning non-nil when Emacs held it."
+  (let* ((target (herdr--entry-target entry))
+         (session (herdr-status--attachment entry))
+         (buffer (and target (herdr-terminal-buffer (cdr target) (car target)))))
+    (when session (herdr-agent-detach session))
+    (when (buffer-live-p buffer) (kill-buffer buffer))
+    (or session buffer)))
+
 (defun herdr-status-detach ()
-  "Let go of the agent at point, leaving its herdr pane running.
+  "Let go of the agent at point, or those of the region, leaving panes running.
 Emacs releases the terminal and its buffer; the agent in that pane carries
 on, and attaching again picks it back up.  A buffer showing the agent's
 terminal goes as well when no Emacs session holds it."
   (interactive)
-  (let* ((entry (herdr-status--entry-at-point))
-         (label (herdr--entry-label entry))
-         (target (herdr--entry-target entry))
-         (session (herdr-status--attachment-at-point))
-         (buffer (and target (herdr-terminal-buffer (cdr target) (car target)))))
-    (if (not (or session buffer))
-        (message "Emacs holds no attachment to %s" label)
-      (when session (herdr-agent-detach session))
-      (when (buffer-live-p buffer) (kill-buffer buffer))
+  (let* ((entries (herdr-status--agents-at-point))
+         (held (seq-filter #'herdr-status--let-go entries)))
+    (deactivate-mark)
+    (if (not held)
+        (message "Emacs holds no attachment to %s" (herdr-status--labels entries))
       (herdr-status-refresh)
-      (message "Detached %s, its pane left running" label))))
+      (message "Detached %s, %s left running" (herdr-status--labels held)
+               (if (cdr held) "their panes" "its pane")))))
 
 (defun herdr-status-add-filter (name)
   "Add the filter registered as NAME."
@@ -2555,6 +2607,9 @@ The fresh prefix inherits evil's, so binding into it leaves evil's alone."
 Keys other packages add to `herdr-status-mode-map' later take effect
 too, since evil consults the keymap itself."
   (evil-make-overriding-map herdr-status-mode-map 'normal)
+  (dolist (key '("d" "x" "K"))
+    (evil-define-key* 'visual herdr-status-mode-map (kbd key)
+                      (keymap-lookup herdr-status-mode-map key)))
   (pcase-dolist (`(,key . ,_) herdr-status-evil-renames)
     (evil-define-key* 'normal herdr-status-mode-map (kbd key) (herdr-status--evil-own key)))
   (pcase-dolist (`(,key . ,moved) herdr-status-evil-renames)

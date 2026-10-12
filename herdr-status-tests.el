@@ -1633,6 +1633,65 @@ Emacs releases the attachment first and the two go together."
             (let ((kill-buffer-query-functions nil))
               (kill-buffer buffer))))))))
 
+;;;; Region
+
+(defun herdr-status-tests--select (from to)
+  "Mark the dashboard rows from the one matching FROM to the one matching TO."
+  (goto-char (point-min))
+  (should (re-search-forward from nil t))
+  (push-mark (line-beginning-position) t t)
+  (should (re-search-forward to nil t))
+  (end-of-line))
+
+(ert-deftest herdr-status-stopping-a-region-stops-every-agent-it-shows ()
+  (herdr-status-tests--with-dashboard
+    (let (stopped questions)
+      (cl-letf (((symbol-function 'yes-or-no-p)
+                 (lambda (question) (push question questions) t))
+                ((symbol-function 'herdr-agent-resolve-session)
+                 (lambda (_target) (user-error "Unknown agent")))
+                ((symbol-function 'herdr-agent-stop)
+                 (lambda (target) (push target stopped))))
+        (transient-mark-mode 1)
+        (herdr-status-tests--select "^ +● api-review" "^ +. docs")
+        (herdr-status-stop)
+        (should (equal (nreverse stopped)
+                       '(("/tmp/alpha.sock" . "t1") ("/tmp/alpha.sock" . "t2"))))
+        (should (equal questions '("Stop api-review, docs? ")))
+        (should-not (region-active-p))))))
+
+(ert-deftest herdr-status-detaching-a-region-lets-go-of-every-agent-it-shows ()
+  (herdr-status-tests--with-dashboard
+    (let (detached)
+      (cl-letf (((symbol-function 'herdr-agent-resolve-session)
+                 (lambda (target) (cdr target)))
+                ((symbol-function 'herdr-agent-detach)
+                 (lambda (session) (push session detached)))
+                ((symbol-function 'herdr-agent-stop)
+                 (lambda (&rest _) (ert-fail "detaching closed the pane"))))
+        (transient-mark-mode 1)
+        (herdr-status-tests--select "^ +● api-review" "^ +. docs")
+        (herdr-status-detach)
+        (should (equal (nreverse detached) '("t1" "t2")))))))
+
+(ert-deftest herdr-status-closing-a-region-closes-its-agents-and-panes ()
+  (herdr-status-tests--with-dashboard
+    (let (closes)
+      (cl-letf (((symbol-function 'herdr-api-pane-close)
+                 (lambda (pane) (push pane closes)))
+                ((symbol-function 'herdr-agent-resolve-session)
+                 (lambda (&rest _) (user-error "none")))
+                ((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
+                ((symbol-function 'herdr-status-refresh) #'ignore))
+        (transient-mark-mode 1)
+        (herdr-status-tests--select "^ +. beta-work" "^Panes ")
+        (herdr-status-close-pane)
+        (should (equal closes '("%3")))
+        (magit-section-show (magit-current-section))
+        (herdr-status-tests--select "^ +. beta-work" "shell")
+        (herdr-status-close-pane)
+        (should (equal (nreverse closes) '("%3" "%3" "%9")))))))
+
 ;;;; Project scope
 
 (defun herdr-status-tests--project-root (&optional directory)
