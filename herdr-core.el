@@ -130,6 +130,30 @@ Asks projectile when it is loaded, otherwise project.el."
              (when-let* ((project (project-current)))
                (project-root project))))))
 
+(defvar herdr--directory-identities nil
+  "Directory identities read inside `herdr-with-directory-cache', or nil.")
+
+(defmacro herdr-with-directory-cache (&rest body)
+  "Run BODY reading each directory's identity from disk once."
+  (declare (indent 0) (debug t))
+  `(let ((herdr--directory-identities (or herdr--directory-identities
+                                          (make-hash-table :test #'equal))))
+     ,@body))
+
+(defun herdr--directory-identity (directory)
+  "Return the device and inode of DIRECTORY, or nil when it is not one."
+  (let ((read (lambda ()
+                (when-let* ((attributes (file-attributes (file-truename directory)))
+                            ((eq (file-attribute-type attributes) t)))
+                  (cons (file-attribute-device-number attributes)
+                        (file-attribute-inode-number attributes))))))
+    (if (not herdr--directory-identities)
+        (funcall read)
+      (let ((identity (gethash directory herdr--directory-identities 'herdr--none)))
+        (if (eq identity 'herdr--none)
+            (puthash directory (funcall read) herdr--directory-identities)
+          identity)))))
+
 (defun herdr--same-directory-p (a b)
   "Return non-nil when A and B name the same directory.
 Compares by name so assignments survive directories that are not on
@@ -137,7 +161,8 @@ disk right now, and by identity when both are."
   (let ((a (file-name-as-directory (expand-file-name a)))
         (b (file-name-as-directory (expand-file-name b))))
     (or (string-equal a b)
-        (and (file-directory-p a) (file-directory-p b) (file-equal-p a b)))))
+        (when-let* ((identity (herdr--directory-identity a)))
+          (equal identity (herdr--directory-identity b))))))
 
 (defvar herdr--stored-assignments nil
   "Cons of the state file last read and the assignments it held.")
@@ -264,11 +289,24 @@ whatever an entry carries."
                               (expand-file-name session (expand-file-name "sessions" dir))
                             dir)))))
 
+(defvar herdr--server-keys (make-hash-table :test #'equal)
+  "Canonical server keys of the sockets that existed when last resolved.")
+
 (defun herdr-server-key ()
-  "Return the canonical identity of the herdr server in scope."
-  (let* ((socket (expand-file-name (herdr-socket-file)))
-         (parent (file-name-directory socket))
-         (basename (file-name-nondirectory socket)))
+  "Return the canonical identity of the herdr server in scope.
+The identity of a socket that exists is resolved once and remembered
+for as long as it goes on existing."
+  (let ((socket (expand-file-name (herdr-socket-file))))
+    (if (file-exists-p socket)
+        (or (gethash socket herdr--server-keys)
+            (puthash socket (herdr--resolve-server-key socket) herdr--server-keys))
+      (remhash socket herdr--server-keys)
+      (herdr--resolve-server-key socket))))
+
+(defun herdr--resolve-server-key (socket)
+  "Return the canonical identity of the server listening on SOCKET."
+  (let ((parent (file-name-directory socket))
+        (basename (file-name-nondirectory socket)))
     (if-let* ((target (file-symlink-p socket)))
         (file-truename (expand-file-name target parent))
       (if (file-exists-p socket)
@@ -358,11 +396,108 @@ Nothing else runs meanwhile, so one request never starts another inside it."
          (t (herdr--await proc)))))
     line))
 
+(defvar herdr--request-cache nil
+  "Answers to reads made inside `herdr-with-request-cache', or nil outside.")
+
+(defmacro herdr-with-request-cache (&rest body)
+  "Run BODY asking each server every read once.
+A read repeated inside BODY, here or in a nested form, gets the answer
+the first one got, shared rather than copied, so nothing inside BODY may
+modify an answer; any other request forgets them all, so a read after a
+change sees it."
+  (declare (indent 0) (debug t))
+  `(let ((herdr--request-cache (or herdr--request-cache
+                                   (make-hash-table :test #'equal))))
+     ,@body))
+
+(defun herdr--read-method-p (method)
+  "Return non-nil when METHOD only reads herdr's state."
+  (or (member method '("ping" "session.snapshot"))
+      (string-suffix-p ".list" method)))
+
 (defun herdr-request (method &optional params timeout)
   "Send METHOD with PARAMS to herdr and return the result alist.
 PARAMS is an alist with symbol keys.  TIMEOUT defaults to
 `herdr-request-timeout'.  Signals `herdr-api-error' when herdr
-answers with an error, and `herdr-error' when it cannot be reached."
+answers with an error, and `herdr-error' when it cannot be reached.
+Inside `herdr-with-request-cache' a repeated read is answered from the
+cache."
+  (if (not herdr--request-cache)
+      (herdr--send-request method params timeout)
+    (if (not (herdr--read-method-p method))
+        (progn (clrhash herdr--request-cache)
+               (herdr--send-request method params timeout))
+      (let* ((key (list (herdr-socket-file) method params))
+             (cached (gethash key herdr--request-cache 'herdr--none)))
+        (if (eq cached 'herdr--none)
+            (puthash key (herdr--send-request method params timeout)
+                     herdr--request-cache)
+          cached)))))
+
+(defun herdr--close (proc)
+  "Close the request connection PROC and its buffer."
+  (let ((buffer (process-buffer proc))
+        (inhibit-redisplay t))
+    (delete-process proc)
+    (when (buffer-live-p buffer) (kill-buffer buffer))))
+
+(defun herdr-request-async (method params callback &optional errback timeout)
+  "Send METHOD with PARAMS to herdr and return without waiting for it.
+CALLBACK is called with the result once herdr answers.  ERRBACK is
+called with the error as `condition-case' would see it when herdr
+answers with one, cannot be reached, or stays silent for TIMEOUT
+seconds, by default `herdr-request-timeout'."
+  (condition-case err
+      (let* ((proc (herdr--connect))
+             (done nil)
+             (timer nil)
+             (finish (lambda (function argument)
+                       (unless done
+                         (setq done t)
+                         (when timer (cancel-timer timer))
+                         (herdr--close proc)
+                         (when function (funcall function argument))))))
+        (set-process-filter
+         proc
+         (lambda (proc output)
+           (when-let* ((buffer (process-buffer proc))
+                       ((buffer-live-p buffer))
+                       (line (with-current-buffer buffer
+                               (goto-char (point-max))
+                               (insert output)
+                               (goto-char (point-min))
+                               (when (search-forward "\n" nil t)
+                                 (buffer-substring-no-properties
+                                  (point-min) (1- (point)))))))
+             (pcase (condition-case parse-error (herdr--decode line)
+                      (json-parse-error (list 'invalid parse-error)))
+               (`(invalid ,parse-error)
+                (funcall finish errback
+                         (list 'herdr-error (error-message-string parse-error))))
+               (response
+                (if-let* ((error (alist-get 'error response)))
+                    (funcall finish errback
+                             (list 'herdr-api-error (alist-get 'code error)
+                                   (alist-get 'message error)))
+                  (funcall finish callback (alist-get 'result response))))))))
+        (set-process-sentinel
+         proc
+         (lambda (_proc _event)
+           (funcall finish errback
+                    '(herdr-error "herdr closed the connection without a response"))))
+        (setq timer (run-with-timer
+                     (or timeout herdr-request-timeout) nil
+                     (lambda ()
+                       (funcall finish errback
+                                '(herdr-error "timed out waiting for herdr response")))))
+        (process-send-string proc (herdr--payload method params))
+        proc)
+    (herdr-error
+     (when errback (funcall errback err))
+     nil)))
+
+(defun herdr--send-request (method params timeout)
+  "Send METHOD with PARAMS to herdr and return its result within TIMEOUT."
   (let ((proc (herdr--connect)))
     (unwind-protect
         (progn
@@ -373,9 +508,7 @@ answers with an error, and `herdr-error' when it cannot be reached."
               (signal 'herdr-api-error
                       (list (alist-get 'code err) (alist-get 'message err))))
             (alist-get 'result response)))
-      (let ((buffer (process-buffer proc)))
-        (delete-process proc)
-        (when (buffer-live-p buffer) (kill-buffer buffer))))))
+      (herdr--close proc))))
 
 (defun herdr-available-p ()
   "Return non-nil when a herdr server answers on the API socket."

@@ -733,29 +733,56 @@ herdr reports it ready; its record is taken up when it is."
 (defun herdr-agent--refresh-when-ready (session deadline)
   "Take up SESSION's agent record once herdr reports it ready, by DEADLINE.
 A placeholder name comes off then as well, and is tried again on the
-next look while herdr refuses it.  Each look is scheduled after the last
-one ends, so none holds Emacs and none overlaps the next.  A session no
-longer attached is let go."
+next look while herdr refuses it.  Each look asks herdr without waiting
+for its answer and is scheduled after the last one is answered, so none
+holds Emacs and none overlaps the next.  A session no longer attached is
+let go."
   (run-with-timer
    0.1 nil
    (lambda ()
-     (when (and (eq (herdr-agent-session-state session) 'attached)
-                (< (float-time) deadline))
-       (let* ((server-key (herdr-agent-session-server session))
-              (agent (ignore-error herdr-error
+     (when (herdr-agent--awaiting-ready-p session deadline)
+       (let ((server-key (herdr-agent-session-server session))
+             (again (lambda (&rest _)
+                      (herdr-agent--refresh-when-ready session deadline))))
+         (herdr-agent--with-server server-key
+           (herdr-request-async
+            "agent.get" `((target . ,(herdr-agent--poll-target session)))
+            (lambda (result)
+              (let ((agent (alist-get 'agent result)))
+                (cond ((not (herdr-agent--awaiting-ready-p session deadline)))
+                      ((not (and agent (herdr-agent--interactive-ready-p agent)))
+                       (funcall again))
+                      ((not (herdr-agent-session-placeholder session))
+                       (herdr-agent--refresh-session session agent server-key)
+                       (run-hook-with-args 'herdr-agent-ready-functions session))
+                      (t
                        (herdr-agent--with-server server-key
-                         (alist-get 'agent
-                                    (herdr-agent--call-with-request-target
-                                     server-key (herdr-agent-session-terminal session)
-                                     #'herdr-api-agent-get))))))
-         (cond ((not (and agent (herdr-agent--interactive-ready-p agent)))
-                (herdr-agent--refresh-when-ready session deadline))
-               ((not (herdr-agent-session-placeholder session))
-                (herdr-agent--refresh-session session agent server-key)
-                (run-hook-with-args 'herdr-agent-ready-functions session))
-               ((not (herdr-agent--drop-placeholder session))
-                (herdr-agent--refresh-when-ready session deadline))
-               (t (run-hook-with-args 'herdr-agent-ready-functions session))))))))
+                         (herdr-request-async
+                          "agent.rename" `((target . ,(herdr-agent--poll-target session)))
+                          (lambda (result)
+                            (if-let* ((agent (alist-get 'agent result)))
+                                (progn
+                                  (herdr-agent--placeholder-dropped session agent server-key)
+                                  (run-hook-with-args 'herdr-agent-ready-functions session))
+                              (funcall again)))
+                          again))))))
+            again)))))))
+
+(defun herdr-agent--awaiting-ready-p (session deadline)
+  "Return non-nil while SESSION is attached and DEADLINE has not passed."
+  (and (eq (herdr-agent-session-state session) 'attached)
+       (< (float-time) deadline)))
+
+(defun herdr-agent--poll-target (session)
+  "Return the target herdr finds SESSION's agent by while it starts.
+Herdr answers for a starting agent by its pane before its terminal."
+  (or (herdr-agent-session-pane session)
+      (herdr-agent-session-terminal session)))
+
+(defun herdr-agent--placeholder-dropped (session agent server-key)
+  "Record that SESSION's agent on SERVER-KEY shed its placeholder as AGENT."
+  (setf (herdr-agent-session-placeholder session) nil)
+  (herdr-agent--refresh-session session agent server-key))
 
 (defun herdr-agent--drop-placeholder (session)
   "Take the name herdr.el gave SESSION's agent off it and return the agent.
@@ -771,8 +798,7 @@ when SESSION has no placeholder or herdr will not let go of it yet."
                                         (herdr-agent--call-with-request-target
                                          server-key (herdr-agent-session-terminal session)
                                          #'herdr-api-agent-rename))))))
-        (setf (herdr-agent-session-placeholder session) nil)
-        (herdr-agent--refresh-session session agent server-key)
+        (herdr-agent--placeholder-dropped session agent server-key)
         agent))))
 
 (defun herdr-agent--workspace-empty-p (workspace-id)

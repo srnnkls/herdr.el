@@ -544,6 +544,44 @@
                herdr-agent--subscriptions)
       (delete-directory root t))))
 
+(defun herdr-agent-tests--request-through-api (method params callback
+                                                      &optional errback _timeout)
+  "Answer an asynchronous METHOD with PARAMS at once from the stubbed API."
+  (condition-case err
+      (funcall callback
+               (pcase method
+                 ("agent.get" (herdr-api-agent-get (alist-get 'target params)))
+                 ("agent.rename" (herdr-api-agent-rename (alist-get 'target params)))))
+    (herdr-error (funcall errback err))))
+
+(ert-deftest herdr-agent-ready-poll-asks-the-pane-once-without-waiting ()
+  (let* ((session (herdr-agent--make-session
+                   :server "/tmp/herdr-poll.sock" :kind "codex" :terminal "term-codex"
+                   :pane "codex:pane" :state 'attached))
+         (agent (herdr-agent-tests--agent "codex" "term-codex" "codex:pane" "work"))
+         (ready nil)
+         (herdr-agent-ready-functions (list (lambda (session) (push session ready))))
+         requests timers)
+    (cl-letf (((symbol-function 'run-with-timer)
+               (lambda (_delay _repeat function &rest _) (push function timers)))
+              ((symbol-function 'herdr-request-async)
+               (lambda (method params callback &rest _)
+                 (push (list method params callback) requests)))
+              ((symbol-function 'herdr-agent--refresh-session) #'ignore))
+      (herdr-agent--refresh-when-ready session (+ (float-time) 30))
+      (funcall (pop timers))
+      (should (equal (mapcar #'butlast requests)
+                     '(("agent.get" ((target . "codex:pane"))))))
+      (should-not timers)
+      (should-not ready)
+      (funcall (nth 2 (pop requests)) '((agent (terminal_id . "term-codex"))))
+      (should-not ready)
+      (funcall (pop timers))
+      (funcall (nth 2 (pop requests)) `((agent . ,agent)))
+      (should (equal ready (list session)))
+      (should-not timers)
+      (should-not requests))))
+
 (ert-deftest herdr-agent-start-in-pane-without-waiting-takes-up-the-ready-record-later ()
   (let* ((root (make-temp-file "herdr-agent-nowait" t))
          (server-key (file-truename (expand-file-name "herdr.sock" root)))
@@ -567,6 +605,8 @@
                                 ,@(assq-delete-all 'agent (funcall pending nil)))))))
                   ((symbol-function 'herdr-api-agent-get)
                    (lambda (_target) `((agent . ,(pop answers)))))
+                  ((symbol-function 'herdr-request-async)
+                   #'herdr-agent-tests--request-through-api)
                   ((symbol-function 'run-with-timer)
                    (lambda (_delay _repeat function &rest _)
                      (push function timers)))
@@ -2385,6 +2425,8 @@ functions scheduled, and `refusals', how many renames herdr turns down."
                         `((agent . ,(assq-delete-all
                                      'name (herdr-agent-tests--agent
                                             "claude" "term-p" "work:pane" "work")))))))
+                   ((symbol-function 'herdr-request-async)
+                    #'herdr-agent-tests--request-through-api)
                    ((symbol-function 'run-with-timer)
                     (lambda (_delay _repeat function &rest _) (push function timers))))
            (let ((herdr-session 'shared) (default-directory root))

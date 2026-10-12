@@ -345,6 +345,53 @@
           (cancel-timer herdr-status--timer)
           (setq herdr-status--timer nil))))))
 
+(ert-deftest herdr-status-refresh-asks-each-server-once-per-method ()
+  (let ((herdr--recent-session-targets nil)
+        (herdr-session-functions '(herdr-agent-sessions))
+        (requests nil)
+        (buffer (generate-new-buffer " *herdr-status-test*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'herdr-all-sessions) (lambda () '("alpha" "beta")))
+                  ((symbol-function 'herdr--send-request)
+                   (lambda (method _params _timeout)
+                     (push (cons (herdr-session-name) method) requests)
+                     (pcase method
+                       ("ping" '((pong . t)))
+                       ("session.snapshot" '((snapshot (workspaces) (tabs) (panes) (agents))))
+                       ("agent.list" '((agents)))
+                       ("pane.list" '((panes)))))))
+          (with-current-buffer buffer
+            (herdr-status-mode)
+            (herdr-status-refresh))
+          (dolist (session '("alpha" "beta"))
+            (dolist (method '("ping" "session.snapshot" "agent.list" "pane.list"))
+              (should (= (cl-count (cons session method) requests :test #'equal) 1)))))
+      (kill-buffer buffer))))
+
+(ert-deftest herdr-status-event-refresh-waits-while-the-user-types ()
+  (let ((herdr-status-auto-refresh t)
+        (herdr-status--timer nil)
+        (refreshes 0)
+        (busy t))
+    (herdr-status-tests--with-dashboard
+      (cl-letf (((symbol-function 'get-buffer-window) (lambda (&rest _) t))
+                ((symbol-function 'herdr-status--input-busy-p) (lambda () busy))
+                ((symbol-function 'herdr-status-refresh)
+                 (lambda () (cl-incf refreshes))))
+        (unwind-protect
+            (progn
+              (herdr-status--refresh-buffers)
+              (should (= refreshes 0))
+              (should (timerp herdr-status--timer))
+              (cancel-timer herdr-status--timer)
+              (setq busy nil)
+              (herdr-status--refresh-buffers)
+              (should (= refreshes 1))
+              (should-not herdr-status--timer))
+          (when herdr-status--timer
+            (cancel-timer herdr-status--timer)
+            (setq herdr-status--timer nil)))))))
+
 (ert-deftest herdr-status-lists-every-known-session ()
   (herdr-status-tests--with-dashboard
     (let ((sessions (herdr-status-tests--section-text "Sessions ")))

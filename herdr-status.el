@@ -1713,7 +1713,10 @@ inserts above all of them."
     (dolist (buffer (herdr-status--buffers))
       (with-current-buffer buffer
         (when herdr-status--deferred
-          (if (or herdr-status--refreshing (herdr-status-redraw-inhibited-p))
+          (if (or herdr-status--refreshing
+                  (herdr-status-redraw-inhibited-p)
+                  (and (not (eq herdr-status--deferred 'cached))
+                       (herdr-status--input-busy-p)))
               (setq waiting t)
             (let ((cached (eq herdr-status--deferred 'cached)))
               (setq herdr-status--deferred nil)
@@ -1735,6 +1738,11 @@ redraw is put off and run once every inhibitor has let go."
 
 (defun herdr-status--draw (cached)
   "Redraw the dashboard in the current buffer, asking herdr unless CACHED."
+  (herdr-with-directory-cache
+    (herdr-status--draw-1 cached)))
+
+(defun herdr-status--draw-1 (cached)
+  "Redraw the dashboard in the current buffer, asking herdr unless CACHED."
   (let ((herdr-status--refreshing t)
         (inhibit-read-only t)
         (line (line-number-at-pos))
@@ -1742,9 +1750,10 @@ redraw is put off and run once every inhibitor has let go."
                         (get-buffer-window-list nil nil t))))
     (setq herdr-status--visibility (herdr-status--recorded-visibility))
     (unless cached
-      (setq herdr-status--session-records (herdr-status--collect-sessions)
-            herdr-status--entries (herdr-status--collect-entries)
-            herdr-status--details nil)
+      (herdr-with-request-cache
+        (setq herdr-status--session-records (herdr-status--collect-sessions)
+              herdr-status--entries (herdr-status--collect-entries)
+              herdr-status--details nil))
       (herdr-follow-labels herdr-status--entries))
     (herdr--prune-session-targets herdr-status--entries)
     (setq herdr-status--panes
@@ -1886,9 +1895,21 @@ Outside a dashboard, open the current project's dashboard."
 (defvar-local herdr-status--stale nil
   "Non-nil when a refresh passed this dashboard by because no window showed it.")
 
+(defun herdr-status--input-busy-p ()
+  "Return non-nil while the user is typing or a minibuffer is open."
+  (or (input-pending-p) (active-minibuffer-window)))
+
 (defun herdr-status--refresh-buffers ()
-  "Redraw every dashboard a window shows, and mark the others stale."
+  "Redraw every dashboard a window shows, and mark the others stale.
+While the user is typing or a minibuffer is open the redraw waits for
+the next idle spell instead."
   (setq herdr-status--timer nil)
+  (if (herdr-status--input-busy-p)
+      (herdr-status-request-refresh)
+    (herdr-status--refresh-shown-buffers)))
+
+(defun herdr-status--refresh-shown-buffers ()
+  "Redraw every dashboard a window shows, and mark the others stale."
   (dolist (buffer (herdr-status--buffers))
     (with-current-buffer buffer
       (if (not (get-buffer-window buffer t))
@@ -1942,6 +1963,7 @@ Redraws coalesce on one idle timer, so calling this often is cheap."
   (herdr-status-request-refresh))
 
 (add-hook 'herdr-agent-event-functions #'herdr-status--on-event)
+(add-hook 'herdr-agent-ready-functions #'herdr-status--on-event)
 
 ;;;; Commands
 
@@ -2168,8 +2190,7 @@ instead of starting afresh."
                       (herdr-agent-start kind nil :project-root root :args args
                                          :wait nil)))))
     (when herd (herdr-herd-enlist started herd))
-    (when (derived-mode-p 'herdr-status-mode)
-      (herdr-status-refresh))
+    (herdr-status-request-refresh)
     (message "%s %s in %s%s" (if reference "Resumed" "Started") kind
              (abbreviate-file-name root)
              (if herd

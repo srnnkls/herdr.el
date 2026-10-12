@@ -752,7 +752,7 @@ the rest hand it to whichever other client looks at their tab."
               (herdr-terminal-send (format "\e_herdr-yield;%s\e\\"
                                            (if (eq wanted 'shown) "show" "hide"))))))))
     (when revealed
-      (herdr-tell-appearance))))
+      (run-with-timer 0 nil #'herdr-tell-appearance))))
 
 (add-hook 'window-buffer-change-functions #'herdr--yield-sync)
 (add-function :after after-focus-change-function #'herdr--yield-sync)
@@ -1089,7 +1089,7 @@ Sessions whose server does not answer are skipped rather than started."
               (when (herdr-available-p)
                 (let ((entries (apply #'append (mapcar #'funcall herdr-session-functions))))
                   (mapcar (lambda (entry)
-                            (let ((entry (copy-tree entry)))
+                            (let ((entry (copy-alist entry)))
                               (if (assq 'server_key entry)
                                   (when (null (alist-get 'server_key entry))
                                     (setf (alist-get 'server_key entry) (herdr-server-key)))

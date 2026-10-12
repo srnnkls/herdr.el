@@ -737,6 +737,181 @@ looks for a replacement buffer runs into."
               (should (equal (alist-get 'terminal_id (cadr sessions)) "term_other")))))
       (kill-buffer buffer))))
 
+(defvar herdr-tests--requests nil)
+
+(defun herdr-tests--send-request (method _params _timeout)
+  (let ((session (or (herdr-session-name) "shared")))
+    (when (equal session "gone")
+      (signal 'herdr-error (list "no herdr socket")))
+    (push (cons session method) herdr-tests--requests)
+    (pcase method
+      ("ping" '((pong . t)))
+      ("agent.list" `((agents ((terminal_id . ,(concat "term_" session))
+                               (pane_id . "p1") (agent . "claude")))))
+      ("pane.list" '((panes ((pane_id . "p1") (label . "lab")))))
+      (_ '((ok . t))))))
+
+(defmacro herdr-tests--with-servers (&rest body)
+  "Run BODY against fake servers \"alpha\" and \"beta\" and a dead \"gone\"."
+  (declare (indent 0) (debug (body)))
+  `(let ((herdr-tests--requests nil)
+         (herdr-session-functions '(herdr-agent-sessions)))
+     (cl-letf (((symbol-function 'herdr-all-sessions)
+                (lambda () '("alpha" "beta" "gone")))
+               ((symbol-function 'herdr--send-request) #'herdr-tests--send-request))
+       ,@body)))
+
+(defun herdr-tests--request-count (session method)
+  (cl-count (cons session method) herdr-tests--requests :test #'equal))
+
+(ert-deftest herdr-sessions-asks-each-server-once-per-method ()
+  (herdr-tests--with-servers
+    (should (equal (sort (mapcar (lambda (entry) (alist-get 'terminal_id entry))
+                                 (herdr-sessions))
+                         #'string<)
+                   '("term_alpha" "term_beta")))
+    (dolist (session '("alpha" "beta"))
+      (dolist (method '("ping" "agent.list" "pane.list"))
+        (should (= (herdr-tests--request-count session method) 1))))
+    (should (= (length herdr-tests--requests) 6))))
+
+(ert-deftest herdr-request-cache-answers-a-repeated-read-once ()
+  (herdr-tests--with-servers
+    (herdr-with-request-cache
+      (let ((herdr-session "alpha"))
+        (herdr-available-p))
+      (herdr-sessions)
+      (herdr-sessions))
+    (dolist (session '("alpha" "beta"))
+      (dolist (method '("ping" "agent.list" "pane.list"))
+        (should (= (herdr-tests--request-count session method) 1))))))
+
+(ert-deftest herdr-request-cache-forgets-reads-after-a-change ()
+  (herdr-tests--with-servers
+    (let ((herdr-session "alpha"))
+      (herdr-with-request-cache
+        (herdr-agents)
+        (herdr-request "pane.send_text")
+        (herdr-agents)))
+    (should (= (herdr-tests--request-count "alpha" "agent.list") 2))))
+
+(ert-deftest herdr-request-cache-shares-answers-herdr-sessions-leaves-intact ()
+  (herdr-tests--with-servers
+    (let ((herdr-session "alpha"))
+      (herdr-with-request-cache
+        (should (eq (herdr-agents) (herdr-agents)))
+        (let ((agent (car (herdr-agents))))
+          (herdr-sessions)
+          (should (equal (alist-get 'agent agent) "claude"))
+          (should-not (assq 'server_key agent)))))))
+
+(ert-deftest herdr-server-key-resolves-an-existing-socket-once ()
+  (let* ((directory (make-temp-file "herdr-key" t))
+         (socket (expand-file-name "herdr.sock" directory))
+         (herdr-socket-path socket)
+         (resolved 0))
+    (unwind-protect
+        (cl-letf* ((resolve (symbol-function 'herdr--resolve-server-key))
+                   ((symbol-function 'herdr--resolve-server-key)
+                    (lambda (path) (cl-incf resolved) (funcall resolve path))))
+          (write-region "" nil socket)
+          (should (equal (herdr-server-key) (herdr-server-key)))
+          (should (= resolved 1))
+          (delete-file socket)
+          (herdr-server-key)
+          (herdr-server-key)
+          (should (= resolved 3)))
+      (remhash socket herdr--server-keys)
+      (delete-directory directory t))))
+
+(ert-deftest herdr-directory-cache-reads-each-directory-once ()
+  (let* ((directory (make-temp-file "herdr-dir" t))
+         (link (concat directory "-link"))
+         (reads 0))
+    (unwind-protect
+        (cl-letf* ((attributes (symbol-function 'file-attributes))
+                   ((symbol-function 'file-attributes)
+                    (lambda (file &rest rest) (cl-incf reads) (apply attributes file rest))))
+          (make-symbolic-link directory link)
+          (herdr-with-directory-cache
+            (dotimes (_ 3)
+              (should (herdr--same-directory-p directory link))))
+          (should (= reads 2))
+          (should-not (herdr--same-directory-p directory temporary-file-directory)))
+      (delete-file link)
+      (delete-directory directory t))))
+
+(ert-deftest herdr-request-without-cache-asks-every-time ()
+  (herdr-tests--with-servers
+    (let ((herdr-session "alpha"))
+      (herdr-agents)
+      (herdr-agents))
+    (should (= (herdr-tests--request-count "alpha" "agent.list") 2))))
+
+(defmacro herdr-tests--with-socket-server (respond &rest body)
+  "Run BODY with `herdr-socket-path' served by RESPOND.
+RESPOND is called with each connection and the request line it sent."
+  (declare (indent 1) (debug (form body)))
+  `(let* ((directory (make-temp-file "herdr-async" t))
+          (herdr-socket-path (expand-file-name "herdr.sock" directory))
+          (server (make-network-process
+                   :name "herdr-test-server" :server t :family 'local
+                   :service herdr-socket-path :noquery t
+                   :filter (lambda (connection line)
+                             (funcall ,respond connection
+                                      (herdr--decode (string-trim line)))))))
+     (unwind-protect
+         (progn ,@body)
+       (delete-process server)
+       (delete-directory directory t))))
+
+(defun herdr-tests--wait-until (predicate)
+  "Run the event loop until PREDICATE holds, for at most two seconds."
+  (let ((deadline (+ (float-time) 2)))
+    (while (and (not (funcall predicate)) (< (float-time) deadline))
+      (accept-process-output nil 0.01))
+    (funcall predicate)))
+
+(ert-deftest herdr-request-async-returns-before-herdr-answers ()
+  (let ((buffers (herdr-tests--api-buffers))
+        answer)
+    (herdr-tests--with-socket-server
+        (lambda (connection request)
+          (process-send-string
+           connection
+           (format "{\"id\":%S,\"result\":{\"method\":%S}}\n"
+                   (alist-get 'id request) (alist-get 'method request))))
+      (should (processp (herdr-request-async "agent.list" nil
+                                             (lambda (result) (setq answer result)))))
+      (should-not answer)
+      (should (herdr-tests--wait-until (lambda () answer)))
+      (should (equal answer '((method . "agent.list"))))
+      (should (= (herdr-tests--api-buffers) buffers)))))
+
+(ert-deftest herdr-request-async-hands-errors-to-the-errback ()
+  (let (failure)
+    (herdr-tests--with-socket-server
+        (lambda (connection request)
+          (if (equal (alist-get 'method request) "agent.get")
+              (process-send-string
+               connection
+               (format "{\"id\":%S,\"error\":{\"code\":\"agent_not_found\",\"message\":\"gone\"}}\n"
+                       (alist-get 'id request)))
+            (delete-process connection)))
+      (herdr-request-async "agent.get" '((target . "t1")) #'ignore
+                           (lambda (err) (setq failure err)))
+      (should (herdr-tests--wait-until (lambda () failure)))
+      (should (equal failure '(herdr-api-error "agent_not_found" "gone")))
+      (setq failure nil)
+      (herdr-request-async "agent.list" nil #'ignore (lambda (err) (setq failure err)))
+      (should (herdr-tests--wait-until (lambda () failure)))
+      (should (eq (car failure) 'herdr-error)))
+    (let ((herdr-socket-path "/nonexistent/herdr.sock")
+          failure)
+      (should-not (herdr-request-async "ping" nil #'ignore
+                                       (lambda (err) (setq failure err))))
+      (should (eq (car failure) 'herdr-error)))))
+
 (ert-deftest herdr-visit-shows-a-live-buffer-instead-of-attaching ()
   (let ((buffer (get-buffer-create "*herdr: visit*"))
         (herdr--recent-session-targets nil)
