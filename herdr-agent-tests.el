@@ -8,6 +8,8 @@
 (require 'herdr-api)
 (require 'herdr-agent nil t)
 
+(setq herdr-agent-names-file (make-temp-file "herdr-agent-names" nil ".eld"))
+
 ;; The startup fixtures stub tab creation, so they start agents in tabs.
 (setq herdr-agent-placement 'tab)
 
@@ -1824,6 +1826,68 @@ to be reached through the server it was found on."
       (should-error (herdr-agent-resolve-target nil agents project nil)
                     :type 'user-error)
       (should-not picker-used))))
+
+(defun herdr-agent-tests--kept-entry (&rest fields)
+  "Return an agent entry on the alpha server, FIELDS put first."
+  (append fields
+          '((server_key . "/tmp/alpha.sock") (terminal_id . "term-k")
+            (pane_id . "w:p1") (agent . "claude")
+            (agent_session . ((source . "herdr:claude") (kind . "id")
+                              (value . "session-k"))))))
+
+(ert-deftest herdr-agent-keep-names-gives-a-name-back-after-a-restart ()
+  (let ((herdr-agent-names-file (make-temp-file "herdr-agent-names" nil ".eld"))
+        (herdr-agent--stored-names nil)
+        (herdr-agent--restored-names nil)
+        renames)
+    (cl-letf (((symbol-function 'herdr-agent-rename)
+               (lambda (target title) (push (cons target title) renames))))
+      (herdr-agent-keep-names
+       (list (herdr-agent-tests--kept-entry
+              '(name . "api-review") '(tokens . ((title . "API review"))))))
+      (should (equal (with-temp-buffer
+                       (insert-file-contents herdr-agent-names-file)
+                       (read (current-buffer)))
+                     '((("herdr:claude" . "session-k") . "API review"))))
+      (setq herdr-agent--stored-names nil)
+      (let ((entry (car (herdr-agent-keep-names
+                         (list (herdr-agent-tests--kept-entry))))))
+        (should (equal renames
+                       '((("/tmp/alpha.sock" . "term-k") . "API review"))))
+        (should (equal (alist-get 'name entry) "api-review"))
+        (should (equal (herdr-agent-entry-title entry) "API review")))
+      (herdr-agent-keep-names (list (herdr-agent-tests--kept-entry)))
+      (should (= (length renames) 1)))))
+
+(ert-deftest herdr-agent-keep-names-leaves-a-placeholder-unkept ()
+  (let ((herdr-agent-names-file (make-temp-file "herdr-agent-names" nil ".eld"))
+        (herdr-agent--stored-names nil)
+        (herdr-agent--restored-names nil)
+        (herdr-agent--sessions (make-hash-table :test #'equal)))
+    (puthash '("/tmp/alpha.sock" . "term-k")
+             (herdr-agent--make-session :server "/tmp/alpha.sock"
+                                        :terminal "term-k" :placeholder t)
+             herdr-agent--sessions)
+    (cl-letf (((symbol-function 'herdr-agent--canonical-server-key) #'identity)
+              ((symbol-function 'herdr-agent-rename)
+               (lambda (&rest _) (error "Nothing to give back"))))
+      (herdr-agent-keep-names
+       (list (herdr-agent-tests--kept-entry '(name . "claude-1"))))
+      (herdr-agent-keep-names (list (herdr-agent-tests--kept-entry)))
+      (should-not (herdr-agent--stored-names)))))
+
+(ert-deftest herdr-agent-keep-names-leaves-a-placeholder-unkept-before-registration ()
+  (let ((herdr-agent-names-file (make-temp-file "herdr-agent-names" nil ".eld"))
+        (herdr-agent--stored-names nil)
+        (herdr-agent--restored-names nil)
+        (herdr-agent--placeholders '(("/tmp/alpha.sock" . "agent-5")))
+        (herdr-agent--sessions (make-hash-table :test #'equal)))
+    (cl-letf (((symbol-function 'herdr-agent--canonical-server-key) #'identity)
+              ((symbol-function 'herdr-agent-rename)
+               (lambda (&rest _) (error "Nothing to give back"))))
+      (herdr-agent-keep-names
+       (list (herdr-agent-tests--kept-entry '(name . "agent-5"))))
+      (should-not (herdr-agent--stored-names)))))
 
 (ert-deftest herdr-agent-native-management-uses-herdr-api-wrappers ()
   (herdr-agent-tests--require-functions

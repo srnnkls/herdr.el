@@ -69,6 +69,10 @@ PROPERTIES must contain an `:arguments' action alist."
   "Agent keys keyed by project roots.")
 (defvar herdr-agent--panes (make-hash-table :test #'equal)
   "Terminal IDs keyed by server and pane.")
+(defvar herdr-agent--placeholders nil
+  "Placeholder names herdr.el holds, as conses of server and name.
+A name is held from when it is chosen, before its session is registered,
+until it comes off the agent.")
 (defvar herdr-agent--subscriptions (make-hash-table :test #'equal)
   "Lifecycle subscription processes keyed by server.")
 
@@ -452,6 +456,15 @@ a server no session answers for falls back to the scope in hand."
       (herdr-session-for-socket (herdr-agent-session-server session))
       herdr-session))
 
+(defun herdr-agent--session-label (session)
+  "Return the label SESSION's buffer and workspace open under.
+An agent launched without a name goes by its harness until it has one."
+  (if (herdr-agent-session-placeholder session)
+      (or (plist-get (herdr-agent--harness (herdr-agent-session-kind session) t)
+                     :label)
+          (herdr-agent-session-kind session))
+    (herdr-agent-title (herdr-agent-session-name session))))
+
 (defun herdr-agent--attach (session &optional display)
   "Attach SESSION's terminal and record its Emacs resources.
 DISPLAY shows the buffer once attached."
@@ -459,12 +472,7 @@ DISPLAY shows the buffer once attached."
          (herdr-attach-terminal
           (herdr-agent-session-terminal session)
           :session (herdr-agent--route session)
-          :label (if (herdr-agent-session-placeholder session)
-                     (or (plist-get (herdr-agent--harness
-                                     (herdr-agent-session-kind session) t)
-                                    :label)
-                         (herdr-agent-session-kind session))
-                   (herdr-agent-title (herdr-agent-session-name session)))
+          :label (herdr-agent--session-label session)
           :directory (herdr-agent-session-project session)
           :takeover herdr-attach-takeover :display display)))
     (herdr-agent-claim-attachment session buffer (get-buffer-process buffer))))
@@ -781,7 +789,10 @@ Herdr answers for a starting agent by its pane before its terminal."
 
 (defun herdr-agent--placeholder-dropped (session agent server-key)
   "Record that SESSION's agent on SERVER-KEY shed its placeholder as AGENT."
-  (setf (herdr-agent-session-placeholder session) nil)
+  (setf (herdr-agent-session-placeholder session) nil
+        herdr-agent--placeholders
+        (delete (cons server-key (herdr-agent-session-requested-name session))
+                herdr-agent--placeholders))
   (herdr-agent--refresh-session session agent server-key))
 
 (defun herdr-agent--drop-placeholder (session)
@@ -888,6 +899,8 @@ returns without waiting for the agent to be ready, as in
         (herdr-agent--subscribe-before-start server-key)
         (let* ((placeholder (herdr-agent--blank-name-p name))
                (name (herdr-agent--available-name name server-key))
+               (_ (when placeholder
+                    (push (cons server-key name) herdr-agent--placeholders)))
                (session (herdr-agent--make-session
                          :server server-key :kind kind :name name :requested-name name
                          :placeholder placeholder
@@ -1970,6 +1983,114 @@ groups buffers its own way answers for itself."
   "Send context at point to the last-used agent in the current workspace."
   (interactive)
   (herdr-agent--send-session 'workspace t))
+
+;;;; Kept names
+
+(defcustom herdr-agent-names-file nil
+  "File the names agents go by persist in.
+Herdr forgets an agent's name and title when its server restarts or
+hands off, while the harness session the agent runs keeps its id.  The
+title each named agent shows is kept here under that id and given back
+once the agent turns up nameless.  Nil keeps the file beside
+`herdr-state-file'."
+  :type '(choice (const :tag "Beside herdr-state-file" nil) file)
+  :group 'herdr)
+
+(defvar herdr-agent--stored-names nil
+  "Cons of the names file last read and the titles it held.")
+
+(defvar herdr-agent--restored-names nil
+  "Server and terminal pairs whose kept name was given back this session.")
+
+(defun herdr-agent--names-file ()
+  "Return the file kept names live in, or nil when nothing is kept."
+  (or herdr-agent-names-file
+      (and herdr-state-file
+           (expand-file-name "agent-names.eld"
+                             (file-name-directory herdr-state-file)))))
+
+(defun herdr-agent--stored-names ()
+  "Return the kept titles, keyed by harness session."
+  (let ((file (herdr-agent--names-file)))
+    (unless (equal (car herdr-agent--stored-names) file)
+      (setq herdr-agent--stored-names
+            (cons file (and file (file-readable-p file)
+                            (with-temp-buffer
+                              (insert-file-contents file)
+                              (ignore-error error
+                                (let ((stored (read (current-buffer))))
+                                  (and (listp stored) stored))))))))
+    (cdr herdr-agent--stored-names)))
+
+(defun herdr-agent--save-names (names)
+  "Keep NAMES, the titles keyed by harness session, in the names file."
+  (let ((file (herdr-agent--names-file)))
+    (setq herdr-agent--stored-names (cons file names))
+    (when file
+      (make-directory (file-name-directory file) t)
+      (with-temp-file file
+        (let ((print-length nil) (print-level nil))
+          (prin1 names (current-buffer))
+          (insert "\n"))))))
+
+(defun herdr-agent--session-id (entry)
+  "Return the harness session agent ENTRY runs, or nil when it reports none."
+  (let ((session (alist-get 'agent_session entry)))
+    (when-let* (((listp session))
+                (value (alist-get 'value session)))
+      (cons (alist-get 'source session) value))))
+
+(defun herdr-agent--kept-title (entry)
+  "Return the title named ENTRY shows, its `title' token or else its name."
+  (let ((name (alist-get 'name entry))
+        (title (alist-get 'title (alist-get 'tokens entry))))
+    (if (and (stringp title) (equal (herdr-agent-name-slug title) name))
+        title
+      name)))
+
+(defun herdr-agent-keep-names (entries)
+  "Keep the names ENTRIES go by, and give a kept one back to a nameless agent.
+ENTRIES come from one server, and are answered with what is given back
+already in them.  A name herdr.el holds as a placeholder is not kept,
+and an agent whose name was given back is not asked again."
+  (let* ((names (herdr-agent--stored-names))
+         (kept names))
+    (prog1
+        (mapcar
+         (lambda (entry)
+           (let* ((id (herdr-agent--session-id entry))
+                  (target (herdr--entry-target entry))
+                  (session (and target (herdr-agent-find (car target) (cdr target))))
+                  (stored (and id (cdr (assoc id kept)))))
+             (cond
+              ((null id) entry)
+              ((alist-get 'name entry)
+               (let ((title (herdr-agent--kept-title entry)))
+                 (unless (or (and session (herdr-agent-session-placeholder session))
+                             (member (cons (herdr-agent--canonical-server-key
+                                            (herdr--entry-server entry))
+                                           (alist-get 'name entry))
+                                     herdr-agent--placeholders)
+                             (equal title stored))
+                   (setq kept (cons (cons id title)
+                                    (cl-remove id kept :key #'car :test #'equal)))))
+               entry)
+              ((and stored target
+                    (not (member target herdr-agent--restored-names)))
+               (push target herdr-agent--restored-names)
+               (if (ignore-error herdr-error
+                     (herdr-agent-rename target stored)
+                     t)
+                   (let ((name (herdr-agent-name-slug stored)))
+                     (append `((name . ,name)
+                               (tokens . ((title . ,stored)
+                                          ,@(alist-get 'tokens entry))))
+                             (assq-delete-all 'tokens (copy-tree entry))))
+                 entry))
+              (t entry))))
+         entries)
+      (unless (eq kept names)
+        (herdr-agent--save-names kept)))))
 
 ;;;; Messages
 

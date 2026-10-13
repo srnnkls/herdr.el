@@ -15,6 +15,8 @@
 (require 'herdr-api)
 (require 'herdr-agent)
 
+(setq herdr-agent-names-file (make-temp-file "herdr-agent-names" nil ".eld"))
+
 (defvar herdr-tests--socket-dir nil)
 (defvar ghostel-mode-hook)
 (defvar ghostel-exit-functions)
@@ -386,7 +388,17 @@ alist.  Returns the socket path."
     (should (equal (herdr--entry-label
                     '((name . "renamed") (tokens . ((title . "API Review: v2")))))
                    "RENAMED"))
-    (should (equal (herdr--entry-label '((label . "x"))) "x"))))
+    (should (equal (herdr--entry-label '((label . "x"))) "x"))
+    (should (equal (herdr--entry-label
+                    '((agent . "claude")
+                      (terminal_title_stripped . "task-keyed-approach")))
+                   "TASK-KEYED-APPROACH"))
+    (should (equal (herdr--entry-label
+                    '((agent . "claude")
+                      (terminal_title_stripped . "Section spacing")))
+                   "Section spacing"))
+    (should (equal (herdr--entry-label '((terminal_title_stripped . "zsh")))
+                   "zsh"))))
 
 (ert-deftest herdr-buffer-names-make-room-for-repeated-labels ()
   (let ((first (get-buffer-create "*herdr: 1*"))

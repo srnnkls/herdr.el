@@ -876,6 +876,7 @@ leaves something behind."
         label)))
 
 (declare-function herdr-agent-name-slug "herdr-agent" (string))
+(declare-function herdr-agent-keep-names "herdr-agent" (entries))
 
 (defcustom herdr-agent-title-function #'identity
   "Function turning an agent's herdr name into the title it is shown by.
@@ -901,11 +902,23 @@ token, while the name is still that title's slug; otherwise what
           title
         (herdr-agent-title name)))))
 
+(defun herdr--terminal-label (entry)
+  "Return the label ENTRY's terminal title makes.
+An agent's title that is already a name, as a harness naming its session
+leaves it, is shown by `herdr-agent-title-function' as a name would be."
+  (let ((label (herdr--undecorated-label
+                (alist-get 'terminal_title_stripped entry))))
+    (if (and (stringp label) (alist-get 'agent entry)
+             (fboundp 'herdr-agent-name-slug)
+             (equal (herdr-agent-name-slug label) label))
+        (herdr-agent-title label)
+      label)))
+
 (defun herdr--entry-label (entry)
   "Return a short label for pane or agent ENTRY."
   (or (herdr-agent-entry-title entry)
       (alist-get 'label entry)
-      (herdr--undecorated-label (alist-get 'terminal_title_stripped entry))
+      (herdr--terminal-label entry)
       (alist-get 'agent entry)
       (alist-get 'pane_id entry)))
 
@@ -1069,14 +1082,18 @@ the label is where a pane records durable state of its own."
 (defun herdr-agent-sessions ()
   "Return the agents of the herdr session in scope as session entries.
 Each carries `pane_label', the manual label of the pane it occupies."
-  (let ((labels (herdr--pane-labels)))
-    (mapcar (lambda (agent)
-              (append `((kind . "herdr")
-                        (session . ,herdr-session)
-                        (server_key . ,(herdr-server-key))
-                        (pane_label . ,(gethash (alist-get 'pane_id agent) labels)))
-                      agent))
-            (herdr-agents))))
+  (let* ((labels (herdr--pane-labels))
+         (entries (mapcar (lambda (agent)
+                            (append `((kind . "herdr")
+                                      (session . ,herdr-session)
+                                      (server_key . ,(herdr-server-key))
+                                      (pane_label . ,(gethash (alist-get 'pane_id agent)
+                                                              labels)))
+                                    agent))
+                          (herdr-agents))))
+    (if (fboundp 'herdr-agent-keep-names)
+        (herdr-agent-keep-names entries)
+      entries)))
 
 (defun herdr--session-entries ()
   "Return the entries of every session in `herdr-all-sessions'.
