@@ -989,6 +989,30 @@ it until then.  A buffer renamed by hand is left as it is."
           (rename-buffer name)
           (setq herdr--buffer-name name))))))
 
+(defcustom herdr-workspace-follows-agent t
+  "Whether a workspace holding one agent alone goes by that agent's label.
+The workspace is renamed whenever the label moves, as its buffer is."
+  :type 'boolean
+  :group 'herdr)
+
+(defun herdr-follow-workspace-labels (entries workspaces)
+  "Rename WORKSPACES that hold one agent of ENTRIES alone after its label.
+WORKSPACES is a table of workspace records keyed by server key and
+workspace id; a renamed record takes the new label."
+  (when herdr-workspace-follows-agent
+    (dolist (entry entries)
+      (when-let* (((alist-get 'agent entry))
+                  (server (herdr--entry-server entry))
+                  (id (alist-get 'workspace_id entry))
+                  (workspace (gethash (cons server id) workspaces))
+                  ((eql (alist-get 'pane_count workspace) 1))
+                  (label (herdr--entry-label entry))
+                  ((not (equal label (alist-get 'label workspace)))))
+        (ignore-error herdr-error
+          (let ((herdr-socket-path server))
+            (herdr-api-workspace-rename label id))
+          (setf (alist-get 'label workspace) label))))))
+
 (defun herdr-entry-label (entry)
   "Return the name ENTRY is known by, for whatever reads herdr's entries.
 `herdr-entry-directory' answers for the other half of an entry a package

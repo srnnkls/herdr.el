@@ -864,7 +864,7 @@ when SESSION has no placeholder or herdr will not let go of it yet."
 
 (defcustom herdr-agent-placement 'workspace
   "Where an agent started from Emacs opens in herdr.
-`workspace' gives it a workspace of its own, labelled after its project;
+`workspace' gives it a workspace of its own, labelled after the agent;
 `tab' opens it as a tab in the project's workspace, creating that
 workspace for the first."
   :type '(choice (const :tag "A workspace of its own" workspace)
@@ -909,8 +909,11 @@ returns without waiting for the agent to be ready, as in
               (let* ((env (herdr-agent--run-adapter session :prepare))
                      (args (or (herdr-agent--run-adapter session :arguments args)
                                args))
-                     (workspace (or workspace (herdr-workspace-label project-root)))
                      (fresh (eq herdr-agent-placement 'workspace))
+                     (workspace (or workspace
+                                    (if fresh
+                                        (herdr-agent--session-label session)
+                                      (herdr-workspace-label project-root))))
                      (existing (and (not fresh) (herdr-workspace-id workspace)))
                      (created
                       (let ((herdr--open-tab-cleanup-failed-function
