@@ -1034,7 +1034,8 @@ returns without waiting for the agent to be ready, as in
                          (herdr-subscribe
                           (list type)
                           (lambda (data)
-                            (herdr-agent--handle-event server-key type data))))))
+                            (herdr-agent--handle-event server-key type data))
+                          (lambda () (herdr-agent--server-lost server-key))))))
                   (unless (and (processp process) (process-live-p process))
                     (signal 'herdr-error (list "subscription did not return a live process")))
                   (push process candidates)))
@@ -1044,6 +1045,13 @@ returns without waiting for the agent to be ready, as in
                                 candidates)
                 (signal 'herdr-error (list "subscription batch contains a dead process")))
               (puthash server-key candidates herdr-agent--subscriptions)
+              (herdr-agent--with-server server-key
+                (herdr-request-async
+                 "pane.list" nil
+                 (lambda (result)
+                   (dolist (pane (alist-get 'panes result))
+                     (herdr-agent--index-pane server-key pane)))
+                 #'ignore))
               candidates)
           (error
            (dolist (process candidates)
@@ -1052,6 +1060,181 @@ returns without waiting for the agent to be ready, as in
            (if (eq (car err) 'herdr-error)
                (signal (car err) (cdr err))
              (signal 'herdr-error (list (error-message-string err))))))))))
+
+;;;; Handoffs
+
+(defcustom herdr-handoff-timeout 30
+  "Seconds a herdr server that went away has to come back.
+A live handoff replaces a server in well under a second.  For this long
+after a server ends its subscriptions, Emacs waits for one to answer on
+the same socket and carries its terminals over to it."
+  :type 'number
+  :group 'herdr)
+
+(defvar herdr-agent-handoff-functions nil
+  "Functions called with a server key and the terminals it renumbered.
+They run once a server that went away answers again.  The renames are
+an alist from each old terminal id to its new one, empty when the
+server kept them.")
+
+(defvar herdr-agent--handoffs (make-hash-table :test #'equal)
+  "Timers waiting for a server that went away, keyed by server.")
+
+(defun herdr-agent--index-panes (server-key)
+  "Index every pane SERVER-KEY reports."
+  (dolist (pane (alist-get 'panes (herdr-agent--with-server server-key
+                                    (herdr-api-pane-list))))
+    (herdr-agent--index-pane server-key pane)))
+
+(defun herdr-agent--server-panes (server-key)
+  "Return SERVER-KEY's indexed panes as an alist of pane to terminal."
+  (let (panes)
+    (maphash (lambda (key terminal)
+               (when (equal (car key) server-key)
+                 (push (cons (cdr key) terminal) panes)))
+             herdr-agent--panes)
+    panes))
+
+(defun herdr-agent--installed-executable ()
+  "Return the herdr binary installed now, its symlinks resolved, or nil.
+`bin/herdr-yield' stands in for the herdr it runs."
+  (when-let* ((program (if (equal (file-name-nondirectory herdr-executable)
+                                  "herdr-yield")
+                           (or (getenv "HERDR_YIELD_HERDR") "herdr")
+                         herdr-executable))
+              (found (executable-find program)))
+    (file-truename found)))
+
+(defun herdr-agent--server-lost (server-key)
+  "Wait for a server to answer on SERVER-KEY again, then carry its terminals over.
+The panes indexed now are what the terminals are found by afterwards.
+Gives up after `herdr-handoff-timeout' seconds."
+  (let ((server-key (herdr-agent--canonical-server-key server-key)))
+    (unless (gethash server-key herdr-agent--handoffs)
+      (let ((deadline (+ (float-time) herdr-handoff-timeout))
+            (panes (herdr-agent--server-panes server-key))
+            (asking nil)
+            (timer nil))
+        (setq timer
+              (run-with-timer
+               0.1 0.25
+               (lambda ()
+                 (cond
+                  ((> (float-time) deadline)
+                   (cancel-timer timer)
+                   (remhash server-key herdr-agent--handoffs))
+                  ((not asking)
+                   (setq asking t)
+                   (herdr-agent--with-server server-key
+                     (herdr-request-async
+                      "ping" nil
+                      (lambda (_)
+                        (when (eq (gethash server-key herdr-agent--handoffs) timer)
+                          (cancel-timer timer)
+                          (remhash server-key herdr-agent--handoffs)
+                          (herdr-agent--server-back server-key panes)))
+                      (lambda (_) (setq asking nil))
+                      1)))))))
+        (puthash server-key timer herdr-agent--handoffs)))))
+
+(defun herdr-agent--server-back (server-key panes)
+  "Carry SERVER-KEY's terminals over from PANES, its panes before it went away.
+PANES is an alist of pane to terminal; a pane answering with another
+terminal now is one a live handoff renumbered."
+  (condition-case err
+      (let ((current (alist-get 'panes (herdr-agent--with-server server-key
+                                         (herdr-api-pane-list))))
+            renames)
+        (dolist (pane current)
+          (let ((old (cdr (assoc (alist-get 'pane_id pane) panes)))
+                (new (alist-get 'terminal_id pane)))
+            (when (and old new (not (equal old new)))
+              (push (cons old new) renames))))
+        (herdr-agent--rename-terminals server-key renames)
+        (dolist (pane panes)
+          (remhash (cons server-key (car pane)) herdr-agent--panes))
+        (dolist (pane current)
+          (herdr-agent--index-pane server-key pane))
+        (herdr-agent--subscribe-if-live server-key)
+        (run-hook-with-args 'herdr-agent-handoff-functions server-key renames))
+    (herdr-error
+     (message "herdr: lost %s: %s"
+              (abbreviate-file-name server-key) (error-message-string err)))))
+
+(defun herdr-agent--rename-terminals (server-key renames)
+  "Move SERVER-KEY's sessions and buffers to the terminal ids in RENAMES.
+RENAMES is an alist from each old terminal id to its new one."
+  (let (moved)
+    (maphash (lambda (key session)
+               (when-let* (((equal (car key) server-key))
+                           (new (cdr (assoc (cdr key) renames))))
+                 (push (cons session new) moved)))
+             herdr-agent--sessions)
+    (pcase-dolist (`(,session . ,new) moved)
+      (let ((old (herdr-agent-session-key session))
+            (project (herdr-agent-session-project session)))
+        (remhash old herdr-agent--sessions)
+        (when project
+          (puthash project (delete old (gethash project herdr-agent--projects))
+                   herdr-agent--projects))
+        (setf (herdr-agent-session-terminal session) new)
+        (herdr-agent--register session))))
+  (herdr-retarget-terminals server-key renames))
+
+;;;###autoload
+(defun herdr-restart-server (&optional session)
+  "Replace SESSION's herdr server with a fresh one, keeping its panes running.
+herdr hands every pane's process over to a server started from the
+herdr installed now, so a restart picks up an update without ending an
+agent, and attachments reconnect to their panes.  SESSION defaults to
+the session in scope; with \\[universal-argument] it is read."
+  (interactive
+   (list (when current-prefix-arg (herdr-read-session "Restart herdr session"))))
+  (herdr-with-session session
+    (let ((server (herdr-server-key))
+          (name (or (herdr-session-name) "default")))
+      (herdr-agent--index-panes server)
+      (herdr-request-async
+       "server.live_handoff"
+       (herdr--params `((import_exe . ,(herdr-agent--installed-executable))))
+       (lambda (_)
+         (message "herdr: restarted %s with its panes running" name)
+         (herdr-agent--server-lost server))
+       (lambda (err)
+         (message "herdr: restarting %s failed: %s" name (error-message-string err)))
+       herdr-handoff-timeout)
+      (message "herdr: restarting %s..." name))))
+
+;;;###autoload
+(defun herdr-update ()
+  "Update herdr and hand every running server over to the new release.
+`herdr update --handoff' runs in a buffer that takes its questions.
+Panes keep their processes, and attachments reconnect to them once
+their server answers again."
+  (interactive)
+  (let ((servers (seq-filter (lambda (server)
+                               (condition-case nil
+                                   (progn (herdr-agent--index-panes server) t)
+                                 (herdr-error nil)))
+                             (delete-dups (mapcar #'herdr-session-server-key
+                                                  (herdr-all-sessions)))))
+        (buffer (get-buffer-create "*herdr-update*")))
+    (when (get-buffer-process buffer)
+      (user-error "herdr is already updating"))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t)) (erase-buffer)))
+    (let ((process (get-buffer-process
+                    (make-comint-in-buffer "herdr-update" buffer herdr-executable nil
+                                           "update" "--handoff"))))
+      (add-function :after (process-sentinel process)
+                    (lambda (process _event)
+                      (unless (process-live-p process)
+                        (mapc #'herdr-agent--server-lost servers)
+                        (message (if (zerop (process-exit-status process))
+                                     "herdr: updated"
+                                   "herdr: update failed; see %s")
+                                 (buffer-name buffer))))))
+    (pop-to-buffer buffer)))
 
 (defun herdr-agent-detach (session)
   "Detach SESSION's Emacs resources without terminating its herdr pane."

@@ -1550,6 +1550,8 @@ are bound by that package and unbound where it is not installed."
   "t" #'herdr-status-toggle-details
   "g" #'herdr-status-refresh
   "p" #'herdr-status-toggle-project
+  "Z" #'herdr-restart-server
+  "M-Z" #'herdr-update
   "q" #'quit-window)
 
 (defun herdr-status--widen-fringe ()
@@ -1964,6 +1966,7 @@ Redraws coalesce on one idle timer, so calling this often is cheap."
 
 (add-hook 'herdr-agent-event-functions #'herdr-status--on-event)
 (add-hook 'herdr-agent-ready-functions #'herdr-status--on-event)
+(add-hook 'herdr-agent-handoff-functions #'herdr-status--on-event)
 
 ;;;; Commands
 
@@ -2595,6 +2598,9 @@ Every suffix here is bound directly in `herdr-status-mode-map' as well."
     ("K" "close" herdr-status-close-pane)]
    ["Herd"
     ("h" "herds" herdr-herd-dispatch)]
+   ["Server"
+    ("Z" "restart, panes run on" herdr-restart-server)
+    ("M-Z" "update herdr" herdr-update)]
    ]
   [:class transient-row
           ("?" "close" transient-quit-one)

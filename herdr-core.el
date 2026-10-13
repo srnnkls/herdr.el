@@ -548,11 +548,13 @@ detached, unless `herdr-auto-start-server' is nil, and this waits up to
       (signal 'herdr-error
               (list (format "no herdr server answering on %s" (herdr-socket-file))))))
 
-(defun herdr-subscribe (types callback)
+(defun herdr-subscribe (types callback &optional closed)
   "Subscribe to herdr event TYPES and call CALLBACK for each event.
 TYPES is a list of event type strings such as \"pane.agent_detected\".
-CALLBACK receives the event alist.  Returns the subscription process;
-`delete-process' on it unsubscribes."
+CALLBACK receives the event alist.  CLOSED, when given, is called with
+no arguments once the server ends the subscription.  Returns the
+subscription process; `delete-process' on it unsubscribes without
+calling CLOSED."
   (let ((proc (herdr--connect))
         (pending "")
         (subscriptions (vconcat (mapcar (lambda (type) `((type . ,type))) types))))
@@ -569,10 +571,12 @@ CALLBACK receives the event alist.  Returns the subscription process;
                (funcall callback (alist-get 'data message))))))))
     (set-process-sentinel
      proc
-     (lambda (proc _event)
+     (lambda (proc event)
        (unless (process-live-p proc)
          (let ((buffer (process-buffer proc)))
-           (when (buffer-live-p buffer) (kill-buffer buffer))))))
+           (when (buffer-live-p buffer) (kill-buffer buffer)))
+         (when (and closed (not (string-prefix-p "deleted" event)))
+           (funcall closed)))))
     (process-send-string proc
                          (herdr--payload "events.subscribe"
                                          `((subscriptions . ,subscriptions))))

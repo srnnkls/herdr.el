@@ -440,12 +440,14 @@ One of `shown', `hidden' and `unknown'; nil for any other attachment.")
 
 (defcustom herdr-terminal-quiet-exit-regexps
   '("\\`detached from "
-    "\\`server shut down: terminal [^ ]+ exited\\'")
+    "\\`server shut down: terminal [^ ]+ exited\\'"
+    "\\`server shut down: live update in progress")
   "Regexps matching the CLI lines that end a terminal without a fault.
 An attachment ends when the pane it shows does, and the process behind
 that pane ending - an agent given \\[universal-argument] \\`C-d', a shell
 told to exit - is the terminal running its course rather than anything
-going wrong.  A line matching none of these is reported."
+going wrong, as is a live handoff replacing the server under it.  A
+line matching none of these is reported."
   :type '(repeat regexp)
   :group 'herdr)
 
@@ -1151,6 +1153,29 @@ decides among the agents nothing has been near."
     (setq herdr--recent-session-targets
           (cl-remove-if-not (lambda (target) (member target targets))
                             herdr--recent-session-targets))))
+
+(defun herdr-retarget-terminals (server-key renames)
+  "Follow the terminals SERVER-KEY renumbered, given as RENAMES.
+RENAMES is an alist from each old terminal id to its new one.  A live
+handoff keeps a pane's process and gives its terminal a new id, so
+every buffer and recent target naming an old one is moved to the new
+one, and an attachment through `herdr-yield' is told where to reconnect."
+  (dolist (buffer (buffer-list))
+    (when-let* (((equal (buffer-local-value 'herdr-terminal-server-key buffer)
+                        server-key))
+                (new (cdr (assoc (buffer-local-value 'herdr-terminal-id buffer)
+                                 renames))))
+      (with-current-buffer buffer
+        (setq herdr-terminal-id new)
+        (when (and herdr--yield (process-live-p (get-buffer-process buffer)))
+          (herdr-terminal-send (format "\e_herdr-yield;target;%s\e\\" new))))))
+  (setq herdr--recent-session-targets
+        (mapcar (lambda (target)
+                  (if-let* (((equal (car target) server-key))
+                            (new (cdr (assoc (cdr target) renames))))
+                      (cons server-key new)
+                    target))
+                herdr--recent-session-targets)))
 
 (defun herdr-visit (entry)
   "Show ENTRY and return its buffer.

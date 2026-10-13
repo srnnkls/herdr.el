@@ -189,6 +189,54 @@ alist.  Returns the socket path."
         (should (equal received data)))
     (herdr-tests--teardown)))
 
+(ert-deftest herdr-subscribe-reports-a-subscription-the-server-ends ()
+  (unwind-protect
+      (let* ((herdr-socket-path (herdr-tests--start-server (lambda (_) '((result)))))
+             (closed 0)
+             (ended (herdr-subscribe '("pane.updated") #'ignore
+                                     (lambda () (cl-incf closed))))
+             (deleted (herdr-subscribe '("pane.updated") #'ignore
+                                       (lambda () (cl-incf closed)))))
+        (accept-process-output nil 0.05)
+        (delete-process deleted)
+        (should (= closed 0))
+        (dolist (proc (process-list))
+          (when (and (string-prefix-p "herdr-test-server" (process-name proc))
+                     (process-contact proc :remote))
+            (delete-process proc)))
+        (while (process-live-p ended)
+          (accept-process-output nil 0.05))
+        (accept-process-output nil 0.05)
+        (should (= closed 1)))
+    (herdr-tests--teardown)))
+
+(ert-deftest herdr-retarget-terminals-follows-renumbered-terminals ()
+  (let ((yield (generate-new-buffer " *herdr-retarget-yield*"))
+        (plain (generate-new-buffer " *herdr-retarget-plain*"))
+        (elsewhere (generate-new-buffer " *herdr-retarget-elsewhere*"))
+        (herdr--recent-session-targets '(("/s" . "old-1") ("/t" . "old-1")))
+        sent)
+    (unwind-protect
+        (cl-letf (((symbol-function 'get-buffer-process) (lambda (_) 'process))
+                  ((symbol-function 'process-live-p) (lambda (_) t))
+                  ((symbol-function 'herdr-terminal-send)
+                   (lambda (text) (push (cons (current-buffer) text) sent))))
+          (with-current-buffer yield
+            (setq herdr-terminal-id "old-1" herdr-terminal-server-key "/s"
+                  herdr--yield 'shown))
+          (with-current-buffer plain
+            (setq herdr-terminal-id "old-2" herdr-terminal-server-key "/s"))
+          (with-current-buffer elsewhere
+            (setq herdr-terminal-id "old-1" herdr-terminal-server-key "/t"))
+          (herdr-retarget-terminals "/s" '(("old-1" . "new-1") ("old-2" . "new-2")))
+          (should (equal (buffer-local-value 'herdr-terminal-id yield) "new-1"))
+          (should (equal (buffer-local-value 'herdr-terminal-id plain) "new-2"))
+          (should (equal (buffer-local-value 'herdr-terminal-id elsewhere) "old-1"))
+          (should (equal sent `((,yield . "\e_herdr-yield;target;new-1\e\\"))))
+          (should (equal herdr--recent-session-targets
+                         '(("/s" . "new-1") ("/t" . "old-1")))))
+      (mapc #'kill-buffer (list yield plain elsewhere)))))
+
 (ert-deftest herdr-api-tab-create-encodes-env-and-focus ()
   (unwind-protect
       (let* ((seen nil)

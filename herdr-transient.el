@@ -135,7 +135,10 @@ to, so the two menus can be read as one."
     ("I" "one line" herdr-transient--status)
     ("t" herdr-status-toggle-details
      :description herdr-status--details-description
-     :if herdr-transient--dashboard-p)]])
+     :if herdr-transient--dashboard-p)]
+   ["Server"
+    ("Z" "restart, panes run on" herdr-restart-server)
+    ("M-Z" "update herdr" herdr-update)]])
 
 (provide 'herdr-transient)
 ;;; herdr-transient.el ends here

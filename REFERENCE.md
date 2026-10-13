@@ -35,6 +35,8 @@ A prefix argument is written `C-u`.
 | Command | Does |
 | --- | --- |
 | `herdr-assign-project-session` | route the current project to a session and store it in `herdr-state-file`; `C-u` skips storing |
+| `herdr-restart-server` | replace the server in scope with one from the installed herdr, handing its panes over live; `C-u` reads the session |
+| `herdr-update` | run `herdr update --handoff` in `*herdr-update*`, then carry every attachment over to its server's new terminals |
 
 ### The agent at hand
 
@@ -164,6 +166,7 @@ on the agent at point; elsewhere they read one.
 | `i` | `herdr-status` | `A` | `herdr-attach-session` |
 | `I` | show an agent's harness and state in the echo area | `J` | `herdr-jump` |
 | `t` | `herdr-status-toggle-details`, in the dashboard only | `o` | `herdr-assign-project-session` |
+| `Z` | `herdr-restart-server` | `M-Z` | `herdr-update` |
 
 `P`, `R`, `x` and `t` do what the same keys do in the dashboard.
 
@@ -198,6 +201,8 @@ on the agent at point; elsewhere they read one.
 | `h` | `herdr-herd-dispatch` |
 | `g` | `herdr-status-refresh` |
 | `p` | `herdr-status-toggle-project` |
+| `Z` | `herdr-restart-server` |
+| `M-Z` | `herdr-update` |
 | `q` | `quit-window` |
 
 `s` and `m` are left free for memex.el, which binds them to its search and its menu when it is
@@ -234,6 +239,7 @@ installed. `herdr-status-dispatch` mirrors the keys above and closes on `?`.
 | `herdr-auto-start-server` | boolean | t | start a server when none answers |
 | `herdr-server-start-timeout` | number | 15.0 | seconds to wait for a started server |
 | `herdr-request-timeout` | number | 5.0 | seconds to wait for a socket response |
+| `herdr-handoff-timeout` | number | 30 | seconds a server that went away has to answer again before its attachments are given up |
 
 The socket of the `shared` session is `$XDG_CONFIG_HOME/herdr/herdr.sock`, and a named session's
 is `$XDG_CONFIG_HOME/herdr/sessions/NAME/herdr.sock`; `XDG_CONFIG_HOME` defaults to `~/.config`.
@@ -382,6 +388,7 @@ is `$XDG_CONFIG_HOME/herdr/sessions/NAME/herdr.sock`; `XDG_CONFIG_HOME` defaults
 | `herdr-entry-annotation-functions` | the entry | when a completion annotation is built; return a string to append |
 | `herdr-session-functions` | nothing | to list the entries of the session in scope; default `herdr-agent-sessions` |
 | `herdr-agent-event-functions` | server key, event type, event data | after each pane event |
+| `herdr-agent-handoff-functions` | server key, alist of old to new terminal ids | once a server that went away answers again and its terminals are carried over |
 | `herdr-send-context-functions` | the agent entry | to provide context; the first string wins |
 | `herdr-message-compose-functions` | target, message, context | to build the prompt; the first string wins |
 | `herdr-message-shown-functions` | the agent target, in the buffer written from | to say that buffer already shows the agent, which leaves its terminal alone |
@@ -446,6 +453,7 @@ recent one.
 | `herdr-visit` | show an entry, attaching it first |
 | `herdr-attach-entry`, `herdr-attach-terminal` | attach an entry, or a terminal id |
 | `herdr-terminal-buffer` | the live buffer showing a terminal |
+| `herdr-retarget-terminals` | move buffers and attachments from old terminal ids to new ones on a server |
 | `herdr-entry-label`, `herdr-entry-directory` | an entry's name and working directory |
 | `herdr-session-for` | the session a directory routes to |
 | `herdr-assign-project` | assign a project root to a session from Lisp |
@@ -453,7 +461,7 @@ recent one.
 | `herdr-all-sessions` | every session Emacs knows of or finds a socket for |
 | `herdr-terminal-goto-prompt`, `herdr-terminal-screen` | go to an attached terminal's prompt, or read its screen |
 | `herdr-terminal-send`, `herdr-terminal-paste` | type or paste into an attached terminal |
-| `herdr-request`, `herdr-subscribe` | call a socket method, or subscribe to events |
+| `herdr-request`, `herdr-subscribe` | call a socket method, or subscribe to events, optionally told when the server ends the subscription |
 
 `herdr-api.el` defines one `herdr-api-` function per herdr socket API method.
 

@@ -93,6 +93,25 @@ Emacs has been told about, plus every session whose socket exists on disk under
 `~/.config/herdr/sessions/` (or `$XDG_CONFIG_HOME/herdr/sessions/`). A server started from a shell
 with `herdr --session review` therefore shows up without any configuration.
 
+### Restarting and updating servers
+
+`herdr-restart-server` replaces a session's server with one started from the herdr installed now.
+herdr hands every pane's process over to it live, so agents keep running through a restart, and a
+release installed since the server started takes effect. It restarts the session in scope; `C-u`
+reads one. `herdr-update` runs `herdr update --handoff` in `*herdr-update*`, where its questions
+can be answered, and so hands every running server over to the new release. The dashboard and the
+herdr menu bind both, to `Z` and `M-Z`. `herdr update` works only for herdr's own installer;
+after a Homebrew, mise or Nix update, `herdr-restart-server` carries a server over to the new
+binary.
+
+A handoff gives every terminal a new id while its pane keeps the id it had. Emacs notices the
+server going when its event subscriptions end, waits up to `herdr-handoff-timeout` seconds for the
+replacement to answer, and moves each buffer and agent session from its old terminal id to the one
+its pane has now. An attachment through `bin/herdr-yield` keeps its buffer and process throughout
+and reconnects to the new terminal, so the handoff shows as a repaint. A plain `herdr terminal
+attach` ends with the old server, quietly, and the agent is attached again from the dashboard or
+`herdr-jump`.
+
 ## Attaching terminals
 
 | Command | Offers |
