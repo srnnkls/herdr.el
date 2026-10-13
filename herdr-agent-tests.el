@@ -3762,6 +3762,176 @@ A nil SCREEN stands for a session this Emacs holds no terminal for."
     (should (equal prompts '((("srv" . "term-1") "line one\nline two"))))
     (should-not herdr-agent-ready-functions)))
 
+;;;; An agent's own terminal
+
+(defconst herdr-agent-tests--scrollback
+  (concat "❯ fix the parser\n"
+          "  and its tests\n"
+          "\n"
+          "⏺ Bash(cargo test)\n"
+          "  ⎿  running 3 tests\n"
+          "     ok\n"
+          "\n"
+          "⏺ All three pass.   \n"
+          "\n"
+          "› codex prompt\n"
+          "• Ran ls\n"
+          "  └ one\n"
+          "    two\n")
+  "Scrollback as Claude Code and then Codex draw it, padding and all.")
+
+(defun herdr-agent-tests--block (text inner output)
+  "Return the block text at TEXT in the fixture, INNER and OUTPUT as asked."
+  (with-temp-buffer
+    (insert herdr-agent-tests--scrollback)
+    (goto-char (point-min))
+    (search-forward text)
+    (pcase (herdr-agent-block-bounds inner output)
+      (`(,beg . ,end) (buffer-substring-no-properties beg end)))))
+
+(ert-deftest herdr-agent-block-bounds-split-the-scrollback-at-the-margin ()
+  (should (equal (herdr-agent-tests--block "its tests" t nil)
+                 "fix the parser\n  and its tests"))
+  (should (equal (herdr-agent-tests--block "its tests" nil nil)
+                 "❯ fix the parser\n  and its tests\n\n"))
+  (should (equal (herdr-agent-tests--block "cargo" t nil)
+                 "Bash(cargo test)\n  ⎿  running 3 tests\n     ok"))
+  (should (equal (herdr-agent-tests--block "pass" t nil) "All three pass."))
+  (should (equal (herdr-agent-tests--block "cargo" t t) "running 3 tests\n     ok"))
+  (should (equal (herdr-agent-tests--block "ok" nil t)
+                 "  ⎿  running 3 tests\n     ok\n\n"))
+  (should-not (herdr-agent-tests--block "pass" t t))
+  (should (equal (herdr-agent-tests--block "codex" t nil) "codex prompt"))
+  (should (equal (herdr-agent-tests--block "two" t t) "one\n    two")))
+
+(ert-deftest herdr-message-send-here-writes-to-the-terminals-own-agent ()
+  (let (read)
+    (cl-letf (((symbol-function 'herdr--entry-for-target)
+               (lambda (target) `((terminal_id . ,(cdr target)))))
+              ((symbol-function 'herdr-message--context)
+               (lambda (entry) (format "context of %s" (alist-get 'terminal_id entry))))
+              ((symbol-function 'herdr-message--read)
+               (lambda (target context) (setq read (list target context)))))
+      (with-temp-buffer
+        (setq herdr-terminal-id "term-7"
+              herdr-terminal-server-key "/servers/a.sock")
+        (herdr-message-send-here)
+        (should (equal read '(("/servers/a.sock" . "term-7") "context of term-7"))))
+      (with-temp-buffer
+        (should-error (herdr-message-send-here) :type 'user-error)))))
+
+(ert-deftest herdr-agent-terminal-mode-comes-on-with-the-claim ()
+  (with-temp-buffer
+    (herdr-claim-buffer (current-buffer) "term-1" "default")
+    (should herdr-agent-terminal-mode)))
+
+(ert-deftest herdr-agent-escape-here-inserts-on-the-second-escape ()
+  (let (sent states)
+    (cl-letf (((symbol-function 'herdr-terminal-send)
+               (lambda (text &rest _) (push text sent)))
+              ((symbol-function 'evil-insert-state)
+               (lambda () (push 'insert states))))
+      (let ((this-command 'herdr-agent-escape-here)
+            (last-command 'evil-normal-state))
+        (herdr-agent-escape-here)
+        (should-not states)
+        (setq last-command this-command)
+        (herdr-agent-escape-here))
+      (should (equal states '(insert)))
+      (setq sent nil states nil)
+      (let ((herdr-agent-key-delay 0))
+        (herdr-agent-rewind-here)))
+    (should (equal sent '("\e" "\e")))
+    (should (equal states '(insert)))))
+
+(ert-deftest herdr-agent-prompt-history-reads-the-project-newest-first ()
+  (let* ((file (make-temp-file "history" nil ".jsonl"))
+         (herdr-agent-history-files `(("claude" . ,file))))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (dolist (line '("{\"display\":\"fix the parser\",\"project\":\"/work/app\"}"
+                            "{\"display\":\"elsewhere\",\"project\":\"/work/other\"}"
+                            "{\"display\":\"see [Pasted text #1 +2 lines]\",\"pastedContents\":{\"1\":{\"id\":1,\"type\":\"text\",\"content\":\"a\\nb\"}},\"project\":\"/work/app\"}"
+                            "{\"display\":\"fix the parser\",\"project\":\"/work/app\"}"
+                            "{\"display\":\"in the worktree\",\"project\":\"/work/app-wt\"}"))
+              (insert line "\n")))
+          (should (equal (herdr-agent-prompt-history "claude" '("/work/app/" "/work/app-wt"))
+                         '("in the worktree" "fix the parser" "see a\nb")))
+          (should-not (herdr-agent-prompt-history "aider" '("/work/app"))))
+      (delete-file file))))
+
+(ert-deftest herdr-agent-text-objects-yank-a-message-in-normal-state ()
+  "`y i m' yanks the block under point, `m' messages the terminal's agent,
+and both stay in agent terminals: evil's own `m' and tag objects remain.
+Evil runs in an Emacs of its own, since loading it here would hand the
+dashboard's keys over to evil for every test after this one."
+  (let ((build (car (file-expand-wildcards
+                     (expand-file-name
+                      "~/.config/emacs/.local/straight/build-*/evil"))))
+        (here (file-name-directory (locate-library "herdr-agent"))))
+    (unless (or build (locate-library "evil"))
+      (ert-skip "evil is not installed"))
+    (let* ((program
+            `(progn
+               (require 'evil)
+               (require 'herdr-agent)
+               (define-minor-mode evil-ghostel-stand-in-mode "Binds escape and C-r."
+                 :keymap (make-sparse-keymap))
+               (evil-define-key* 'normal evil-ghostel-stand-in-mode-map
+                                 [escape] #'ignore)
+               (evil-define-key* '(normal insert) evil-ghostel-stand-in-mode-map
+                                 (kbd "C-r") #'ignore)
+               (let ((buffer (get-buffer-create "objects")))
+                 (switch-to-buffer buffer)
+                 (insert ,herdr-agent-tests--scrollback)
+                 (evil-local-mode 1)
+                 (herdr-agent--terminal-mode buffer)
+                 (evil-normal-state)
+                 (goto-char (point-min))
+                 (search-forward "its tests")
+                 (let ((m (key-binding "m"))
+                       (rewind (progn
+                                 (evil-ghostel-stand-in-mode 1)
+                                 (evil-normalize-keymaps)
+                                 (prog1 (list (key-binding [escape])
+                                              (key-binding (kbd "C-<backspace>"))
+                                              (key-binding "D")
+                                              (key-binding "X")
+                                              (key-binding (kbd "C-r"))
+                                              (progn (evil-insert-state)
+                                                     (key-binding (kbd "C-r"))))
+                                   (evil-normal-state))))
+                       (kill-ring nil)
+                       message output)
+                   (execute-kbd-macro (kbd "y i m"))
+                   (setq message (car kill-ring))
+                   (search-forward "ok")
+                   (execute-kbd-macro (kbd "y i t"))
+                   (setq output (car kill-ring))
+                   (herdr-agent-terminal-mode -1)
+                   (evil-normalize-keymaps)
+                   (prin1 (list m rewind message output (key-binding "m")
+                                (lookup-key evil-inner-text-objects-map "t")))))))
+           (result
+            (with-temp-buffer
+              (apply #'call-process (expand-file-name invocation-name invocation-directory)
+                     nil t nil "-Q" "--batch" "-L" here
+                     (append (and build (list "-L" build))
+                             (list "--eval" (prin1-to-string program))))
+              (goto-char (point-max))
+              (backward-sexp)
+              (read (current-buffer)))))
+      (should (equal result
+                     '(herdr-message-send-here
+                       (herdr-agent-escape-here herdr-agent-rewind-here
+                        herdr-agent-detach-here herdr-agent-close-here
+                        herdr-agent-history-here herdr-agent-history-here)
+                       "fix the parser\n  and its tests"
+                       "running 3 tests\n     ok"
+                       evil-set-marker
+                       evil-inner-tag))))))
+
 (provide 'herdr-agent-tests)
 ;;; herdr-agent-tests.el ends here
 

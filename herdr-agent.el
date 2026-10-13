@@ -2900,5 +2900,263 @@ stands."
     (herdr-agent-prompt (herdr--entry-target entry)
                         (herdr-agent--send-context entry))))
 
+;;;; An agent's own terminal
+
+;;;###autoload
+(defun herdr-message-send-here ()
+  "Write a message to the agent whose terminal this is, with context at point.
+Where `herdr-message-send' takes the agent at hand, this takes the one
+the buffer shows: the session under point is the one written to."
+  (interactive)
+  (let ((target (herdr-agent-buffer-target (current-buffer))))
+    (unless target
+      (user-error "No herdr agent is attached to %s" (buffer-name)))
+    (herdr-message--read target
+                         (herdr-message--context (herdr--entry-for-target target)))))
+
+(defun herdr-agent-escape-here ()
+  "Send escape to the terminal, and hand it the keyboard when repeated.
+A second escape in a row opens the rewind picker of Claude Code and
+Codex, whose arrows and return then go to the terminal in insert state."
+  (interactive)
+  (herdr-terminal-send "\e")
+  (when (and (eq last-command this-command) (fboundp 'evil-insert-state))
+    (evil-insert-state)))
+
+(defun herdr-agent-rewind-here ()
+  "Open the agent's rewind picker and hand the terminal the keyboard."
+  (interactive)
+  (herdr-terminal-send "\e")
+  (sleep-for herdr-agent-key-delay)
+  (herdr-terminal-send "\e")
+  (when (fboundp 'evil-insert-state)
+    (evil-insert-state)))
+
+(defun herdr-agent-let-go (target)
+  "Let go of agent TARGET, returning non-nil when Emacs held it.
+Its Emacs session detaches and the buffer showing its terminal goes;
+the pane runs on."
+  (let ((session (ignore-error user-error (herdr-agent-resolve-session target)))
+        (buffer (herdr-terminal-buffer (cdr target) (car target))))
+    (when session (herdr-agent-detach session))
+    (when (buffer-live-p buffer) (kill-buffer buffer))
+    (or session buffer)))
+
+(defun herdr-agent--here ()
+  "Return the target of the agent whose terminal this is."
+  (or (herdr-agent-buffer-target (current-buffer))
+      (user-error "No herdr agent is attached to %s" (buffer-name))))
+
+(defun herdr-agent-detach-here ()
+  "Let go of the agent whose terminal this is, leaving its pane running."
+  (interactive)
+  (let* ((target (herdr-agent--here))
+         (label (herdr-message--target-label target)))
+    (herdr-agent-let-go target)
+    (message "Detached %s, its pane left running" label)))
+
+(defun herdr-agent-close-here ()
+  "Close the pane of the agent whose terminal this is, after confirmation."
+  (interactive)
+  (let* ((target (herdr-agent--here))
+         (label (herdr-message--target-label target)))
+    (when (yes-or-no-p (format "Close %s? " label))
+      (herdr-agent-let-go target)
+      (herdr-agent-stop target)
+      (message "Closed %s" label))))
+
+(defcustom herdr-agent-history-files
+  '(("claude" . "~/.claude/history.jsonl")
+    ("codex" . "~/.codex/history.jsonl"))
+  "Where each harness keeps the prompts it was sent, by harness kind."
+  :type '(alist :key-type string :value-type file)
+  :group 'herdr-agent)
+
+(defun herdr-agent--history-text (record)
+  "Return the prompt of the history RECORD, its pasted texts filled in."
+  (let ((text (or (gethash "display" record) (gethash "text" record) ""))
+        (pasted (gethash "pastedContents" record)))
+    (when (hash-table-p pasted)
+      (maphash (lambda (id paste)
+                 (when-let* ((content (and (hash-table-p paste)
+                                           (gethash "content" paste))))
+                   (setq text (replace-regexp-in-string
+                               (format "\\[Pasted text #%s[^]]*\\]" id)
+                               content text t t))))
+               pasted))
+    text))
+
+(defun herdr-agent-prompt-history (kind directories)
+  "Return the prompts the harness KIND was sent, newest first, without repeats.
+A history that records each prompt's project keeps those of DIRECTORIES."
+  (when-let* ((file (alist-get kind herdr-agent-history-files nil nil #'equal))
+              (file (expand-file-name file))
+              ((file-readable-p file)))
+    (let ((projects (mapcar (lambda (directory)
+                              (concat "\"project\":"
+                                      (json-serialize (directory-file-name
+                                                       (expand-file-name directory)))))
+                            (delq nil directories)))
+          prompts)
+      (with-temp-buffer
+        (insert-file-contents file)
+        (goto-char (point-max))
+        (while (= 0 (forward-line -1))
+          (let ((line (buffer-substring-no-properties (point) (line-end-position))))
+            (when (or (not (string-search "\"project\":" line))
+                      (seq-some (lambda (project) (string-search project line))
+                                projects))
+              (when-let* ((record (ignore-errors (json-parse-string line)))
+                          (text (herdr-agent--history-text record))
+                          ((not (string-blank-p text))))
+                (push text prompts))))))
+      (delete-dups (nreverse prompts)))))
+
+(defun herdr-agent-history-here ()
+  "Put a prompt this agent's harness was sent before into its input.
+The prompts are those of this project in the harness's own history;
+the one chosen replaces the input and the terminal takes the keyboard."
+  (interactive)
+  (let* ((target (herdr-agent--here))
+         (entry (herdr--entry-for-target target))
+         (prompts (or (herdr-agent-prompt-history
+                       (alist-get 'agent entry)
+                       (list (alist-get 'cwd entry) (herdr-entry-directory entry)))
+                      herdr-message-history
+                      (user-error "No prompts sent to %s"
+                                  (herdr-message--target-label target))))
+         (prompt (completing-read
+                  "Prompt: "
+                  (lambda (string predicate action)
+                    (if (eq action 'metadata)
+                        '(metadata (display-sort-function . identity))
+                      (complete-with-action action prompts string predicate)))
+                  nil t)))
+    (herdr-terminal-send herdr-agent-prompt-clear)
+    (herdr-terminal-paste prompt)
+    (when (fboundp 'evil-insert-state)
+      (evil-insert-state))))
+
+(defcustom herdr-agent-output-regexp "^ +[⎿└] +"
+  "Regexp of the line where a tool's output opens in an agent's terminal.
+Claude Code draws it under `⎿' and Codex under `└'."
+  :type 'regexp
+  :group 'herdr)
+
+(defun herdr-agent-block-bounds (&optional inner output)
+  "Return (BEG . END) of the block of the agent's scrollback at point.
+A block is a line an agent starts at the left margin - a prompt, an
+answer, a tool call - and the indented lines under it, which is how
+Claude Code and Codex both draw a conversation.  INNER leaves out the
+mark it opens with and the blanks after it.  OUTPUT narrows to the
+tool's output in the block, from the line `herdr-agent-output-regexp'
+matches, and answers nil in a block with none."
+  (save-excursion
+    (let* ((start (progn (forward-line 0)
+                         (while (and (not (bobp)) (not (looking-at-p "[^ \t\n]")))
+                           (forward-line -1))
+                         (and (looking-at-p "[^ \t\n]") (point))))
+           (end (and start
+                     (progn (forward-line 1)
+                            (while (and (not (eobp)) (not (looking-at-p "[^ \t\n]")))
+                              (forward-line 1))
+                            (point))))
+           (beg (if (not output)
+                    start
+                  (goto-char start)
+                  (and start (re-search-forward herdr-agent-output-regexp end t)
+                       (line-beginning-position)))))
+      (when beg
+        (if (not inner)
+            (cons beg end)
+          (goto-char beg)
+          (if output
+              (re-search-forward herdr-agent-output-regexp end)
+            (forward-char 1)
+            (skip-chars-forward " "))
+          (let ((inner-beg (point)))
+            (goto-char end)
+            (skip-chars-backward " \t\n" inner-beg)
+            (cons inner-beg (point))))))))
+
+(defvar-keymap herdr-agent-terminal-mode-map
+  :doc "Keymap of `herdr-agent-terminal-mode'.")
+
+(define-minor-mode herdr-agent-terminal-mode
+  "Reach the agent a herdr terminal shows from the terminal itself.
+On in every buffer herdr attaches a terminal to.  Evil's normal state
+gets `m' for `herdr-message-send-here', `ESC' for
+`herdr-agent-escape-here', `C-<backspace>' for `herdr-agent-rewind-here',
+`D' for `herdr-agent-detach-here' and `X' for `herdr-agent-close-here';
+normal and insert state get `C-r' for `herdr-agent-history-here'; and
+operator and visual state the text objects `i m' and `a m' for a block
+of the conversation and `i t' and `a t' for a tool's output in it; see
+`herdr-agent-text-objects'."
+  :group 'herdr
+  :keymap herdr-agent-terminal-mode-map)
+
+(defvar herdr-agent--evil-set-up nil
+  "Non-nil once `herdr-agent-evil-setup' has run.")
+
+(defun herdr-agent--terminal-mode (buffer)
+  "Turn on `herdr-agent-terminal-mode' in BUFFER, a herdr terminal.
+The first terminal claimed with evil loaded binds the mode's evil keys."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (herdr-agent-terminal-mode 1)
+      (when (featurep 'evil)
+        (unless herdr-agent--evil-set-up
+          (herdr-agent-evil-setup)
+          (setq herdr-agent--evil-set-up t))
+        (evil-normalize-keymaps)))))
+
+(add-hook 'herdr-buffer-functions #'herdr-agent--terminal-mode)
+
+(declare-function evil-range "ext:evil-common" (beg end &optional type &rest properties))
+(declare-function evil-define-key* "ext:evil-core" (state keymap key def &rest bindings))
+(declare-function evil-normalize-keymaps "ext:evil-core" (&optional state))
+(declare-function evil-insert-state "ext:evil-states" (&optional arg))
+(declare-function evil-make-intercept-map "ext:evil-core" (keymap &optional state aux))
+
+(defun herdr-agent--range (inner output type)
+  "Return the evil range of the block at point, INNER or whole, OUTPUT or all.
+TYPE is the type the operator asked for, else the text is charwise."
+  (pcase (herdr-agent-block-bounds inner output)
+    (`(,beg . ,end) (evil-range beg end (or type 'exclusive)))
+    (_ (user-error "No %s at point" (if output "tool output" "message")))))
+
+(defconst herdr-agent-text-objects
+  '((herdr-agent-inner-message "i m" t nil)
+    (herdr-agent-a-message "a m" nil nil)
+    (herdr-agent-inner-output "i t" t t)
+    (herdr-agent-a-output "a t" nil t))
+  "An agent terminal's text objects: command, key, inner, tool output.")
+
+(defun herdr-agent-evil-setup ()
+  "Bind an agent terminal's keys in evil's states.
+They go on `herdr-agent-terminal-mode-map' alone, so other terminals
+keep evil's `m' and its tag objects.  Its normal and insert states
+intercept, ahead of `evil-ghostel-mode', which binds these keys too.
+Run once evil is loaded, since a text object is made by evil's macro."
+  (evil-define-key* 'normal herdr-agent-terminal-mode-map
+                    (kbd "m") #'herdr-message-send-here
+                    [escape] #'herdr-agent-escape-here
+                    (kbd "C-<backspace>") #'herdr-agent-rewind-here
+                    (kbd "D") #'herdr-agent-detach-here
+                    (kbd "X") #'herdr-agent-close-here)
+  (evil-define-key* '(normal insert) herdr-agent-terminal-mode-map
+                    (kbd "C-r") #'herdr-agent-history-here)
+  (dolist (state '(normal insert))
+    (evil-make-intercept-map herdr-agent-terminal-mode-map state t))
+  (pcase-dolist (`(,name ,key ,inner ,output) herdr-agent-text-objects)
+    (eval (list 'evil-define-text-object name '(_count &optional _beg _end type)
+                (format "Select %s the %s at point."
+                        (if inner "inside" "all of")
+                        (if output "tool output" "message"))
+                `(herdr-agent--range ,inner ,output type))
+          t)
+    (evil-define-key* '(operator visual) herdr-agent-terminal-mode-map
+                      (kbd key) name)))
+
 (provide 'herdr-agent)
 ;;; herdr-agent.el ends here
