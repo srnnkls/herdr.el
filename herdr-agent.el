@@ -1220,7 +1220,7 @@ their server answers again."
                                                   (herdr-all-sessions)))))
         (buffer (get-buffer-create "*herdr-update*")))
     (when (get-buffer-process buffer)
-      (user-error "herdr is already updating"))
+      (user-error "Already updating herdr"))
     (with-current-buffer buffer
       (let ((inhibit-read-only t)) (erase-buffer)))
     (let ((process (get-buffer-process

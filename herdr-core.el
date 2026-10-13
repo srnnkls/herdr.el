@@ -390,9 +390,9 @@ Nothing else runs meanwhile, so one request never starts another inside it."
          ((search-forward "\n" nil t)
           (setq line (buffer-substring-no-properties (point-min) (1- (point)))))
          ((> (float-time) deadline)
-          (signal 'herdr-error (list "timed out waiting for herdr response")))
+          (signal 'herdr-error (list "Timed out waiting for herdr response")))
          ((not (process-live-p proc))
-          (signal 'herdr-error (list "herdr closed the connection without a response")))
+          (signal 'herdr-error (list "Connection closed by herdr without a response")))
          (t (herdr--await proc)))))
     line))
 
@@ -484,12 +484,12 @@ seconds, by default `herdr-request-timeout'."
          proc
          (lambda (_proc _event)
            (funcall finish errback
-                    '(herdr-error "herdr closed the connection without a response"))))
+                    '(herdr-error "Connection closed by herdr without a response"))))
         (setq timer (run-with-timer
                      (or timeout herdr-request-timeout) nil
                      (lambda ()
                        (funcall finish errback
-                                '(herdr-error "timed out waiting for herdr response")))))
+                                '(herdr-error "Timed out waiting for herdr response")))))
         (process-send-string proc (herdr--payload method params))
         proc)
     (herdr-error
