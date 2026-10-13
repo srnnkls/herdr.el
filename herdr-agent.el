@@ -1840,25 +1840,46 @@ another provider handle it.  `herdr-default-send-context' is the fallback.")
   "Return the active region or current line as agent context.
 A terminal is named without lines: what it shows is a screen that moves
 on, not a text a line number keeps pointing into."
-  (let* ((bounds (herdr-agent--context-bounds))
-         (beginning (car bounds))
-         (end (cdr bounds))
-         (last-position (if (> end beginning) (1- end) beginning))
-         start-line end-line)
-    (save-restriction
-      (widen)
-      (setq start-line (line-number-at-pos beginning)
-            end-line (line-number-at-pos last-position)))
-    (format "Emacs context\n%s: %s%s\nmode: %s\n\n```\n%s\n```"
+  (let ((bounds (herdr-agent--context-bounds)))
+    (format "Emacs context\n%s: %s\nmode: %s\n\n%s"
             (if buffer-file-name "file" "buffer")
-            (if buffer-file-name
-                (expand-file-name buffer-file-name)
-              (buffer-name))
-            (cond ((herdr-terminal-screen-p) "")
-                  ((= start-line end-line) (format ":%d" start-line))
-                  (t (format ":%d-%d" start-line end-line)))
+            (herdr-agent--place (car bounds) (cdr bounds))
             major-mode
-            (string-trim-right (buffer-substring-no-properties beginning end)))))
+            (herdr-agent--fenced (car bounds) (cdr bounds)))))
+
+(defun herdr-agent--place (beginning end &optional directory)
+  "Return the file or buffer BEGINNING to END is in, with the lines it covers.
+A file under DIRECTORY is named relative to it, and any other in full; a
+terminal's screen moves on, so it has no lines."
+  (format "%s%s"
+          (if (not buffer-file-name)
+              (buffer-name)
+            (let ((relative (and directory
+                                 (file-relative-name buffer-file-name directory))))
+              (if (and relative (not (string-prefix-p "../" relative))
+                       (not (file-name-absolute-p relative)))
+                  relative
+                (expand-file-name buffer-file-name))))
+          (if (herdr-terminal-screen-p)
+              ""
+            (let ((last (if (> end beginning) (1- end) beginning))
+                  start-line end-line)
+              (save-restriction
+                (widen)
+                (setq start-line (line-number-at-pos beginning)
+                      end-line (line-number-at-pos last)))
+              (if (= start-line end-line)
+                  (format ":%d" start-line)
+                (format ":%d-%d" start-line end-line))))))
+
+(defun herdr-agent--fenced (beginning end)
+  "Return the text from BEGINNING to END in a fence it does not hold."
+  (let ((text (string-trim-right
+               (substring-no-properties (filter-buffer-substring beginning end))))
+        (fence "```"))
+    (while (string-search fence text)
+      (setq fence (concat fence "`")))
+    (concat fence "\n" text "\n" fence)))
 
 (defun herdr-agent--send-context (entry)
   "Return context for agent ENTRY from the configured providers."
@@ -2158,16 +2179,45 @@ string or nil, and returns the prompt to send or nil to defer.  When none
 returns a prompt, `herdr-message--compose' appends the context under a
 barrier.")
 
+(defvar herdr-message--selection nil
+  "The region the message being written is about, quoted, or nil.")
+
+(defun herdr-message--quote-selection (&optional directory)
+  "Return the active region fenced under the file it was taken from, or nil.
+A file under DIRECTORY, where the agent works, is named relative to it.
+Any other buffer goes unnamed: its name is how Emacs keeps it, not what
+the message is about, and the context names it where there is one."
+  (when (use-region-p)
+    (concat (if buffer-file-name
+                (concat (herdr-agent--place (region-beginning) (region-end)
+                                            directory)
+                        "\n")
+              "")
+            (herdr-agent--fenced (region-beginning) (region-end)))))
+
+(defun herdr-message--with-selection (text)
+  "Return TEXT followed by the selection the message is about, if any."
+  (if herdr-message--selection
+      (concat text "\n\n" herdr-message--selection)
+    text))
+
 (defun herdr-message--send (target text context)
-  "Send TEXT with CONTEXT to agent TARGET and record TEXT in history."
+  "Send TEXT with CONTEXT to agent TARGET and record TEXT in history.
+A region selected when the message was begun is quoted under TEXT, so
+the prompt itself says what it is about.  Where no composer answers, the
+context appended under the barrier quotes the region already."
   (let ((text (string-trim text)))
     (when (string-empty-p text)
       (user-error "Message is empty"))
     (add-to-history 'herdr-message-history text)
     (herdr-agent-prompt target
-                        (or (run-hook-with-args-until-success
-                             'herdr-message-compose-functions target text context)
-                            (herdr-message--compose text context)))
+                        (if-let* ((composed (run-hook-with-args-until-success
+                                             'herdr-message-compose-functions
+                                             target text context)))
+                            (herdr-message--with-selection composed)
+                          (herdr-message--compose
+                           (if context text (herdr-message--with-selection text))
+                           context)))
     target))
 
 (defcustom herdr-message-show-agent t
@@ -2241,6 +2291,7 @@ the message buffer each send this way on this key."
 (defun herdr-message--edit (target draft context)
   "Open a message buffer for TARGET holding DRAFT, sending with CONTEXT."
   (let ((agent-shown herdr-message--agent-shown)
+        (selection herdr-message--selection)
         (configuration (current-window-configuration))
         (buffer (get-buffer-create "*herdr message*"))
         (summary (herdr-message--context-summary context)))
@@ -2254,6 +2305,7 @@ the message buffer each send this way on this key."
                     (herdr-message--target-label target)
                     (if summary (format "  [%s]" summary) "")))
       (setq-local herdr-message--agent-shown agent-shown)
+      (setq-local herdr-message--selection selection)
       (erase-buffer)
       (when draft (insert draft)))
     (pop-to-buffer buffer)
@@ -2399,7 +2451,12 @@ minibuffer moves the draft to a `herdr-message-mode' buffer instead."
   "Read a message for TARGET and send it with CONTEXT.
 `herdr-message-read-function' decides where the message is written."
   (let ((herdr-message--agent-shown
-         (run-hook-with-args-until-success 'herdr-message-shown-functions target)))
+         (run-hook-with-args-until-success 'herdr-message-shown-functions target))
+        (herdr-message--selection
+         (and (use-region-p)
+              (herdr-message--quote-selection
+               (ignore-errors
+                 (herdr-entry-directory (herdr--entry-for-target target)))))))
     (funcall herdr-message-read-function target context)))
 
 (defun herdr-message--session (scope last)

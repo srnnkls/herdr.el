@@ -3005,6 +3005,63 @@ functions scheduled, and `refusals', how many renames herdr turns down."
                    `((,target "fix this <hooked>")
                      (,target "plain"))))))
 
+(ert-deftest herdr-message-quotes-a-selected-region-under-the-message ()
+  (let* ((herdr-message-history nil)
+         (herdr-send-context-functions nil)
+         (herdr-message-shown-functions nil)
+         (target '("/servers/a.sock" . "shared"))
+         (herdr-message-read-function
+          (lambda (target context) (herdr-message--send target "why?" context)))
+         composers prompts)
+    (cl-letf (((symbol-function 'herdr-agent-prompt)
+               (lambda (_target text) (push text prompts)))
+              ((symbol-function 'herdr--entry-for-target)
+               (lambda (_target) '((cwd . "/tmp/herdr-selection/")))))
+      (with-temp-buffer
+        (insert "def f():\n    return 1\nrest\n")
+        (setq buffer-file-name "/tmp/herdr-selection/app.py")
+        (transient-mark-mode 1)
+        (set-mark (point-min))
+        (goto-char (point-min))
+        (forward-line 2)
+        (activate-mark)
+        ;; A composer carrying the context elsewhere gets the region quoted.
+        (let ((herdr-message-compose-functions
+               (list (lambda (_target text _context) (push text composers) text))))
+          (herdr-message--read target (herdr-message--context nil)))
+        ;; The context under the barrier quotes the region already.
+        (let ((herdr-message-compose-functions nil))
+          (herdr-message--read target (herdr-message--context nil)))
+        ;; Nor is it quoted without one.
+        (deactivate-mark)
+        (let ((herdr-message-compose-functions
+               (list (lambda (_target text _context) text))))
+          (herdr-message--read target (herdr-message--context nil)))))
+    (setq prompts (nreverse prompts))
+    (should (equal composers '("why?")))
+    (should (equal (nth 0 prompts)
+                   "why?\n\napp.py:1-2\n```\ndef f():\n    return 1\n```"))
+    (should (string-prefix-p "why?\n\n---\nEmacs context" (nth 1 prompts)))
+    (let ((first (string-search "def f" (nth 1 prompts))))
+      (should-not (string-search "def f" (nth 1 prompts) (1+ first))))
+    (should (equal (nth 2 prompts) "why?"))))
+
+(ert-deftest herdr-message-selection-fences-around-a-fence-it-holds ()
+  (with-temp-buffer
+    (insert "```\ncode\n```")
+    (rename-buffer "notes" t)
+    (transient-mark-mode 1)
+    (set-mark (point-min))
+    (goto-char (point-max))
+    (activate-mark)
+    (should (equal (herdr-message--quote-selection)
+                   "````\n```\ncode\n```\n````"))
+    (setq buffer-file-name "/srv/elsewhere/notes.md")
+    (should (string-prefix-p "/srv/elsewhere/notes.md:1-3\n"
+                             (herdr-message--quote-selection "/tmp/project/")))
+    (should (string-prefix-p "elsewhere/notes.md:1-3\n"
+                             (herdr-message--quote-selection "/srv/")))))
+
 (ert-deftest herdr-message-rejects-empty-text ()
   (let ((herdr-message-history nil))
     (cl-letf (((symbol-function 'herdr-agent-prompt)

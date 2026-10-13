@@ -305,6 +305,24 @@ def handle(request):
 The message comes first, then a `---` barrier, then the context. A buffer that visits no file
 contributes no context unless a function on `herdr-send-context-functions` provides some.
 
+A region selected when the message is begun is quoted in the message itself, under what you wrote,
+so the prompt keeps what it was about. A file is named relative to the agent's directory, or in
+full outside it; a buffer visiting no file goes unnamed:
+
+````text
+Why does this return early?
+
+src/app/server.py:40-52
+```
+def handle(request):
+    ...
+```
+````
+
+Where the context goes under the barrier, it quotes the region already and the message stands
+alone. A function on `herdr-message-compose-functions` that carries the context some other way,
+such as an agent's prompt hook, gets the quote under its prompt.
+
 ### Where the message is written
 
 By default the message is read in the minibuffer, where `M-p` brings back earlier messages. Two
