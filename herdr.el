@@ -595,6 +595,64 @@ Ghostel forwards the wheel only while keys reach the terminal."
                (herdr--scroll-history (- (herdr--half-page-lines count))))
     (funcall function count)))
 
+(defun herdr--last-row ()
+  "Return the line number of the screen's last row.
+The newline ending that row opens no row of its own."
+  (save-excursion
+    (goto-char (point-max))
+    (when (and (bolp) (not (bobp)))
+      (forward-line -1))
+    (line-number-at-pos)))
+
+(defun herdr--scroll-history-to (end)
+  "Scroll herdr's history of this buffer's terminal to END, `top' or `bottom'.
+Returns non-nil when herdr did."
+  (condition-case nil
+      (herdr-with-session herdr-terminal-session
+        (when-let* ((pane (seq-find (lambda (pane)
+                                      (equal (alist-get 'terminal_id pane)
+                                             herdr-terminal-id))
+                                    (herdr-panes))))
+          (herdr-api-pane-scroll
+           (if (eq end 'top)
+               (or (alist-get 'max_offset_from_bottom (alist-get 'scroll pane)) 0)
+             0)
+           (alist-get 'pane_id pane))
+          t))
+    (herdr-error nil)))
+
+(defun herdr--beginning-of-buffer (function &rest args)
+  "Call FUNCTION with ARGS after scrolling herdr's history to its top."
+  (when (herdr--scroll-history-p)
+    (herdr--scroll-history-to 'top))
+  (apply function args))
+
+(defun herdr--end-of-buffer (function &rest args)
+  "Call FUNCTION with ARGS after scrolling herdr's history to its bottom.
+Point stops on the screen's last row."
+  (if (not (herdr--scroll-history-p))
+      (apply function args)
+    (herdr--scroll-history-to 'bottom)
+    (apply function args)
+    (goto-char (point-min))
+    (forward-line (1- (herdr--last-row)))))
+
+(defun herdr--evil-goto-line (function &optional count &rest args)
+  "Call FUNCTION with COUNT and ARGS, scrolling herdr's history to its bottom.
+Point stops on the screen's last row."
+  (if (or count (not (herdr--scroll-history-p)))
+      (apply function count args)
+    (herdr--scroll-history-to 'bottom)
+    (apply function count args)
+    (goto-char (point-min))
+    (forward-line (1- (herdr--last-row)))))
+
+(defun herdr--evil-goto-first-line (function &optional count &rest args)
+  "Call FUNCTION with COUNT and ARGS, scrolling herdr's history to its top."
+  (when (and (null count) (herdr--scroll-history-p))
+    (herdr--scroll-history-to 'top))
+  (apply function count args))
+
 (defun herdr--line-move (function arg &rest args)
   "Call FUNCTION with ARG and ARGS, scrolling herdr's history past an edge.
 Point moves as far as the screen goes, and the lines beyond it scroll
@@ -602,7 +660,7 @@ the history under it."
   (if (not (herdr--scroll-history-p))
       (apply function arg args)
     (let* ((target (+ (line-number-at-pos) arg))
-           (last (line-number-at-pos (point-max)))
+           (last (herdr--last-row))
            (past (cond ((< target 1) (- 1 target))
                        ((> target last) (- last target))
                        (t 0))))
@@ -626,6 +684,10 @@ A drag past WINDOW's edge scrolls until new input arrives."
 (advice-add 'evil-scroll-up :around #'herdr--evil-scroll-up)
 (advice-add 'evil-scroll-down :around #'herdr--evil-scroll-down)
 (advice-add 'line-move :around #'herdr--line-move)
+(advice-add 'beginning-of-buffer :around #'herdr--beginning-of-buffer)
+(advice-add 'end-of-buffer :around #'herdr--end-of-buffer)
+(advice-add 'evil-goto-first-line :around #'herdr--evil-goto-first-line)
+(advice-add 'evil-goto-line :around #'herdr--evil-goto-line)
 (advice-add 'mouse-scroll-subr :around #'herdr--mouse-scroll)
 
 (defvar herdr-buffer-functions nil
