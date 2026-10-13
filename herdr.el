@@ -851,10 +851,100 @@ One `herdr-yield' hides drops its input, so it waits until shown."
                      (process-live-p (get-buffer-process buffer))))
               (buffer-list)))
 
+(defvar herdr-host-theme-duration 2
+  "Seconds the client reporting Emacs's colors to herdr stays attached.
+It is terminated then, and killed a second later if still running.")
+
+(defvar herdr--host-themes (make-hash-table :test #'equal)
+  "Map from herdr session name to the colors last reported to it.
+Each value is a list (FOREGROUND BACKGROUND PROCESS).")
+
+(defun herdr--host-colors ()
+  "Return the default face's colors as OSC color specs, or nil.
+The value is a cons of the foreground and background specs."
+  (cl-flet ((spec (color)
+              (when-let* ((values (and color
+                                       (or (color-values-from-color-spec color)
+                                           (color-values color)))))
+                (apply #'format "rgb:%04x/%04x/%04x" values))))
+    (when-let* ((fg (spec (face-foreground 'default nil t)))
+                (bg (spec (face-background 'default nil t))))
+      (cons fg bg))))
+
+(defun herdr--host-theme-filter (colors appearance)
+  "Return a process filter answering a herdr client's color queries.
+COLORS is a cons of foreground and background specs; APPEARANCE is
+`light' or `dark'."
+  (let ((pending ""))
+    (lambda (process output)
+      (setq pending (concat pending output))
+      (let ((start 0))
+        (while (string-match
+                "\e\\]\\(1[01]\\);\\?\\(?:\a\\|\e\\\\\\)\\|\e\\[\\?996n" pending start)
+          (setq start (match-end 0))
+          (process-send-string
+           process
+           (pcase (match-string 1 pending)
+             ("10" (format "\e]10;%s\e\\" (car colors)))
+             ("11" (format "\e]11;%s\e\\" (cdr colors)))
+             (_ (if (eq appearance 'dark) "\e[?997;1n" "\e[?997;2n")))))
+        (setq pending (substring pending (max start (- (length pending) 16))))))))
+
+(defun herdr--report-host-theme (name buffers)
+  "Report Emacs's colors as the host theme of the herdr session NAME.
+Herdr paints panes after the theme its foreground client reports, and
+an attachment reports none, so a throwaway full client attaches long
+enough to answer herdr's color queries.  BUFFERS are the session's
+attachments; the first one shown lends the client its size."
+  (when-let* ((colors (herdr--host-colors))
+              (appearance (herdr--appearance)))
+    (let ((last (gethash name herdr--host-themes)))
+      (unless (equal (list (car colors) (cdr colors)) (seq-take last 2))
+        (when (process-live-p (nth 2 last))
+          (delete-process (nth 2 last)))
+        (let* ((window (seq-some (lambda (buffer) (get-buffer-window buffer t))
+                                 buffers))
+               (process-environment
+                (cons "TERM=xterm-ghostty"
+                      (seq-remove (lambda (variable)
+                                    (string-prefix-p "HERDR_" variable))
+                                  process-environment)))
+               (process (make-process
+                         :name (format "herdr-host-theme-%s" name)
+                         :command (list herdr-executable "--session" name)
+                         :connection-type 'pty
+                         :noquery t
+                         :filter (herdr--host-theme-filter colors appearance)
+                         :sentinel #'ignore)))
+          (set-process-window-size process
+                                   (if window (window-body-height window) 60)
+                                   (if window (window-body-width window) 200))
+          (puthash name (list (car colors) (cdr colors) process) herdr--host-themes)
+          (run-with-timer herdr-host-theme-duration nil
+                          (lambda ()
+                            (when (process-live-p process)
+                              (signal-process process 'TERM)
+                              (run-with-timer 1 nil #'delete-process process)))))))))
+
 (defun herdr-tell-appearance (&rest _)
   "Tell each attached agent of `herdr-appearance-agents' Emacs's appearance.
 The report is the one a terminal sends an application that asked to
-hear of color scheme changes: CSI ? 997 ; 1 n for dark, 2 for light."
+hear of color scheme changes: CSI ? 997 ; 1 n for dark, 2 for light.
+Each herdr session with an attachment hears Emacs's colors as well."
+  (pcase-dolist (`(,name . ,buffers)
+                 (seq-group-by
+                  (lambda (buffer)
+                    (or (herdr-session-name
+                         (buffer-local-value 'herdr-terminal-session buffer))
+                        "default"))
+                  (seq-filter (lambda (buffer)
+                                (and (buffer-local-value 'herdr-terminal-id buffer)
+                                     (process-live-p (get-buffer-process buffer))))
+                              (buffer-list))))
+    (condition-case err
+        (herdr--report-host-theme name buffers)
+      (error (message "herdr: reporting colors to %s: %s"
+                      name (error-message-string err)))))
   (when-let* ((appearance (herdr--appearance)))
     (pcase-dolist (`(,session . ,buffers)
                    (seq-group-by (lambda (buffer)

@@ -1605,5 +1605,53 @@ RESPOND is called with each connection and the request line it sent."
     (should (equal (reverse sent)
                    `((,claude . "\e[?997;1n") (,claude . "\e[?997;2n"))))))
 
+(ert-deftest herdr-tell-appearance-reports-each-color-change-to-each-session ()
+  (let ((first (generate-new-buffer " *herdr-first-test*"))
+        (second (generate-new-buffer " *herdr-second-test*"))
+        (shared (generate-new-buffer " *herdr-shared-test*"))
+        (herdr-session nil)
+        (herdr--host-themes (make-hash-table :test #'equal))
+        (colors '("rgb:0000/0000/0000" . "rgb:ffff/ffff/ffff"))
+        (started nil)
+        (deleted 0)
+        (sent nil))
+    (unwind-protect
+        (progn
+          (with-current-buffer first
+            (setq herdr-terminal-id "term_a" herdr-terminal-session "work"))
+          (with-current-buffer second
+            (setq herdr-terminal-id "term_b" herdr-terminal-session "work"))
+          (with-current-buffer shared (setq herdr-terminal-id "term_c"))
+          (cl-letf (((symbol-function 'get-buffer-process) (lambda (_) 'process))
+                    ((symbol-function 'process-live-p) #'identity)
+                    ((symbol-function 'herdr--host-colors) (lambda () colors))
+                    ((symbol-function 'herdr--appearance) (lambda () 'light))
+                    ((symbol-function 'herdr-agents) #'ignore)
+                    ((symbol-function 'make-process)
+                     (lambda (&rest plist) (push plist started) 'client))
+                    ((symbol-function 'set-process-window-size) #'ignore)
+                    ((symbol-function 'run-with-timer) #'ignore)
+                    ((symbol-function 'delete-process) (lambda (_) (cl-incf deleted)))
+                    ((symbol-function 'process-send-string)
+                     (lambda (_ text) (push text sent))))
+            (herdr-tell-appearance)
+            (herdr-tell-appearance)
+            (setq colors '("rgb:ffff/ffff/ffff" . "rgb:0000/0000/0000"))
+            (herdr-tell-appearance)
+            (let ((filter (plist-get (car started) :filter)))
+              (funcall filter 'client "\e[2J\e]11;?\a\e]10;?\e")
+              (funcall filter 'client "\\\e[?996n"))))
+      (mapc #'kill-buffer (list first second shared)))
+    (should (equal (sort (mapcar (lambda (plist) (car (last (plist-get plist :command))))
+                                 started)
+                         #'string<)
+                   '("default" "default" "work" "work")))
+    (should (eq (plist-get (car started) :connection-type) 'pty))
+    (should (= deleted 2))
+    (should (equal (reverse sent)
+                   '("\e]11;rgb:0000/0000/0000\e\\"
+                     "\e]10;rgb:ffff/ffff/ffff\e\\"
+                     "\e[?997;2n")))))
+
 (provide 'herdr-tests)
 ;;; herdr-tests.el ends here
