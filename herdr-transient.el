@@ -99,10 +99,6 @@
   (interactive (list (herdr-transient--target)))
   (message "%s" (herdr-transient--format-status (herdr-agent-status target))))
 
-(defun herdr-transient--dashboard-p ()
-  "Return non-nil in a dashboard buffer."
-  (derived-mode-p 'herdr-status-mode))
-
 ;;;###autoload
 (transient-define-prefix herdr-transient ()
   "Manage Herdr workflows.
@@ -132,10 +128,7 @@ to, so the two menus can be read as one."
     ("o" "route project" herdr-assign-project-session)]
    ["Find"
     ("i" "dashboard" herdr-status)
-    ("I" "one line" herdr-transient--status)
-    ("t" herdr-status-toggle-details
-     :description herdr-status--details-description
-     :if herdr-transient--dashboard-p)]
+    ("I" "one line" herdr-transient--status)]
    ["Server"
     ("S" "sessions" herdr-session-dispatch)
     ("Z" "restart, panes run on" herdr-restart-server)

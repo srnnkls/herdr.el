@@ -1598,16 +1598,17 @@ lines up with them."
 
 (defvar-keymap herdr-status-mode-map
   :doc "Keymap for `herdr-status-mode'.
-The keys a package outside herdr takes up - `s' and `m' are memex's -
+The keys a package outside herdr takes up - `s', `m' and `t' are memex's -
 are bound by that package and unbound where it is not installed."
   :parent magit-section-mode-map
   "?" #'herdr-status-dispatch
   "RET" #'herdr-status-visit
+  "<follow-link>" 'mouse-face
+  "<mouse-2>" #'herdr-status-mouse-visit
+  "<double-mouse-1>" #'herdr-status-mouse-toggle-section
   "o" #'herdr-status-visit-other-window
-  "P" #'herdr-status-prompt
   "R" #'herdr-status-rename
   "M-R" #'herdr-status-rename-afresh
-  "K" #'herdr-status-close-pane
   "d" #'herdr-status-detach
   "x" #'herdr-status-stop
   "X" #'herdr-status-restart
@@ -1615,12 +1616,12 @@ are bound by that package and unbound where it is not installed."
   "f" #'herdr-status-filter
   "O" #'herdr-status-sort
   "h" #'herdr-herd-dispatch
-  "n" #'herdr-status-new-agent
-  "N" #'herdr-status-new-agent-of-harness
+  "n" #'herdr-status-new
+  "N" #'herdr-status-new-choosing
   "e" #'herdr-status-toggle-expanded
   "u" #'herdr-status-toggle-grouping
   "U" #'herdr-status-group-by
-  "t" #'herdr-status-toggle-details
+  "i" #'herdr-status-toggle-details
   "g" #'herdr-status-refresh
   "p" #'herdr-status-toggle-project
   "S" #'herdr-session-dispatch
@@ -2274,6 +2275,40 @@ one session is running; otherwise it is the dashboard's."
             (herdr-read-session "Start in herdr session: " herdr-session)
           herdr-session))))
 
+(defun herdr-status--new-agent-root ()
+  "Return the directory a new agent from point works in.
+The row at point names its own; away from a row the dashboard's project
+scope answers."
+  (or (when-let* ((entry (herdr-status-entry-at-point)))
+        (herdr-entry-directory entry))
+      herdr-status--project-root
+      default-directory))
+
+(defun herdr-status--worktrees (directory)
+  "Return the checkouts of the repository DIRECTORY belongs to.
+Outside a repository there are none."
+  (when (file-accessible-directory-p directory)
+    (let ((default-directory (file-name-as-directory directory)))
+      (with-temp-buffer
+        (when (eq 0 (ignore-errors
+                      (process-file "git" nil t nil "worktree" "list" "--porcelain")))
+          (goto-char (point-min))
+          (let (trees)
+            (while (re-search-forward "^worktree \\(.+\\)$" nil t)
+              (push (file-name-as-directory (match-string 1)) trees))
+            (nreverse trees)))))))
+
+(defun herdr-status-read-worktree (directory)
+  "Read the directory a new agent works in, offering DIRECTORY's worktrees.
+DIRECTORY is the default, and any other directory may be typed."
+  (let ((default (file-name-as-directory (expand-file-name directory))))
+    (expand-file-name
+     (completing-read (format "Worktree (default %s): "
+                              (abbreviate-file-name default))
+                      (mapcar #'abbreviate-file-name
+                              (herdr-status--worktrees default))
+                      nil nil nil nil (abbreviate-file-name default)))))
+
 (defun herdr-status-new-agent (&optional kind root args session resume)
   "Open a herdr pane and start KIND in it, and return its session.
 The row at point says which directory to work in; away from a row the
@@ -2282,18 +2317,21 @@ open the pane on, by default `herdr-status-new-agent-session'.  ROOT
 works elsewhere instead, and ARGS follow KIND's start arguments.  Inside
 a herd's section the agent joins that herd.  KIND defaults to the
 harness at point, then to `herdr-status-new-harness'.  RESUME non-nil
-reads one of KIND's sessions started in that directory and resumes it
-instead of starting afresh."
+reads one of KIND's sessions started in that directory or another
+worktree of its repository and resumes it there instead of starting
+afresh."
   (interactive)
-  (let* ((entry (herdr-status-entry-at-point))
-         (herd (herdr-herd--section-value 'herdr-status-herd))
+  (let* ((herd (herdr-herd--section-value 'herdr-status-herd))
          (kind (or kind (herdr-status--new-harness)))
-         (root (or root
-                   (and entry (herdr-entry-directory entry))
-                   herdr-status--project-root
-                   default-directory))
+         (root (or root (herdr-status--new-agent-root)))
          (session (or session (herdr-status-new-agent-session)))
-         (reference (and resume (herdr-agent-read-session kind root)))
+         (past (and resume
+                    (herdr-agent-read-session-among
+                     kind (cl-remove-duplicates
+                           (cons root (herdr-status--worktrees root))
+                           :test #'herdr-agent--same-directory-p :from-end t))))
+         (reference (car past))
+         (root (or (cdr past) root))
          (started (herdr-with-session session
                     (if reference
                         (herdr-agent-start-session
@@ -2314,8 +2352,9 @@ instead of starting afresh."
 (defun herdr-status-resume (kind)
   "Resume one of KIND's past sessions in a new herdr pane, read with completion.
 The sessions offered are the ones started in the directory the row at
-point works in, and the pane opens as `herdr-status-new-agent' opens
-one.  KIND is the harness at point, or read with a prefix argument."
+point works in or in any worktree of its repository, and the pane opens
+in the session's own directory as `herdr-status-new-agent' opens one.
+KIND is the harness at point, or read with a prefix argument."
   (interactive
    (list (if current-prefix-arg
              (completing-read "Harness: " (mapcar #'car herdr-agent-harnesses)
@@ -2323,18 +2362,47 @@ one.  KIND is the harness at point, or read with a prefix argument."
            (herdr-status--new-harness))))
   (herdr-status-new-agent kind nil nil nil t))
 
-(defun herdr-status-new-agent-of-harness (kind)
-  "Open a herdr pane and start the harness KIND in it, read with completion."
+(defun herdr-status-new-agent-of-harness (kind root)
+  "Open a herdr pane and start the harness KIND in ROOT, both read.
+ROOT is offered among the worktrees of the directory at point."
   (interactive
    (list (completing-read "Harness: " (mapcar #'car herdr-agent-harnesses)
-                          nil t nil nil (herdr-status--new-harness))))
-  (herdr-status-new-agent kind))
+                          nil t nil nil (herdr-status--new-harness))
+         (herdr-status-read-worktree (herdr-status--new-agent-root))))
+  (herdr-status-new-agent kind root))
 
-(defun herdr-status-prompt (text)
-  "Send TEXT to the agent at point."
-  (interactive (list (read-string "Prompt: ")))
-  (herdr-agent-prompt (herdr-status--target-at-point) text)
-  (herdr-status-refresh))
+(defun herdr-status-new-pane (&optional root session)
+  "Open a herdr pane in ROOT running no agent, on the herdr SESSION.
+ROOT and SESSION default to those a new agent from point takes."
+  (interactive)
+  (let ((root (or root (herdr-status--new-agent-root))))
+    (herdr-with-session (or session (herdr-status-new-agent-session))
+      (herdr-open-tab :cwd root :workspace (herdr-workspace-label root)))
+    (herdr-status-request-refresh)
+    (message "Opened a pane in %s" (abbreviate-file-name root))))
+
+(defun herdr-status--in-panes-p ()
+  "Return non-nil when point is in the section of panes running no agent."
+  (let ((section (magit-current-section)))
+    (while (and section (not (eq (oref section type) 'herdr-status-panes)))
+      (setq section (oref section parent)))
+    section))
+
+(defun herdr-status-new ()
+  "Open a pane in the section of panes, and start an agent elsewhere.
+See `herdr-status-new-pane' and `herdr-status-new-agent'."
+  (interactive)
+  (call-interactively (if (herdr-status--in-panes-p)
+                          #'herdr-status-new-pane
+                        #'herdr-status-new-agent)))
+
+(defun herdr-status-new-choosing ()
+  "As `herdr-status-new', reading the worktree, and the harness of an agent."
+  (interactive)
+  (if (herdr-status--in-panes-p)
+      (herdr-status-new-pane
+       (herdr-status-read-worktree (herdr-status--new-agent-root)))
+    (call-interactively #'herdr-status-new-agent-of-harness)))
 
 (defcustom herdr-status-rename-prefill t
   "Whether `herdr-status-rename' starts from what is renamed is called now.
@@ -2452,8 +2520,17 @@ that lets go without closing anything."
 With an active region, close those of every agent it shows.  Emacs
 lets go of the terminal and its buffer first, so the pane and the buffer
 go together; `herdr-status-detach' is the one that leaves the pane
-running."
+running.  Where no agent but a pane is meant, the pane is closed as
+`herdr-status-close-pane' does."
   (interactive)
+  (if (not (if (use-region-p)
+               (herdr-status--region-values '(herdr-status-agent))
+             (herdr-status-target-at-point)))
+      (herdr-status-close-pane)
+    (herdr-status--stop-agents)))
+
+(defun herdr-status--stop-agents ()
+  "Stop the agents of the region, or the one at point, after confirmation."
   (let* ((entries (herdr-status--agents-at-point))
          (labels (herdr-status--labels entries)))
     (when (yes-or-no-p (format "Stop %s? " labels))
@@ -2493,21 +2570,17 @@ name; an agent in a herd rejoins it there."
       (message "Restarted %s" label))))
 
 (defun herdr-status--let-go (entry)
-  "Let go of the agent ENTRY, returning non-nil when Emacs held it."
-  (let* ((target (herdr--entry-target entry))
-         (session (herdr-status--attachment entry))
-         (buffer (and target (herdr-terminal-buffer (cdr target) (car target)))))
-    (when session (herdr-agent-detach session))
-    (when (buffer-live-p buffer) (kill-buffer buffer))
-    (or session buffer)))
+  "Let go of the agent or pane ENTRY, returning non-nil when Emacs held it."
+  (when-let* ((target (herdr--entry-target entry)))
+    (herdr-agent-let-go target)))
 
 (defun herdr-status-detach ()
-  "Let go of the agent at point, or those of the region, leaving panes running.
-Emacs releases the terminal and its buffer; the agent in that pane carries
-on, and attaching again picks it back up.  A buffer showing the agent's
-terminal goes as well when no Emacs session holds it."
+  "Let go of the agent or pane at point, or those of the region.
+Emacs releases the terminal and its buffer; the pane carries on, and
+attaching again picks it back up.  A buffer showing the terminal goes
+as well when no Emacs session holds it."
   (interactive)
-  (let* ((entries (herdr-status--agents-at-point))
+  (let* ((entries (herdr-status--attachables-at-point))
          (held (seq-filter #'herdr-status--let-go entries)))
     (deactivate-mark)
     (if (not held)
@@ -2688,11 +2761,12 @@ Every suffix here is bound directly in `herdr-status-mode-map' as well."
     ("RET" "visit" herdr-status-visit)
     ("o" "other window" herdr-status-visit-other-window)]
    ["Agent"
-    ("n" herdr-status-new-agent
-     :description (lambda () (format "new %s" (herdr-status--new-harness))))
-    ("N" "new, choosing the harness" herdr-status-new-agent-of-harness)
+    ("n" herdr-status-new
+     :description (lambda () (if (herdr-status--in-panes-p)
+                                 "new pane"
+                               (format "new %s" (herdr-status--new-harness)))))
+    ("N" "new, choosing where" herdr-status-new-choosing)
     ("r" "resume a past session" herdr-status-resume)
-    ("P" "prompt" herdr-status-prompt)
     ("R" "rename" herdr-status-rename)
     ("M-R" "rename afresh" herdr-status-rename-afresh)
     ("d" "detach, pane runs on" herdr-status-detach)
@@ -2709,12 +2783,9 @@ Every suffix here is bound directly in `herdr-status-mode-map' as well."
     ("u" herdr-status-toggle-grouping
      :description (lambda () (if herdr-status--grouping "one list" "group")))
     ("U" "group unit" herdr-status-group-by)
-    ("t" herdr-status-toggle-details
+    ("i" herdr-status-toggle-details
      :description herdr-status--details-description)
     ("g" "refresh" herdr-status-refresh)]
-   ["Pane"
-    ("R" "rename" herdr-status-rename)
-    ("K" "close" herdr-status-close-pane)]
    ["Herd"
     ("h" "herds" herdr-herd-dispatch)]
    ["Server"
@@ -2754,7 +2825,7 @@ The fresh prefix inherits evil's, so binding into it leaves evil's alone."
 Keys other packages add to `herdr-status-mode-map' later take effect
 too, since evil consults the keymap itself."
   (evil-make-overriding-map herdr-status-mode-map 'normal)
-  (dolist (key '("d" "x" "K"))
+  (dolist (key '("d" "x"))
     (evil-define-key* 'visual herdr-status-mode-map (kbd key)
                       (keymap-lookup herdr-status-mode-map key)))
   (pcase-dolist (`(,key . ,_) herdr-status-evil-renames)

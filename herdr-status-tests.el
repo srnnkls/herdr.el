@@ -177,6 +177,21 @@
     (goto-char (point-min))
     (should (re-search-forward "^ +● api-review +✳ claude +alpha +▣ %1" nil t))))
 
+(ert-deftest herdr-status-click-on-a-row-visits-it ()
+  (herdr-status-tests--with-dashboard
+    (goto-char (point-min))
+    (let ((row (re-search-forward "api-review" nil t))
+          visited)
+      (should (mouse-on-link-p row))
+      (goto-char (point-min))
+      (should-not (mouse-on-link-p (point)))
+      (cl-letf (((symbol-function 'mouse-set-point)
+                 (lambda (_event &rest _) (goto-char row)))
+                ((symbol-function 'herdr-visit)
+                 (lambda (entry) (setq visited entry))))
+        (funcall (keymap-lookup herdr-status-mode-map "<mouse-2>") nil))
+      (should (equal (alist-get 'pane_id visited) "%1")))))
+
 (ert-deftest herdr-status-marks-each-agent-with-its-vendor-glyph ()
   (herdr-status-tests--with-dashboard
     (goto-char (point-min))
@@ -442,6 +457,50 @@
         (should (re-search-forward "api-review" nil t))
         (herdr-status-close-pane)
         (should (equal (car closes) "%1"))))))
+
+(ert-deftest herdr-status-new-in-the-panes-section-opens-a-pane ()
+  (herdr-status-tests--with-dashboard
+    (let (opened)
+      (cl-letf (((symbol-function 'herdr-open-tab)
+                 (lambda (&rest args) (push args opened)))
+                ((symbol-function 'herdr-agent-start)
+                 (lambda (&rest _) (ert-fail "started an agent among panes")))
+                ((symbol-function 'herdr-workspace-label) (lambda (_) "ws"))
+                ((symbol-function 'herdr-status-request-refresh) #'ignore))
+        (goto-char (point-min))
+        (should (re-search-forward "^Panes " nil t))
+        (forward-line 1)
+        (herdr-status-new)
+        (should (equal (plist-get (car opened) :workspace) "ws"))
+        (should (= 1 (length opened)))))))
+
+(ert-deftest herdr-status-detaching-a-pane-lets-go-of-its-terminal ()
+  (herdr-status-tests--with-dashboard
+    (let (let-go)
+      (cl-letf (((symbol-function 'herdr-agent-let-go)
+                 (lambda (target) (push target let-go)))
+                ((symbol-function 'herdr-status-refresh) #'ignore))
+        (goto-char (point-min))
+        (should (re-search-forward "^Panes " nil t))
+        (forward-line 1)
+        (nconc (herdr-status-entry-at-point) (list (cons 'terminal_id "t9")))
+        (herdr-status-detach)
+        (should (equal let-go '(("/tmp/alpha.sock" . "t9"))))))))
+
+(ert-deftest herdr-status-stopping-a-pane-closes-it ()
+  (herdr-status-tests--with-dashboard
+    (let (closes)
+      (cl-letf (((symbol-function 'herdr-api-pane-close)
+                 (lambda (pane) (push pane closes)))
+                ((symbol-function 'herdr-agent-stop)
+                 (lambda (&rest _) (ert-fail "stopped an agent on a pane")))
+                ((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
+                ((symbol-function 'herdr-status-refresh) #'ignore))
+        (goto-char (point-min))
+        (should (re-search-forward "^Panes " nil t))
+        (forward-line 1)
+        (herdr-status-stop)
+        (should (equal closes '("%9")))))))
 
 (ert-deftest herdr-status-project-scope-takes-the-worktrees-along ()
   (let ((herdr-project-root-function #'identity))
@@ -1437,7 +1496,7 @@ depending on its version."
         (and (> (length suffix) 2) (plist-get (nth 2 suffix) :command)))))
 
 (ert-deftest herdr-status-dispatch-mirrors-the-keymap ()
-  (dolist (key '("RET" "o" "P" "R" "d" "x" "f" "O" "t" "h" "g" "p" "S" "q"))
+  (dolist (key '("RET" "o" "R" "d" "x" "n" "N" "f" "O" "i" "h" "g" "p" "S" "q"))
     (let ((bound (keymap-lookup herdr-status-mode-map key))
           (offered (herdr-status-tests--suffix-command 'herdr-status-dispatch key)))
       (should (commandp bound))
@@ -1461,8 +1520,7 @@ key it wants is free, so taking either silently costs the transcript entry."
 (ert-deftest herdr-transient-shares-the-keys-of-the-actions-the-dashboard-has ()
   "Two menus disagreeing on the key for one action is worse than either."
   (pcase-dolist (`(,key ,dashboard ,global)
-                 '(("P" herdr-status-prompt herdr-transient--prompt)
-                   ("R" herdr-status-rename herdr-transient--rename)
+                 '(("R" herdr-status-rename herdr-transient--rename)
                    ("x" herdr-status-stop herdr-transient--stop)))
     (should (eq dashboard (keymap-lookup herdr-status-mode-map key)))
     (should (eq global (herdr-status-tests--suffix-command 'herdr-transient key)))))
@@ -1527,12 +1585,16 @@ giving the panes the fixture agents occupy a herd."
         (should-not (string-match-p "beta-work" herd))
         (should-not (string-match-p "docs" herd))))))
 
-(ert-deftest herdr-status-resume-reads-a-past-session-of-the-row-s-directory ()
+(ert-deftest herdr-status-resume-reads-a-past-session-of-the-row-s-worktrees ()
   (herdr-status-tests--with-dashboard
     (let ((started (herdr-agent--make-session :pane "%8"))
           read starts)
-      (cl-letf (((symbol-function 'herdr-agent-read-session)
-                 (lambda (kind directory) (push (list kind directory) read) "past"))
+      (cl-letf (((symbol-function 'herdr-status--worktrees)
+                 (lambda (_directory) '("/tmp/main/" "/tmp/proj/" "/tmp/wt/")))
+                ((symbol-function 'herdr-agent-read-session-among)
+                 (lambda (kind directories)
+                   (push (list kind directories) read)
+                   '("past" . "/tmp/wt/")))
                 ((symbol-function 'herdr-agent-start-session)
                  (lambda (kind name &rest arguments)
                    (push (list kind name herdr-session
@@ -1544,8 +1606,8 @@ giving the panes the fixture agents occupy a herd."
                 ((symbol-function 'herdr-status-refresh) #'ignore))
         (should (re-search-forward "⌬ codex" nil t))
         (herdr-status-resume (herdr-status--new-harness))
-        (should (equal read '(("codex" "/tmp/proj/"))))
-        (should (equal starts '(("codex" nil "alpha" "/tmp/proj/"
+        (should (equal read '(("codex" ("/tmp/proj/" "/tmp/main/" "/tmp/wt/")))))
+        (should (equal starts '(("codex" nil "alpha" "/tmp/wt/"
                                  ("resume" "past") nil))))))))
 
 (ert-deftest herdr-status-restart-resumes-the-agent-in-a-fresh-pane ()
@@ -1983,6 +2045,25 @@ Emacs releases the attachment first and the two go together."
                     'session)))
       (should (equal started '("claude" "/tmp/wt/" ("--x") "beta"))))))
 
+(ert-deftest herdr-status-n-offers-the-worktrees-of-the-repository ()
+  (let* ((repo (file-name-as-directory (file-truename (make-temp-file "herdr-repo" t))))
+         (tree (concat repo ".worktrees/wt/")))
+    (unwind-protect
+        (let ((default-directory repo))
+          (call-process "git" nil nil nil "init" "-q")
+          (call-process "git" nil nil nil "-c" "user.name=t" "-c" "user.email=t@t"
+                        "commit" "-q" "--allow-empty" "-m" "init")
+          (call-process "git" nil nil nil "worktree" "add" "-q" ".worktrees/wt")
+          (should (equal (herdr-status--worktrees repo) (list repo tree)))
+          (should-not (herdr-status--worktrees temporary-file-directory))
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (_prompt collection &rest _)
+                       (should (equal collection
+                                      (mapcar #'abbreviate-file-name (list repo tree))))
+                       (abbreviate-file-name tree))))
+            (should (equal (herdr-status-read-worktree repo) tree))))
+      (delete-directory repo t))))
+
 (provide 'herdr-status-tests)
 ;;; herdr-status-tests.el ends here
 
@@ -2234,6 +2315,7 @@ Emacs releases the attachment first and the two go together."
         (should (equal (car starts) '("codex" nil "/tmp/proj/.worktrees/x" "alpha" ("go"))))
 
         (cl-letf (((symbol-function 'completing-read)
-                   (lambda (_prompt _collection &rest _) "claude")))
+                   (lambda (prompt _collection &rest _)
+                     (if (string-prefix-p "Harness" prompt) "claude" "/tmp/proj/"))))
           (call-interactively #'herdr-status-new-agent-of-harness))
         (should (equal (car starts) '("claude" nil "/tmp/proj/" "alpha")))))))

@@ -209,8 +209,9 @@ its name. With `herdr-agent-placement` set to `tab`, it opens as a tab in the pr
 instead, which is created for the first agent. Emacs attaches the terminal and shows it.
 
 In the dashboard, `n` starts the harness of the row at point, or `herdr-status-new-harness` away
-from a row, in that row's directory and session. `N` asks for the harness first. Neither waits for
-the agent to be ready, so Emacs stays responsive while it boots.
+from a row, in that row's directory and session; in the panes section it opens a plain pane there.
+`N` also asks for the worktree, and for an agent the harness. Neither waits for the agent to be
+ready, so Emacs stays responsive while it boots.
 
 From Lisp:
 

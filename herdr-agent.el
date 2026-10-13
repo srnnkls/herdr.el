@@ -1472,26 +1472,48 @@ rest.  Each comes as a cons of the file and when it was last written."
   "Read one of the KIND sessions started in DIRECTORY and return its reference.
 Sessions are offered newest first by title and date; a harness that
 lists none asks for the reference instead."
+  (car (herdr-agent-read-session-among kind (list directory))))
+
+(defun herdr-agent-read-session-among (kind directories)
+  "Read one of the KIND sessions started in any of DIRECTORIES.
+Return a cons of its reference and the directory it was started in.
+Sessions are offered newest first by title and date, annotated with
+their directory when there are several; a harness that lists none asks
+for the reference instead, taken to belong to the first directory."
   (let* ((function (plist-get (cdr (assoc kind herdr-agent-harnesses)) :sessions))
-         (sessions (and function (funcall function directory))))
+         (sessions (and function
+                        (sort (mapcan (lambda (directory)
+                                        (mapcar (lambda (session)
+                                                  (append session (list directory)))
+                                                (funcall function directory)))
+                                      directories)
+                              (lambda (a b) (time-less-p (nth 2 b) (nth 2 a)))))))
     (if (null sessions)
-        (read-string (format "%s session reference: " kind))
+        (cons (read-string (format "%s session reference: " kind))
+              (car directories))
       (let* ((choices (mapcar (lambda (session)
-                                (pcase-let ((`(,id ,title ,time) session))
-                                  (cons (format "%s  %s  %s"
+                                (pcase-let ((`(,id ,title ,time ,directory) session))
+                                  (list (format "%s  %s  %s"
                                                 (format-time-string "%Y-%m-%d %H:%M" time)
                                                 (or title "(untitled)")
                                                 (substring id 0 (min 8 (length id))))
-                                        id)))
+                                        id directory)))
                               sessions))
+             (annotate (and (cdr directories)
+                            (lambda (choice)
+                              (when-let* ((directory (nth 2 (assoc choice choices))))
+                                (concat "  " (propertize (abbreviate-file-name directory)
+                                                         'face 'completions-annotations))))))
              (choice (completing-read
                       (format "Resume %s session: " kind)
                       (lambda (string predicate action)
                         (if (eq action 'metadata)
-                            '(metadata (display-sort-function . identity))
+                            `(metadata (display-sort-function . identity)
+                                       ,@(and annotate `((annotation-function . ,annotate))))
                           (complete-with-action action choices string predicate)))
                       nil t)))
-        (cdr (assoc choice choices))))))
+        (pcase-let ((`(,_ ,id ,directory) (assoc choice choices)))
+          (cons id directory))))))
 
 (defun herdr-agent--in-project-p (agent project)
   "Return non-nil when AGENT belongs to PROJECT."

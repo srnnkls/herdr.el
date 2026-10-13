@@ -107,18 +107,16 @@ While a message is being written:
 | `herdr-status-refresh` | `g` | fetch every server and redraw |
 | `herdr-status-visit` | `RET` | show the row's agent or pane, attaching it; attach the whole session on a session row; `C-u` also moves herdr's focus to the agent |
 | `herdr-status-visit-other-window` | `o` | show the row's agent or pane in another window |
-| `herdr-status-new-agent` | `n` | start the harness at point, or `herdr-status-new-harness`, where the row works; inside a herd's section the agent joins that herd |
-| `herdr-status-new-agent-of-harness` | `N` | as `n`, reading the harness |
-| `herdr-status-prompt` | `P` | send a prompt to the agent at point |
+| `herdr-status-new` | `n` | in the panes section open a pane where the row works; elsewhere start the harness at point, or `herdr-status-new-harness`, there, and inside a herd's section the agent joins that herd |
+| `herdr-status-new-choosing` | `N` | as `n`, reading the worktree, and for an agent the harness |
 | `herdr-status-rename` | `R` | rename the agent at point, or relabel the pane at point |
 | `herdr-status-rename-afresh` | `M-R` | rename the agent at point to the name `herdr-agent-name-function` gives it now, offered for editing |
-| `herdr-status-detach` | `d` | let go of the agent's terminal and buffer; the pane runs on |
-| `herdr-status-stop` | `x` | stop the agent at point, after confirmation |
+| `herdr-status-detach` | `d` | let go of the agent's or pane's terminal and buffer; the pane runs on |
+| `herdr-status-stop` | `x` | stop the agent at point, or close the pane at point, after confirmation |
 | `herdr-status-restart` | `X` | stop the agent at point and resume its conversation in a fresh pane; a herd member rejoins its herd |
-| `herdr-status-resume` | `r` | read one of the harness's past sessions started in the row's directory, by title and date, and resume it in a new pane; `C-u` reads the harness |
-| `herdr-status-close-pane` | `K` | close the pane at point and any agent in it, after confirmation |
+| `herdr-status-resume` | `r` | read one of the harness's past sessions started in the row's directory or any worktree of its repository, by title and date with the worktree as annotation, and resume it in a new pane there; `C-u` reads the harness |
 | `herdr-status-toggle-expanded` | `e` | open every row `herdr-status-expanded-states` names, or close them all |
-| `herdr-status-toggle-details` | `t` | show or hide agent metadata under expanded rows |
+| `herdr-status-toggle-details` | `i` | show or hide agent metadata under expanded rows |
 | `herdr-status-toggle-grouping` | `u` | draw the agent list in groups, or as one list |
 | `herdr-status-group-by` | `U` | pick what the agent list groups by |
 | `herdr-status-filter` | `f` | open the filter menu |
@@ -171,11 +169,10 @@ on the agent at point; elsewhere they read one.
 | `=` | `herdr-associate-agent` | `p` | `herdr-attach-pane` |
 | `i` | `herdr-status` | `A` | `herdr-attach-session` |
 | `I` | show an agent's harness and state in the echo area | `J` | `herdr-jump` |
-| `t` | `herdr-status-toggle-details`, in the dashboard only | `o` | `herdr-assign-project-session` |
-| `Z` | `herdr-restart-server` | `M-Z` | `herdr-update` |
-| `S` | `herdr-session-dispatch` | | |
+| `Z` | `herdr-restart-server` | `o` | `herdr-assign-project-session` |
+| `M-Z` | `herdr-update` | `S` | `herdr-session-dispatch` |
 
-`P`, `R`, `x` and `t` do what the same keys do in the dashboard.
+`R` and `x` do what the same keys do in the dashboard.
 
 ## Keys
 
@@ -189,18 +186,16 @@ on the agent at point; elsewhere they read one.
 | `?` | `herdr-status-dispatch` |
 | `RET` | `herdr-status-visit` |
 | `o` | `herdr-status-visit-other-window` |
-| `n` | `herdr-status-new-agent` |
-| `N` | `herdr-status-new-agent-of-harness` |
-| `P` | `herdr-status-prompt` |
+| `n` | `herdr-status-new` |
+| `N` | `herdr-status-new-choosing` |
 | `R` | `herdr-status-rename` |
 | `M-R` | `herdr-status-rename-afresh` |
 | `d` | `herdr-status-detach` |
 | `x` | `herdr-status-stop` |
 | `X` | `herdr-status-restart` |
 | `r` | `herdr-status-resume` |
-| `K` | `herdr-status-close-pane` |
 | `e` | `herdr-status-toggle-expanded` |
-| `t` | `herdr-status-toggle-details` |
+| `i` | `herdr-status-toggle-details` |
 | `f` | `herdr-status-filter` |
 | `O` | `herdr-status-sort` |
 | `u` | `herdr-status-toggle-grouping` |

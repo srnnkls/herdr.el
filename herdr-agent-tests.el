@@ -2965,6 +2965,32 @@ functions scheduled, and `refusals', how many renames herdr turns down."
       (should (equal "abcdef123456" (herdr-agent-read-session "claude" "/tmp/")))
       (should (equal "typed" (herdr-agent-read-session "pi" "/tmp/"))))))
 
+(ert-deftest herdr-agent-reads-a-session-among-directories-annotated-by-directory ()
+  (let ((herdr-agent-harnesses
+         `(("claude" :arguments ((resume "--resume" :reference))
+            :sessions ,(lambda (directory)
+                         (if (equal directory "/tmp/wt/")
+                             (list (list "newer-id" "In the worktree" '(0 20)))
+                           (list (list "older-id" "At the root" '(0 10))))))
+           ("pi" :arguments ((resume "--session" :reference)))))
+        annotations)
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt table &rest _)
+                 (let* ((choices (all-completions "" table))
+                        (annotate (alist-get 'annotation-function
+                                             (cdr (funcall table "" nil 'metadata)))))
+                   (setq annotations
+                         (mapcar (lambda (choice)
+                                   (substring-no-properties (funcall annotate choice)))
+                                 choices))
+                   (car choices))))
+              ((symbol-function 'read-string) (lambda (&rest _) "typed")))
+      (should (equal '("newer-id" . "/tmp/wt/")
+                     (herdr-agent-read-session-among "claude" '("/tmp/" "/tmp/wt/"))))
+      (should (equal annotations '("  /tmp/wt/" "  /tmp/")))
+      (should (equal '("typed" . "/tmp/")
+                     (herdr-agent-read-session-among "pi" '("/tmp/" "/tmp/wt/")))))))
+
 (ert-deftest herdr-message-composes-text-and-file-context-and-records-history ()
   (let ((herdr-message-history nil)
         (herdr-send-context-functions nil)
