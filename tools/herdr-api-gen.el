@@ -111,7 +111,7 @@ receive the events that follow.\n")
               ";; Do not edit by hand: regenerate after a herdr upgrade.\n\n"
               ";;; Code:\n\n"
               "(require 'cl-lib)\n(require 'herdr-core)\n\n"
-              (format "(defconst herdr-api-protocol %s\n  \"herdr socket protocol version these wrappers were generated from.\")\n\n"
+              (format "(defconst herdr-api-protocol %s\n  \"Herdr socket protocol version these wrappers were generated from.\")\n\n"
                       protocol))
       (let ((print-quoted t))
         (dolist (form forms)
