@@ -510,7 +510,8 @@ set to `herdr-status-workspace-buffer-name`, each editor workspace keeps a dashb
 ### Refreshing
 
 `g` fetches one snapshot per server and redraws. herdr events redraw a live dashboard after
-`herdr-status-refresh-delay` seconds of idle time, and `herdr-status-auto-refresh` turns that off.
+`herdr-status-refresh-delay` seconds of idle time, but never sooner than `herdr-status-input-settle`
+seconds after the last keystroke; `herdr-status-auto-refresh` turns that off.
 A preview costs one request per row and is reused for `herdr-status-preview-ttl` seconds; adapter
 fields cost one request per row and are reused until the next fetch.
 

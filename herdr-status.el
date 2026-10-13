@@ -387,6 +387,13 @@ A burst of events collapses into one redraw."
   :type 'number
   :group 'herdr-status)
 
+(defcustom herdr-status-input-settle 1.0
+  "Seconds without input before a background redraw may run.
+A redraw blocks Emacs on herdr, so one landing in a pause between two
+keystrokes stalls the typing; this keeps it until the user has stopped."
+  :type 'number
+  :group 'herdr-status)
+
 ;;;; State
 
 (defvar-local herdr-status--session-records nil
@@ -1994,8 +2001,14 @@ Outside a dashboard, open the current project's dashboard."
   "Non-nil when a refresh passed this dashboard by because no window showed it.")
 
 (defun herdr-status--input-busy-p ()
-  "Return non-nil while the user is typing or a minibuffer is open."
-  (or (input-pending-p) (active-minibuffer-window)))
+  "Return non-nil while the user is typing or a minibuffer is open.
+The user counts as typing until `herdr-status-input-settle' seconds
+have passed since their last input, and whenever Emacs is not idle."
+  (or (input-pending-p)
+      (active-minibuffer-window)
+      (let ((idle (current-idle-time)))
+        (or (null idle)
+            (< (float-time idle) herdr-status-input-settle)))))
 
 (defun herdr-status--refresh-buffers ()
   "Redraw every dashboard a window shows, and mark the others stale.
@@ -2053,8 +2066,9 @@ Redraws coalesce on one idle timer, so calling this often is cheap."
              (null herdr-status--timer)
              (herdr-status--buffers))
     (setq herdr-status--timer
-          (run-with-idle-timer herdr-status-refresh-delay nil
-                               #'herdr-status--refresh-buffers))))
+          (run-with-idle-timer (max herdr-status-refresh-delay
+                                    herdr-status-input-settle)
+                               nil #'herdr-status--refresh-buffers))))
 
 (defun herdr-status--on-event (&rest _)
   "Schedule a redraw after a herdr lifecycle event."

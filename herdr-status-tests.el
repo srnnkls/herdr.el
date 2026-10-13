@@ -414,6 +414,34 @@
             (cancel-timer herdr-status--timer)
             (setq herdr-status--timer nil)))))))
 
+(ert-deftest herdr-status-counts-a-pause-between-keystrokes-as-typing ()
+  (let ((herdr-status-input-settle 1.0)
+        idle)
+    (cl-letf (((symbol-function 'input-pending-p) #'ignore)
+              ((symbol-function 'active-minibuffer-window) #'ignore)
+              ((symbol-function 'current-idle-time) (lambda () idle)))
+      (should (herdr-status--input-busy-p))
+      (setq idle (seconds-to-time 0.4))
+      (should (herdr-status--input-busy-p))
+      (setq idle (seconds-to-time 1.2))
+      (should-not (herdr-status--input-busy-p)))))
+
+(ert-deftest herdr-status-event-refresh-waits-for-input-to-settle ()
+  (let ((herdr-status-auto-refresh t)
+        (herdr-status-refresh-delay 0.4)
+        (herdr-status-input-settle 1.0)
+        (herdr-status--timer nil))
+    (herdr-status-tests--with-dashboard
+      (unwind-protect
+          (progn
+            (herdr-status-request-refresh)
+            (should (timerp herdr-status--timer))
+            (should (timer--idle-delay herdr-status--timer))
+            (should (= (float-time (timer--time herdr-status--timer)) 1.0)))
+        (when herdr-status--timer
+          (cancel-timer herdr-status--timer)
+          (setq herdr-status--timer nil))))))
+
 (ert-deftest herdr-status-lists-every-known-session ()
   (herdr-status-tests--with-dashboard
     (let ((sessions (herdr-status-tests--section-text "Sessions ")))
@@ -2011,7 +2039,9 @@ Emacs releases the attachment first and the two go together."
       (should (eq herdr-status--deferred 'fetch))
       (should herdr-status--deferred-timer)
       (setq held nil)
-      (herdr-status--redraw-deferred)
+      (cl-letf (((symbol-function 'current-idle-time)
+                 (lambda () (seconds-to-time 60))))
+        (herdr-status--redraw-deferred))
       (should-not herdr-status--deferred)
       (should-not herdr-status--deferred-timer)
       (should-not (string-match-p "field-holds-this" (buffer-string))))))

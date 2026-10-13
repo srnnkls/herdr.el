@@ -307,6 +307,7 @@ is `$XDG_CONFIG_HOME/herdr/sessions/NAME/herdr.sock`; `XDG_CONFIG_HOME` defaults
 | `herdr-status-display-action` | `display-buffer` action | reuse a window, else the selected one | how the dashboard is shown; nil defers to `display-buffer-alist` |
 | `herdr-status-auto-refresh` | boolean | t | redraw on herdr events |
 | `herdr-status-refresh-delay` | number | 0.4 | idle seconds before an event-driven redraw |
+| `herdr-status-input-settle` | number | 1.0 | seconds without input before a background redraw |
 | `herdr-status-new-harness` | string | `"claude"` | the harness `n` starts away from a row |
 | `herdr-status-rename-prefill` | boolean | t | whether `R` starts from the agent's current name, as its title, or the pane's current label |
 | `herdr-status-sections` | list of `recent`, `herds`, `agents`, `panes`, `sessions` | all five, in that order | the sections the dashboard draws, in order |
