@@ -44,6 +44,13 @@
   "Face for the name of an entry Emacs has no buffer for."
   :group 'herdr-status)
 
+(defface herdr-status-label-foreground
+  '((((class color) (min-colors 88) (background light)) :foreground "#a07800")
+    (((class color) (min-colors 88) (background dark)) :foreground "#e5c07b")
+    (t :inherit warning))
+  "Face for the name of the foreground agent."
+  :group 'herdr-status)
+
 (defface herdr-status-path
   '((t :inherit font-lock-comment-face))
   "Face for a directory in the dashboard."
@@ -763,13 +770,22 @@ The marker carries the space separating it from the state glyph, so a nil
             " "))
    (t (make-string (1+ (string-width herdr-status-attached-glyph)) ?\s))))
 
+(defun herdr-status--state-glyph (state)
+  "Return the glyph candidates standing for STATE."
+  (or (cdr (assoc state herdr-status-state-glyphs))
+      herdr-status-state-glyph))
+
+(defun herdr-status-state-mark (entry)
+  "Return ENTRY's state glyph in its state's face, held to two columns."
+  (let ((state (herdr-status--state entry)))
+    (herdr-status-mark (herdr-status--state-glyph state)
+                       (herdr-status--state-face state))))
+
 (defun herdr-status--state-column (entry)
   "Return the glyph standing for ENTRY's state, in that state's face.
 A pane running no agent has no state to report and is left blank there."
   (let* ((state (herdr-status--state entry))
-         (glyph (herdr-status-glyph
-                 (or (cdr (assoc state herdr-status-state-glyphs))
-                     herdr-status-state-glyph))))
+         (glyph (herdr-status-glyph (herdr-status--state-glyph state))))
     (if (not (alist-get 'agent entry))
         (make-string (string-width glyph) ?\s)
       (propertize glyph
@@ -786,6 +802,35 @@ ceiling, and nil makes that a third of the window the dashboard is in."
                         (frame-width))
                       3)))))
 
+(defvar-local herdr-status--foreground nil
+  "Target of the foreground agent the dashboard's names were lit for.")
+
+(defun herdr-status--foreground-target ()
+  "Return the target of the foreground agent among those a window shows."
+  (when-let* ((shown (delq nil (mapcar (lambda (window)
+                                         (herdr-agent-buffer-target
+                                          (window-buffer window)))
+                                       (window-list-1 nil 'nomini 'visible)))))
+    (herdr--entry-target
+     (herdr-agent--foreground-entry
+      (seq-filter (lambda (entry) (member (herdr--entry-target entry) shown))
+                  (herdr-status--agents herdr-status--entries))))))
+
+(defun herdr-status--label-face (entry foreground)
+  "Return the face ENTRY's name is drawn in, FOREGROUND the foreground target."
+  (cond ((and foreground (equal (herdr--entry-target entry) foreground))
+         'herdr-status-label-foreground)
+        ((herdr--entry-buffer entry) 'herdr-status-label)
+        (t 'herdr-status-label-quiet)))
+
+(defun herdr-status-label (entry &optional entries)
+  "Return ENTRY's name in the face the dashboard draws it in.
+The foreground agent is picked from ENTRIES, every session when nil."
+  (let ((herdr-status--entries (or entries (herdr-sessions))))
+    (propertize (or (herdr--entry-label entry) "")
+                'face (herdr-status--label-face
+                       entry (herdr-status--foreground-target)))))
+
 (defun herdr-status--label-column (entry width)
   "Return ENTRY's name in WIDTH columns, lit where Emacs holds its buffer.
 A name too long for WIDTH is cut short, since what follows it says which
@@ -794,9 +839,30 @@ agent this is as much as the tail of a name does."
                (truncate-string-to-width (or (herdr--entry-label entry) "")
                                          width nil nil t)
                width)
-              'font-lock-face (if (herdr--entry-buffer entry)
-                                  'herdr-status-label
-                                'herdr-status-label-quiet)))
+              'herdr-status-label entry
+              'font-lock-face (herdr-status--label-face
+                               entry herdr-status--foreground)))
+
+(defun herdr-status--recolour-labels (&rest _)
+  "Relight every dashboard's names for the agent now in the foreground."
+  (dolist (buffer (herdr-status--buffers))
+    (with-current-buffer buffer
+      (setq herdr-status--foreground (herdr-status--foreground-target))
+      (let ((inhibit-read-only t)
+            (position (point-min))
+            match)
+        (with-silent-modifications
+          (while (setq match (text-property-not-all
+                              position (point-max) 'herdr-status-label nil))
+            (setq position (next-single-property-change
+                            match 'herdr-status-label nil (point-max)))
+            (put-text-property match position 'font-lock-face
+                               (herdr-status--label-face
+                                (get-text-property match 'herdr-status-label)
+                                herdr-status--foreground))))))))
+
+(add-hook 'herdr-foreground-functions #'herdr-status--recolour-labels)
+(add-hook 'window-buffer-change-functions #'herdr-status--recolour-labels)
 
 (defun herdr-status--nerd-glyph-p (glyph)
   "Return non-nil if GLYPH is drawn from a Private Use Area a Nerd Font patches."
@@ -1061,22 +1127,28 @@ FIELD names the column in `herdr-status-column-widths', which caps it."
   (when (cdr herdr-status--session-records)
     (herdr-status--pad (herdr-status--session-name entry) width)))
 
+(defun herdr-status--clickable (line)
+  "Return LINE lit under the mouse, so a click on it visits its row."
+  (add-text-properties 0 (length line) '(mouse-face highlight) line)
+  line)
+
 (defun herdr-status--row (entry widths workspaces)
   "Return the single line drawn for ENTRY.
 WIDTHS is what `herdr-status--widths' answered, and WORKSPACES resolves
 the workspace label."
-  (concat
-   (herdr-status--attached-column entry)
-   (herdr-status--state-column entry) " "
-   (string-join
-    (delq nil
-          (append
-           (list (herdr-status--label-column entry (plist-get widths :label))
-                 (herdr-status--harness-column entry (plist-get widths :harness))
-                 (herdr-status--session-column entry (plist-get widths :session)))
-           (herdr-status--trailing-columns entry widths
-                                           (list :workspaces workspaces))))
-    "  ")))
+  (herdr-status--clickable
+   (concat
+    (herdr-status--attached-column entry)
+    (herdr-status--state-column entry) " "
+    (string-join
+     (delq nil
+           (append
+            (list (herdr-status--label-column entry (plist-get widths :label))
+                  (herdr-status--harness-column entry (plist-get widths :harness))
+                  (herdr-status--session-column entry (plist-get widths :session)))
+            (herdr-status--trailing-columns entry widths
+                                            (list :workspaces workspaces))))
+     "  "))))
 
 (defun herdr-status-agent-row (entry widths workspaces)
   "Return the dashboard line for agent ENTRY on WIDTHS, labelled via WORKSPACES.
@@ -1415,10 +1487,11 @@ only by the heading's own total."
       (let ((snapshot (alist-get 'snapshot server)))
         (magit-insert-section (herdr-status-session (alist-get 'key server) t)
           (magit-insert-heading
-            (format "%s  %s"
-                    (herdr-status--session-name server)
-                    (propertize (abbreviate-file-name (alist-get 'key server))
-                                'font-lock-face 'herdr-status-path)))
+            (herdr-status--clickable
+             (format "%s  %s"
+                     (herdr-status--session-name server)
+                     (propertize (abbreviate-file-name (alist-get 'key server))
+                                 'font-lock-face 'herdr-status-path))))
           (magit-insert-section-body
             (herdr-status--insert-field
              "reachable" (if (alist-get 'reachable server) "yes" "no"))
@@ -1739,6 +1812,19 @@ redraw is put off and run once every inhibitor has let go."
       (herdr-status--defer-redraw cached)
     (herdr-status--draw cached)))
 
+(defun herdr-status--separated (insert)
+  "Call INSERT, and follow what it inserts with a blank line, as Magit does.
+The blank line belongs to the last section INSERT drew, so collapsing
+that section folds it away too."
+  (let ((start (point)))
+    (funcall insert)
+    (unless (= start (point))
+      (let ((section (car (last (oref magit-insert-section--current children)))))
+        (insert ?\n)
+        (when (and section (= (oref section end) (1- (point))))
+          (oset section end (if (markerp (oref section end)) (point-marker) (point)))
+          (magit-section--set-section-properties section))))))
+
 (defun herdr-status--draw (cached)
   "Redraw the dashboard in the current buffer, asking herdr unless CACHED."
   (herdr-with-directory-cache
@@ -1783,22 +1869,30 @@ redraw is put off and run once every inhibitor has let go."
                   'tabs 'tab_id herdr-status--session-records))
            (workspaces (herdr-status--snapshot-index
                         'workspaces 'workspace_id herdr-status--session-records))
+           (_ (unless cached
+                (herdr-follow-workspace-labels herdr-status--entries workspaces)))
            (widths (herdr-status--widths
                     (append (herdr-status--agents herdr-status--entries)
                             herdr-status--panes)
                     workspaces)))
+      (setq herdr-status--foreground (herdr-status--foreground-target))
       (erase-buffer)
       (magit-insert-section (herdr-status-root)
-        (run-hook-with-args 'herdr-status-sections-functions
-                            (herdr-status--agents herdr-status--entries)
-                            widths tabs workspaces)
+        (insert ?\n)
+        (herdr-status--separated
+         (lambda ()
+           (run-hook-with-args 'herdr-status-sections-functions
+                               (herdr-status--agents herdr-status--entries)
+                               widths tabs workspaces)))
         (dolist (section herdr-status-sections)
-          (pcase section
-            ('recent (herdr-status--insert-recent widths tabs workspaces))
-            ('herds (herdr-status--insert-herds widths tabs workspaces))
-            ('agents (herdr-status--insert-agents widths tabs workspaces))
-            ('panes (herdr-status--insert-panes widths workspaces))
-            ('sessions (herdr-status--insert-sessions)))))
+          (herdr-status--separated
+           (lambda ()
+             (pcase section
+               ('recent (herdr-status--insert-recent widths tabs workspaces))
+               ('herds (herdr-status--insert-herds widths tabs workspaces))
+               ('agents (herdr-status--insert-agents widths tabs workspaces))
+               ('panes (herdr-status--insert-panes widths workspaces))
+               ('sessions (herdr-status--insert-sessions)))))))
       (let ((magit-section-cache-visibility nil))
         (magit-section-show magit-root-section)))
     (goto-char (point-min))
@@ -2031,6 +2125,19 @@ well, so the terminal and Emacs end up on the same agent."
     (if focus
         (herdr-agent-switch (herdr-status--target-at-point))
       (herdr-visit (herdr-status--attachable-at-point)))))
+
+(defun herdr-status-mouse-visit (event)
+  "Show whatever the row clicked with EVENT stands for, as `RET' would."
+  (interactive "e")
+  (mouse-set-point event)
+  (herdr-status-visit))
+
+(defun herdr-status-mouse-toggle-section (event)
+  "Toggle the section double-clicked with EVENT unless its row is a link.
+The first click of a double-click on a row has visited it already."
+  (interactive "e")
+  (unless (mouse-on-link-p (event-start event))
+    (magit-mouse-toggle-section event)))
 
 (defun herdr-status-visit-other-window ()
   "Show the agent at point in another window."

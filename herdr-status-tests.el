@@ -312,6 +312,13 @@
       (should (string-match-p "tab +main" text))
       (should (string-match-p "provider +limen" text))))))
 
+(ert-deftest herdr-status-collapsed-sections-fold-their-blank-line ()
+  (herdr-status-tests--with-dashboard
+    (dolist (section (oref magit-root-section children))
+      (magit-section-hide section))
+    (should (equal (herdr-status-tests--visible-text)
+                   "\nAgents 3  · 1 working\nPanes 1\nSessions 2\n"))))
+
 (ert-deftest herdr-status-sections-functions-insert-before-recent ()
   (let ((herdr-status-sections-functions
          (list (lambda (agents widths _tabs workspaces)
@@ -324,8 +331,8 @@
       (herdr--record-session-target '("/tmp/alpha.sock" . "t1"))
       (herdr-status-refresh)
       (goto-char (point-min))
-      (should (looking-at "Extra 3"))
-      (forward-line 1)
+      (should (looking-at "\nExtra 3"))
+      (forward-line 2)
       (should (looking-at " +. +api-review +. +claude"))
       (should (equal (herdr-status-target-at-point) '("/tmp/alpha.sock" . "t1")))
       (should (re-search-forward "^Recent 1" nil t)))))
@@ -1148,6 +1155,52 @@
     (should (re-search-forward
              (concat "^" (regexp-quote herdr-status-attached-glyph) " +shell")
              nil t))))
+
+(ert-deftest herdr-status-lights-the-foreground-agent-a-window-shows ()
+  (herdr-status-tests--with-dashboard
+    (let ((buffers (list (cons "%1" (generate-new-buffer " *api-review*"))
+                         (cons "%2" (generate-new-buffer " *docs*"))))
+          (label (lambda (name)
+                   (goto-char (point-min))
+                   (re-search-forward (concat " " name))
+                   (get-text-property (- (point) 2) 'font-lock-face)))
+          (target (lambda (name)
+                    (herdr--entry-target
+                     (cl-find name (herdr-status-cached-agents)
+                              :key #'herdr--entry-label :test #'equal)))))
+      (unwind-protect
+          (save-window-excursion
+            (delete-other-windows)
+            (cl-letf (((symbol-function 'herdr--entry-buffer)
+                       (lambda (entry)
+                         (cdr (assoc (alist-get 'pane_id entry) buffers))))
+                      ((symbol-function 'herdr-agent-buffer-target)
+                       (lambda (buffer)
+                         (when-let* ((pane (car (rassq buffer buffers))))
+                           (herdr--entry-target
+                            (cl-find pane (herdr-status-cached-agents)
+                                     :key (lambda (entry) (alist-get 'pane_id entry))
+                                     :test #'equal))))))
+              (herdr--record-session-target (funcall target "api-review"))
+              (should (eq (funcall label "api-review") 'herdr-status-label))
+              (set-window-buffer (selected-window) (cdr (assoc "%1" buffers)))
+              (set-window-buffer (split-window) (cdr (assoc "%2" buffers)))
+              (herdr-status--recolour-labels)
+              (should (eq (funcall label "api-review") 'herdr-status-label-foreground))
+              (should (eq (funcall label "docs") 'herdr-status-label))
+              (herdr--record-session-target (funcall target "docs"))
+              (should (eq (funcall label "docs") 'herdr-status-label-foreground))
+              (should (eq (funcall label "api-review") 'herdr-status-label))
+              (let ((agents (herdr-status-cached-agents)))
+                (dolist (case '(("docs" . herdr-status-label-foreground)
+                                ("api-review" . herdr-status-label)))
+                  (let ((name (herdr-status-label
+                               (cl-find (car case) agents
+                                        :key #'herdr--entry-label :test #'equal)
+                               agents)))
+                    (should (equal name (car case)))
+                    (should (eq (get-text-property 0 'face name) (cdr case))))))))
+        (mapc (lambda (pair) (kill-buffer (cdr pair))) buffers)))))
 
 (ert-deftest herdr-status-drops-the-marker-column-when-the-glyph-is-nil ()
   (let ((herdr-status-attached-glyph nil))

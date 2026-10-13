@@ -483,6 +483,8 @@ recent one.
 | `herdr-status-redraw-cached` | redraw every dashboard from its last fetch |
 | `herdr-status-cached-agents`, `herdr-status-visible-agents` | the last redraw's agents, all or filtered |
 | `herdr-status-harness-glyph` | a harness's vendor mark |
+| `herdr-status-label` | an agent's name in the dashboard's colour: foreground, attached or neither |
+| `herdr-status-state-mark` | an agent's state glyph in its state's colour, two columns wide |
 | `herdr-herds`, `herdr-herd-member-entries`, `herdr-herd-of-entry` | herds and their members |
 | `herdr-herd-enlist` | put an agent being started in a herd and welcome it once it is ready |
 | `herdr-herd-notice` | a one-line notice to a herd member |

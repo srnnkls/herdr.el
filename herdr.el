@@ -1322,11 +1322,15 @@ Entries that already have an Emacs buffer win over bare ones."
               (terminal-id (alist-get 'terminal_id entry)))
     (cons server-key terminal-id)))
 
+(defvar herdr-foreground-functions nil
+  "Functions called with the target of an agent that came to the foreground.")
+
 (defun herdr--record-session-target (target)
   "Move composite session TARGET to the front of the recent list."
-  (when target
+  (when (and target (not (equal target (car herdr--recent-session-targets))))
     (setq herdr--recent-session-targets
-          (cons target (delete target herdr--recent-session-targets))))
+          (cons target (delete target herdr--recent-session-targets)))
+    (run-hook-with-args 'herdr-foreground-functions target))
   target)
 
 (defun herdr-recent-first (entries)
