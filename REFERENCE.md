@@ -27,13 +27,19 @@ A prefix argument is written `C-u`.
 | --- | --- |
 | `herdr-attach-agent` | attach an agent of the session the current directory routes to |
 | `herdr-attach-pane` | attach a pane of that session that runs no agent |
-| `herdr-attach-session` | attach every agent of a session in editor workspace groups; `C-u` attaches plain panes too; attaches without input takeover |
+| `herdr-attach-session` | attach every agent of a session in editor workspace groups, starting it when stopped; `C-u` attaches plain panes too; attaches without input takeover |
 | `herdr-jump` | show any running agent on any server, attaching it when Emacs has no buffer for it |
 
 ### Sessions and routing
 
 | Command | Does |
 | --- | --- |
+| `herdr-session-dispatch` | menu of the session commands below |
+| `herdr-session-attach` | open herdr's own client on a session in a terminal buffer, starting it when stopped |
+| `herdr-session-attach-all` | attach a session's agents as buffers, then herdr's client on it |
+| `herdr-session-start` | start a stopped session, or create one under a new name |
+| `herdr-session-stop` | stop a running session and every pane in it, after confirming |
+| `herdr-session-delete` | delete a stopped session, after confirming |
 | `herdr-assign-project-session` | route the current project to a session and store it in `herdr-state-file`; `C-u` skips storing |
 | `herdr-restart-server` | replace the server in scope with one from the installed herdr, handing its panes over live; `C-u` reads the session |
 | `herdr-update` | run `herdr update --handoff` in `*herdr-update*`, then carry every attachment over to its server's new terminals |
@@ -167,6 +173,7 @@ on the agent at point; elsewhere they read one.
 | `I` | show an agent's harness and state in the echo area | `J` | `herdr-jump` |
 | `t` | `herdr-status-toggle-details`, in the dashboard only | `o` | `herdr-assign-project-session` |
 | `Z` | `herdr-restart-server` | `M-Z` | `herdr-update` |
+| `S` | `herdr-session-dispatch` | | |
 
 `P`, `R`, `x` and `t` do what the same keys do in the dashboard.
 
@@ -201,6 +208,7 @@ on the agent at point; elsewhere they read one.
 | `h` | `herdr-herd-dispatch` |
 | `g` | `herdr-status-refresh` |
 | `p` | `herdr-status-toggle-project` |
+| `S` | `herdr-session-dispatch` |
 | `Z` | `herdr-restart-server` |
 | `M-Z` | `herdr-update` |
 | `q` | `quit-window` |

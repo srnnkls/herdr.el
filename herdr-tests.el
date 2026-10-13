@@ -1143,6 +1143,109 @@ RESPOND is called with each connection and the request line it sent."
                (lambda () '(shared "emacs"))))
       (should (equal (herdr-all-sessions) '(emacs shared))))))
 
+;; Session lifecycle
+
+(defconst herdr-tests--session-records
+  '(((name . "default") (running . t))
+    ((name . "henia") (running . t))
+    ((name . "cmw") (running . nil))))
+
+(defun herdr-tests--offered-sessions (predicate)
+  "Return the names `herdr-read-session' offers under PREDICATE."
+  (let (offered)
+    (cl-letf (((symbol-function 'herdr-session-list)
+               (lambda () herdr-tests--session-records))
+              ((symbol-function 'herdr-all-sessions) (lambda () '(shared)))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt table &rest _)
+                 (setq offered (all-completions "" table))
+                 (car offered))))
+      (herdr-read-session "Session" nil predicate))
+    offered))
+
+(ert-deftest herdr-read-session-offers-stopped-sessions-herdr-keeps ()
+  (let ((herdr-emacs-session-name "emacs"))
+    (should (equal (herdr-tests--offered-sessions nil)
+                   '("shared" "henia" "cmw" "emacs")))))
+
+(ert-deftest herdr-read-session-filters-on-the-session-record ()
+  (let ((herdr-emacs-session-name "emacs"))
+    (should (equal (herdr-tests--offered-sessions
+                    (lambda (record) (alist-get 'running record)))
+                   '("shared" "henia")))
+    (should (equal (herdr-tests--offered-sessions
+                    (lambda (record) (and record (not (alist-get 'running record)))))
+                   '("cmw")))))
+
+(ert-deftest herdr-session-designator-reads-default-as-shared ()
+  (should (eq (herdr--session-designator "default") 'shared)))
+
+(ert-deftest herdr-session-cli-signals-herdr-s-message ()
+  (cl-letf (((symbol-function 'executable-find) (lambda (_) "/bin/herdr"))
+            ((symbol-function 'call-process)
+             (lambda (&rest _)
+               (insert "{\"error\":{\"code\":\"x\",\"message\":\"session henia is running\"}}")
+               1)))
+    (should (equal (cadr (should-error (herdr--session-cli "delete" "henia")
+                                       :type 'herdr-error))
+                   "session henia is running"))))
+
+(ert-deftest herdr-session-stop-and-delete-name-the-session-to-herdr ()
+  (let (calls changed
+        (herdr-session-change-hook nil))
+    (add-hook 'herdr-session-change-hook (lambda () (setq changed t)))
+    (cl-letf (((symbol-function 'herdr--session-cli)
+               (lambda (&rest args) (push args calls) nil)))
+      (herdr-session-stop 'shared)
+      (herdr-session-delete "cmw"))
+    (should (equal (nreverse calls) '(("stop" "default") ("delete" "cmw"))))
+    (should changed)))
+
+(ert-deftest herdr-session-start-starts-a-server-that-does-not-answer ()
+  (let (started (herdr-session-change-hook nil))
+    (cl-letf (((symbol-function 'herdr-available-p) (lambda () nil))
+              ((symbol-function 'herdr-start-server)
+               (lambda () (setq started (herdr-session-name)) t)))
+      (herdr-session-start "scratch"))
+    (should (equal started "scratch"))))
+
+(ert-deftest herdr-session-attach-runs-herdr-s-client-once ()
+  (let ((herdr-executable "herdr")
+        (herdr-session-change-hook nil)
+        runs)
+    (cl-letf (((symbol-function 'herdr--terminal-exec)
+               (lambda (buffer program args)
+                 (push (cons program args) runs)
+                 (with-current-buffer buffer
+                   (start-process "herdr-test" buffer "sleep" "5"))
+                 buffer))
+              ((symbol-function 'pop-to-buffer) #'ignore))
+      (let ((buffer (herdr-session-attach "cmw")))
+        (unwind-protect
+            (progn
+              (herdr-session-attach "cmw")
+              (should (equal (buffer-name buffer) "*herdr session: cmw*"))
+              (should (equal runs '(("herdr" "--session" "cmw")))))
+          (let ((kill-buffer-query-functions nil))
+            (kill-buffer buffer)))))))
+
+(ert-deftest herdr-session-attach-all-attaches-agents-then-the-client ()
+  (let (calls)
+    (cl-letf (((symbol-function 'herdr-attach-session)
+               (lambda (session &rest _) (push (list 'agents session) calls)))
+              ((symbol-function 'herdr-session-attach)
+               (lambda (session) (push (list 'client session) calls))))
+      (herdr-session-attach-all "cmw"))
+    (should (equal (nreverse calls) '((agents "cmw") (client "cmw"))))))
+
+(ert-deftest herdr-attach-session-starts-a-stopped-session ()
+  (let (started)
+    (cl-letf (((symbol-function 'herdr-start-server-if-needed)
+               (lambda () (setq started (herdr-session-name)) t))
+              ((symbol-function 'herdr-session-layout) (lambda (&optional _) nil)))
+      (herdr-attach-session "cmw"))
+    (should (equal started "cmw"))))
+
 (ert-deftest herdr-socket-file-follows-the-session-choice ()
   (let ((process-environment (cons "XDG_CONFIG_HOME=/xdg" process-environment))
         (herdr-socket-path nil)

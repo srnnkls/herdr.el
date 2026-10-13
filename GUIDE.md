@@ -93,6 +93,20 @@ Emacs has been told about, plus every session whose socket exists on disk under
 `~/.config/herdr/sessions/` (or `$XDG_CONFIG_HOME/herdr/sessions/`). A server started from a shell
 with `herdr --session review` therefore shows up without any configuration.
 
+### Starting, stopping and deleting sessions
+
+`herdr-session-dispatch`, on `S` in the dashboard and the herdr menu, gathers the session
+lifecycle. Its session prompts list every session herdr keeps, stopped ones included, each marked
+running, stopped or new.
+
+| Key | Command | Does |
+| --- | --- | --- |
+| `n` | `herdr-session-start` | start a stopped session, or create one under a new name |
+| `a` | `herdr-session-attach` | open herdr's own client on a session in a terminal buffer, starting it when stopped |
+| `A` | `herdr-session-attach-all` | both: every agent of the session as a buffer, then herdr's client on it |
+| `x` | `herdr-session-stop` | stop a session's server, ending its panes; herdr keeps the session |
+| `D` | `herdr-session-delete` | delete a stopped session for good |
+
 ### Restarting and updating servers
 
 `herdr-restart-server` replaces a session's server with one started from the herdr installed now.

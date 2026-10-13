@@ -1384,7 +1384,7 @@ depending on its version."
         (and (> (length suffix) 2) (plist-get (nth 2 suffix) :command)))))
 
 (ert-deftest herdr-status-dispatch-mirrors-the-keymap ()
-  (dolist (key '("RET" "o" "P" "R" "d" "x" "f" "O" "t" "h" "g" "p" "q"))
+  (dolist (key '("RET" "o" "P" "R" "d" "x" "f" "O" "t" "h" "g" "p" "S" "q"))
     (let ((bound (keymap-lookup herdr-status-mode-map key))
           (offered (herdr-status-tests--suffix-command 'herdr-status-dispatch key)))
       (should (commandp bound))

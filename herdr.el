@@ -1322,14 +1322,16 @@ mirror herdr workspaces or merge by editor workspace label.
 becomes a buffer there.  ALL attaches plain panes too.  Input ownership
 stays with herdr's own client unless TAKEOVER says otherwise, so the
 attached buffers start as a view of a session someone else is driving.
-Terminals Emacs already shows are left alone.  Returns the buffers it
-attached."
+A stopped SESSION is started first, as `herdr-start-server-if-needed'
+would.  Terminals Emacs already shows are left alone.  Returns the
+buffers it attached."
   (interactive (list (herdr-read-session "Attach herdr session: ")
                      current-prefix-arg
                      nil))
   (herdr-with-session session
-    (unless (herdr-available-p)
-      (user-error "No herdr server on %s" (herdr-socket-file)))
+    (condition-case err
+        (herdr-start-server-if-needed)
+      (herdr-error (user-error "%s" (error-message-string err))))
     (let ((herdr-attach-takeover takeover)
           (buffers nil))
       (dolist (group (herdr--session-attachment-layout
@@ -1360,7 +1362,7 @@ attached."
 (defun herdr--session-designator (name)
   "Return the session designator NAME stands for."
   (pcase name
-    ("shared" 'shared)
+    ((or "shared" "default") 'shared)
     ("emacs" 'emacs)
     (_ name)))
 
@@ -1407,27 +1409,74 @@ attached."
                   (equal key (herdr-session-server-key session)))
                 (herdr-all-sessions)))))
 
-(defun herdr-read-session (prompt &optional default)
+(defun herdr--session-cli (&rest args)
+  "Run `herdr session ARGS --json' and return what it prints, parsed.
+Signals `herdr-error' with herdr's own message when it refuses."
+  (unless (executable-find herdr-executable)
+    (signal 'herdr-error
+            (list (format "herdr executable not found: %s" herdr-executable))))
+  (with-temp-buffer
+    (let ((status (apply #'call-process herdr-executable nil '(t nil) nil
+                         "session" (append args '("--json"))))
+          (output (string-trim (buffer-string))))
+      (let ((result (and (string-prefix-p "{" output) (herdr--decode output))))
+        (when-let* ((err (alist-get 'error result)))
+          (signal 'herdr-error (list (alist-get 'message err))))
+        (unless (eq status 0)
+          (signal 'herdr-error
+                  (list (format "herdr session %s failed: %s"
+                                (car args) (if (string-empty-p output) status output)))))
+        result))))
+
+(defun herdr-session-list ()
+  "Return the sessions herdr keeps, running or stopped, as alists."
+  (alist-get 'sessions (herdr--session-cli "list")))
+
+(defun herdr--session-record (name records)
+  "Return the record among RECORDS for the session NAME designates, or nil."
+  (let ((cli-name (or (herdr-session-name (herdr--session-designator name)) "default")))
+    (seq-find (lambda (record) (equal (alist-get 'name record) cli-name)) records)))
+
+(defun herdr-read-session (prompt &optional default predicate)
   "Read a herdr session designator with PROMPT, offering DEFAULT.
-Each name is shown beside the socket it stands for, since that is what
-tells two sessions apart."
-  (let* ((known (mapcar (lambda (session)
+Each name is shown beside whether it runs and the socket it stands for,
+since that is what tells two sessions apart.  Sessions herdr keeps but
+has stopped are offered too.  PREDICATE, when given, keeps the names
+whose `herdr-session-list' record it accepts, nil for a session herdr
+keeps none of."
+  (let* ((records (condition-case nil (herdr-session-list) (herdr-error nil)))
+         (known (mapcar (lambda (session)
                           (pcase session
                             ((or 'nil 'shared) "shared")
                             ('emacs "emacs")
                             (name name)))
                         (herdr-all-sessions)))
+         (kept (mapcar (lambda (record)
+                         (let ((name (alist-get 'name record)))
+                           (if (equal name "default") "shared" name)))
+                       records))
          (default (pcase default
                     ((or 'nil 'shared) "shared")
                     ('emacs "emacs")
                     (name name)))
-         (names (delete-dups (append known (list "shared" "emacs"))))
+         (names (delete-dups (append known kept (list "shared" "emacs"))))
+         (names (if predicate
+                    (cl-remove-if-not
+                     (lambda (name)
+                       (funcall predicate (herdr--session-record name records)))
+                     names)
+                  names))
+         (default (and (member default names) default))
          (width (apply #'max 0 (mapcar #'string-width names)))
          (annotation
           (lambda (name)
-            (concat (make-string (max 1 (- (+ width 2) (string-width name))) ?\s)
-                    (abbreviate-file-name
-                     (herdr-session-socket (herdr--session-designator name))))))
+            (let ((record (herdr--session-record name records)))
+              (concat (make-string (max 1 (- (+ width 2) (string-width name))) ?\s)
+                      (format "%-8s " (cond ((null record) "new")
+                                            ((alist-get 'running record) "running")
+                                            (t "stopped")))
+                      (abbreviate-file-name
+                       (herdr-session-socket (herdr--session-designator name)))))))
          (table (lambda (string predicate action)
                   (if (eq action 'metadata)
                       `(metadata (category . herdr-session)
@@ -1459,6 +1508,95 @@ asks for.  Projects nothing was assigned to take their session from
              (or (herdr-session-name session) "shared")
              (if no-save " for now" ""))
     session))
+
+;;;; Session lifecycle
+
+(defvar herdr-session-change-hook nil
+  "Hook run after Emacs starts, stops or deletes a herdr session.")
+
+(defun herdr--session-label (session)
+  "Return the name herdr gives SESSION."
+  (or (herdr-session-name session) "default"))
+
+;;;###autoload
+(defun herdr-session-start (session)
+  "Start the herdr server of SESSION, creating the session when herdr has none.
+The server is detached from Emacs, as `herdr-start-server' starts it."
+  (interactive
+   (list (herdr-read-session "Start herdr session"
+                             nil (lambda (record)
+                                   (not (alist-get 'running record))))))
+  (when (and (stringp session) (string-blank-p session))
+    (user-error "A herdr session needs a name"))
+  (herdr-with-session session
+    (cond
+     ((herdr-available-p)
+      (message "herdr session %s is already running" (herdr--session-label session)))
+     ((condition-case err
+          (herdr-start-server)
+        (herdr-error (user-error "%s" (error-message-string err))))
+      (run-hooks 'herdr-session-change-hook)
+      (message "Started herdr session %s" (herdr--session-label session)))
+     (t (user-error "Herdr session %s did not answer within %ss"
+                    (herdr--session-label session) herdr-server-start-timeout))))
+  session)
+
+;;;###autoload
+(defun herdr-session-attach (session)
+  "Attach herdr's own client to SESSION in an Emacs terminal buffer.
+The client shows the whole session as herdr draws it, starting the
+session when it is stopped.  A buffer already running the client is
+shown again rather than started twice."
+  (interactive (list (herdr-read-session "Attach herdr session")))
+  (let* ((name (herdr--session-label session))
+         (buffer (get-buffer-create (format "*herdr session: %s*" name))))
+    (unless (get-buffer-process buffer)
+      (setq buffer (herdr--terminal-exec buffer herdr-executable
+                                         (list "--session" name)))
+      (run-hooks 'herdr-session-change-hook))
+    (pop-to-buffer buffer)
+    buffer))
+
+;;;###autoload
+(defun herdr-session-attach-all (session)
+  "Attach herdr's client to SESSION and every agent of it as a buffer.
+`herdr-attach-session' attaches the agents, `herdr-session-attach' the
+client, which ends up shown."
+  (interactive (list (herdr-read-session "Attach herdr session and its agents")))
+  (herdr-attach-session session)
+  (herdr-session-attach session))
+
+;;;###autoload
+(defun herdr-session-stop (session)
+  "Stop the herdr server of SESSION, ending every pane it runs.
+herdr keeps the session, so `herdr-session-start' brings it back."
+  (interactive
+   (list (herdr-read-session "Stop herdr session" nil
+                             (lambda (record) (alist-get 'running record)))))
+  (let ((name (herdr--session-label session)))
+    (when (or (not (called-interactively-p 'any))
+              (yes-or-no-p (format "Stop herdr session %s and every pane in it? " name)))
+      (condition-case err
+          (herdr--session-cli "stop" name)
+        (herdr-error (user-error "%s" (error-message-string err))))
+      (run-hooks 'herdr-session-change-hook)
+      (message "Stopped herdr session %s" name))))
+
+;;;###autoload
+(defun herdr-session-delete (session)
+  "Delete the stopped herdr SESSION and everything herdr kept for it."
+  (interactive
+   (list (herdr-read-session "Delete herdr session" nil
+                             (lambda (record)
+                               (and record (not (alist-get 'running record)))))))
+  (let ((name (herdr--session-label session)))
+    (when (or (not (called-interactively-p 'any))
+              (yes-or-no-p (format "Delete herdr session %s for good? " name)))
+      (condition-case err
+          (herdr--session-cli "delete" name)
+        (herdr-error (user-error "%s" (error-message-string err))))
+      (run-hooks 'herdr-session-change-hook)
+      (message "Deleted herdr session %s" name))))
 
 (provide 'herdr)
 ;;; herdr.el ends here

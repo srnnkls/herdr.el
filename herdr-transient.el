@@ -137,6 +137,7 @@ to, so the two menus can be read as one."
      :description herdr-status--details-description
      :if herdr-transient--dashboard-p)]
    ["Server"
+    ("S" "sessions" herdr-session-dispatch)
     ("Z" "restart, panes run on" herdr-restart-server)
     ("M-Z" "update herdr" herdr-update)]])
 

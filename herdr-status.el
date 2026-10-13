@@ -1550,6 +1550,7 @@ are bound by that package and unbound where it is not installed."
   "t" #'herdr-status-toggle-details
   "g" #'herdr-status-refresh
   "p" #'herdr-status-toggle-project
+  "S" #'herdr-session-dispatch
   "Z" #'herdr-restart-server
   "M-Z" #'herdr-update
   "q" #'quit-window)
@@ -1967,6 +1968,7 @@ Redraws coalesce on one idle timer, so calling this often is cheap."
 (add-hook 'herdr-agent-event-functions #'herdr-status--on-event)
 (add-hook 'herdr-agent-ready-functions #'herdr-status--on-event)
 (add-hook 'herdr-agent-handoff-functions #'herdr-status--on-event)
+(add-hook 'herdr-session-change-hook #'herdr-status-request-refresh)
 
 ;;;; Commands
 
@@ -2559,6 +2561,16 @@ terminal goes as well when no Emacs session holds it."
   (format "details (%s)" (if herdr-status-show-details "on" "off")))
 
 ;;;###autoload
+(transient-define-prefix herdr-session-dispatch ()
+  "Start, attach, stop and delete herdr sessions."
+  ["herdr sessions"
+   ("n" "start" herdr-session-start)
+   ("a" "attach" herdr-session-attach)
+   ("A" "attach session + all agents" herdr-session-attach-all)
+   ("x" "stop" herdr-session-stop)
+   ("D" "delete" herdr-session-delete)])
+
+;;;###autoload
 (transient-define-prefix herdr-status-dispatch ()
   "Show the herdr dashboard's own keys.
 Every suffix here is bound directly in `herdr-status-mode-map' as well."
@@ -2599,6 +2611,7 @@ Every suffix here is bound directly in `herdr-status-mode-map' as well."
    ["Herd"
     ("h" "herds" herdr-herd-dispatch)]
    ["Server"
+    ("S" "sessions" herdr-session-dispatch)
     ("Z" "restart, panes run on" herdr-restart-server)
     ("M-Z" "update herdr" herdr-update)]
    ]
