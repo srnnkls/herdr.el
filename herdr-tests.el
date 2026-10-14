@@ -908,6 +908,18 @@ looks for a replacement buffer runs into."
       (kill-buffer claude)
       (kill-buffer shell))))
 
+(ert-deftest herdr-ultra-scroll-down-stops-at-the-last-row-when-pinned ()
+  (with-temp-buffer
+    (let ((clamped 0)
+          (scroll (lambda (_delta) (signal 'end-of-buffer nil))))
+      (cl-letf (((symbol-function 'herdr--pin-bottom)
+                 (lambda (&rest _) (setq clamped (1+ clamped)))))
+        (should-error (herdr--ultra-scroll-down scroll 10) :type 'end-of-buffer)
+        (should (zerop clamped))
+        (herdr-pin-bottom-mode)
+        (herdr--ultra-scroll-down scroll 10)
+        (should (= clamped 1))))))
+
 (ert-deftest herdr-terminal-buffer-needs-a-live-process ()
   (let ((buffer (get-buffer-create "*herdr: lookup*")))
     (unwind-protect

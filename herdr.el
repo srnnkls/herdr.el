@@ -806,6 +806,20 @@ holds nothing, and every redraw would snap an overscrolled window back."
                                     (herdr-agents))))
     (herdr-error nil)))
 
+(defun herdr--ultra-scroll-down (function delta)
+  "Call FUNCTION with DELTA, stopping at the last row in a pinned buffer.
+Clamping before redisplay keeps the overscroll from ever showing, and
+the last row ends the scroll where `ultra-scroll' would jump to the
+buffer's end."
+  (if (not herdr-pin-bottom-mode)
+      (funcall function delta)
+    (unwind-protect
+        (ignore-error end-of-buffer
+          (funcall function delta))
+      (herdr--pin-bottom (selected-window) (window-start)))))
+
+(advice-add 'ultra-scroll-down :around #'herdr--ultra-scroll-down)
+
 (define-minor-mode herdr-pin-bottom-mode
   "Keep this terminal's window from scrolling past its last row.
 An attachment of one of `herdr-pinned-agents' starts with it on."
