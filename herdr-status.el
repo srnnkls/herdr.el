@@ -214,7 +214,7 @@ whether the Nerd Font candidates are considered at all."
     ("\U000F0AA3" "◕" "%") ("\U000F0AA4" "◕" "%") ("\U000F0AA5" "●" "%"))
   "Glyphs leading the context field, from an empty window to a full one.
 The share an agent holds picks the step nearest it, so the glyph fills
-as the window does.  Each step lists candidates the way
+as the window does; the last step stands for a full window alone.  Each step lists candidates the way
 `herdr-status-field-glyphs' does, and a context whose share cannot be
 read takes the glyph that option gives the field."
   :type '(repeat (repeat string))
@@ -1120,7 +1120,9 @@ takes the same glyph whatever it holds."
    (or (and (eq field 'context) herdr-status-context-glyphs
             (when-let* ((share (herdr-status--context-share value))
                         (last (1- (length herdr-status-context-glyphs))))
-              (nth (min last (floor (+ 0.5 (* share last))))
+              (nth (if (< share 1)
+                       (min (1- last) (floor (+ 0.5 (* share last))))
+                     last)
                    herdr-status-context-glyphs)))
        (alist-get field herdr-status-field-glyphs))))
 

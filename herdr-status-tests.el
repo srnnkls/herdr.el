@@ -2435,7 +2435,7 @@ Emacs releases the attachment first and the two go together."
     (should (equal (herdr-status-field-glyph 'context "80k/200k") "h"))
     (should (equal (herdr-status-field-glyph 'context "100k/200k") "h"))
     (should (equal (herdr-status-field-glyph 'context "150k/200k") "t"))
-    (should (equal (herdr-status-field-glyph 'context "199k/200k") "f"))
+    (should (equal (herdr-status-field-glyph 'context "199k/200k") "t"))
     (should (equal (herdr-status-field-glyph 'context "200k/200k") "f"))
     (should (equal (herdr-status-field-glyph 'context "300k/200k") "f"))
     (should (equal (herdr-status-field-glyph 'context "lots") "%"))
