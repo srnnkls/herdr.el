@@ -889,6 +889,22 @@ looks for a replacement buffer runs into."
           (should (equal announced (list buffer))))
       (kill-buffer buffer))))
 
+(ert-deftest herdr-claim-buffer-pins-a-pinned-agent-to-its-last-row ()
+  (let ((claude (get-buffer-create "*herdr: claude*"))
+        (shell (get-buffer-create "*herdr: shell*"))
+        (herdr-pinned-agents '("claude")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'herdr-agents)
+                   (lambda () '(((terminal_id . "term_claude") (agent . "claude"))))))
+          (herdr-claim-buffer claude "term_claude")
+          (herdr-claim-buffer shell "term_shell")
+          (should (memq #'herdr--pin-bottom
+                        (buffer-local-value 'window-scroll-functions claude)))
+          (should-not (memq #'herdr--pin-bottom
+                            (buffer-local-value 'window-scroll-functions shell))))
+      (kill-buffer claude)
+      (kill-buffer shell))))
+
 (ert-deftest herdr-terminal-buffer-needs-a-live-process ()
   (let ((buffer (get-buffer-create "*herdr: lookup*")))
     (unwind-protect

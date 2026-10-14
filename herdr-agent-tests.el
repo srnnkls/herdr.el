@@ -249,9 +249,9 @@
     (interactive_ready . t)
     (cwd . ,default-directory)))
 
-(defun herdr-agent-tests--attachment (name terminal-id)
+(defun herdr-agent-tests--attachment (name terminal-id &optional agent)
   (let ((buffer (generate-new-buffer (format " *herdr-agent-backend %s*" name))))
-    (herdr-claim-buffer buffer terminal-id)
+    (herdr-claim-buffer buffer terminal-id nil agent)
     (cons buffer (start-process (format "herdr-agent-%s" name) buffer "sleep" "30"))))
 
 (defun herdr-agent-tests--dispose-attachment (attachment)
@@ -1009,9 +1009,10 @@ to be reached through the server it was found on."
          dead-session retry-session)
     (unwind-protect
         (cl-letf (((symbol-function 'herdr-attach-terminal)
-                   (lambda (terminal-id &rest _)
+                   (lambda (terminal-id &rest keys)
                      (let ((attachment
-                            (herdr-agent-tests--attachment terminal-id terminal-id)))
+                            (herdr-agent-tests--attachment
+                             terminal-id terminal-id (plist-get keys :agent))))
                        (push attachment attachments)
                        (car attachment))))
                   ((symbol-function 'herdr-request)

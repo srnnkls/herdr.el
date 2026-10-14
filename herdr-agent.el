@@ -474,7 +474,8 @@ DISPLAY shows the buffer once attached."
           :session (herdr-agent--route session)
           :label (herdr-agent--session-label session)
           :directory (herdr-agent-session-project session)
-          :takeover herdr-attach-takeover :display display)))
+          :takeover herdr-attach-takeover :display display
+          :agent (herdr-agent-session-kind session))))
     (herdr-agent-claim-attachment session buffer (get-buffer-process buffer))))
 
 (defun herdr-agent-claim-attachment (session buffer process)
@@ -490,10 +491,10 @@ DISPLAY shows the buffer once attached."
         (unless (and (buffer-live-p buffer) (processp process) (process-live-p process))
           (signal 'herdr-error (list "terminal attachment did not return a buffer and process")))
         (herdr-claim-buffer buffer (herdr-agent-session-terminal session)
-                            (herdr-agent--route session))
+                            (herdr-agent--route session)
+                            (herdr-agent-session-kind session))
         (setf (herdr-agent-session-buffer session) buffer
               (herdr-agent-session-attachment-process session) process)
-        (herdr-pin-bottom buffer (herdr-agent-session-kind session))
         (herdr-agent--watch-attachment session)
         (unless (and (buffer-live-p buffer) (process-live-p process)
                      (not (process-get process 'herdr-agent--died)))

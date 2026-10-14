@@ -797,6 +797,15 @@ holds nothing, and every redraw would snap an overscrolled window back."
       (set-window-start window (car anchor) t)
       (ghostel--set-window-vscroll window (nth 1 anchor) t t))))
 
+(defun herdr--terminal-agent (terminal-id session)
+  "Return the agent herdr runs in TERMINAL-ID on SESSION, or nil."
+  (condition-case nil
+      (herdr-with-session session
+        (alist-get 'agent (seq-find (lambda (agent)
+                                      (equal (alist-get 'terminal_id agent) terminal-id))
+                                    (herdr-agents))))
+    (herdr-error nil)))
+
 (defun herdr-pin-bottom (buffer agent)
   "Keep BUFFER from scrolling past its last row when AGENT is pinned.
 See `herdr-pinned-agents'."
@@ -810,8 +819,10 @@ Runs for plain attachments and for the buffers other integrations build
 around a terminal, so an environment can claim the buffer - pinning it
 to a workspace, say - in one place.")
 
-(defun herdr-claim-buffer (buffer terminal-id &optional session)
+(defun herdr-claim-buffer (buffer terminal-id &optional session agent)
   "Mark BUFFER as showing TERMINAL-ID on SESSION's server.
+AGENT names what runs there, asked of herdr when nil; see
+`herdr-pinned-agents'.
 SESSION defaults to the server in scope, named after the session that
 answers on it, so what the buffer says it is and where it is reached
 cannot drift apart.  `herdr-buffer-functions' then sees the buffer."
@@ -823,7 +834,9 @@ cannot drift apart.  `herdr-buffer-functions' then sees the buffer."
       (with-current-buffer buffer
         (setq herdr-terminal-id terminal-id
               herdr-terminal-session session
-              herdr-terminal-server-key server)))
+              herdr-terminal-server-key server))
+      (when herdr-pinned-agents
+        (herdr-pin-bottom buffer (or agent (herdr--terminal-agent terminal-id session)))))
     (run-hook-with-args 'herdr-buffer-functions buffer)
     buffer))
 
@@ -872,11 +885,13 @@ from the mode hooks that run on attach to every later command."
     (file-name-as-directory (expand-file-name directory))))
 
 (cl-defun herdr-attach-terminal (terminal-id &key (session herdr-session)
-                                             label directory takeover display)
+                                             label directory takeover display
+                                             agent)
   "Attach TERMINAL-ID on SESSION to an Emacs terminal buffer.
 LABEL names the buffer, DIRECTORY sets its `default-directory' when one
 still answers for it, TAKEOVER claims input ownership, and DISPLAY shows
-the buffer when non-nil.  Returns the buffer."
+the buffer when non-nil.  AGENT names what runs there, as
+`herdr-claim-buffer' takes it.  Returns the buffer."
   (let* ((herdr-session session)
          (herdr-socket-path nil)
          (server (herdr-session-server-key session))
@@ -906,7 +921,7 @@ the buffer when non-nil.  Returns the buffer."
         (setq herdr--raw (string-suffix-p "herdr-raw" (car command)))
         (when (string-match-p "herdr-\\(?:yield\\|raw\\)\\'" (car command))
           (setq herdr--yield 'unknown)))
-      (herdr-claim-buffer buffer terminal-id session)
+      (herdr-claim-buffer buffer terminal-id session agent)
       (when display (herdr-display-buffer buffer))
       (herdr--yield-sync)
       (run-with-timer herdr-appearance-retry-delay nil #'herdr-tell-appearance)
@@ -1530,7 +1545,8 @@ Gives `herdr-attach-functions' the first chance to claim ENTRY."
                                :label (herdr--entry-label entry)
                                :directory (herdr-entry-directory entry)
                                :takeover herdr-attach-takeover
-                               :display t))))
+                               :display t
+                               :agent (alist-get 'agent entry)))))
 
 ;;;###autoload
 (defun herdr-attach-agent (agent)
