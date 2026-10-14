@@ -1619,6 +1619,7 @@ are bound by that package and unbound where it is not installed."
   "d" #'herdr-status-detach
   "x" #'herdr-status-stop
   "X" #'herdr-status-restart
+  "M" #'herdr-status-move
   "r" #'herdr-status-resume
   "f" #'herdr-status-filter
   "O" #'herdr-status-sort
@@ -2564,24 +2565,69 @@ name; an agent in a herd rejoins it there."
   (interactive)
   (let* ((entry (herdr-status--entry-at-point))
          (label (herdr--entry-label entry))
-         (kind (alist-get 'agent entry))
-         (reference (alist-get 'value (alist-get 'agent_session entry)))
          (herd (herdr-herd-of-entry entry)))
-    (unless reference
+    (unless (herdr-status--resume-reference entry)
       (user-error "%s reports no session to resume" label))
     (when (yes-or-no-p (format "Restart %s? " label))
-      (when-let* ((session (herdr-status--attachment-at-point)))
-        (herdr-agent-detach session))
-      (herdr-agent-stop (herdr--entry-target entry))
-      (let ((started (herdr-with-session (alist-get 'session entry)
-                       (herdr-agent-start-session
-                        kind (alist-get 'name entry)
-                        :project-root (herdr-entry-directory entry)
-                        :args (herdr-agent--native-args kind 'resume reference)
-                        :wait nil))))
+      (let ((started (herdr-status--relaunch entry (alist-get 'session entry))))
         (when herd (herdr-herd-enlist started herd)))
       (herdr-status-refresh)
       (message "Restarted %s" label))))
+
+(defun herdr-status--resume-reference (entry)
+  "Return the reference ENTRY's harness resumes its conversation by, or nil."
+  (alist-get 'value (alist-get 'agent_session entry)))
+
+(defun herdr-status--relaunch (entry session)
+  "Close the agent ENTRY's pane and resume its conversation on SESSION.
+Emacs lets go of the agent first.  The new pane works in the same
+directory under the same name.  Returns the started agent session."
+  (let ((kind (alist-get 'agent entry)))
+    (when-let* ((attached (herdr-status--attachment entry)))
+      (herdr-agent-detach attached))
+    (herdr-agent-stop (herdr--entry-target entry))
+    (herdr-with-session session
+      (herdr-agent-start-session
+       kind (alist-get 'name entry)
+       :project-root (herdr-entry-directory entry)
+       :args (herdr-agent--native-args kind 'resume
+                                       (herdr-status--resume-reference entry))
+       :wait nil))))
+
+(defun herdr-status-move (session)
+  "Move the agent at point, or those of the region, to herdr SESSION.
+herdr cannot carry a pane from one server to another, so each agent's
+pane closes and its harness resumes the same conversation on SESSION,
+in the same directory and under the same name.  Agents already on
+SESSION and those reporting no conversation to resume are left alone.
+A herd stays behind, since it belongs to the session it was formed on."
+  (interactive
+   (list (herdr-read-session "Move to herdr session"
+                             (alist-get 'session (herdr-status--entry-at-point)))))
+  (let* ((name (herdr-session-name session))
+         (entries (seq-remove (lambda (entry)
+                                (equal (herdr-session-name (alist-get 'session entry))
+                                       name))
+                              (herdr-status--agents-at-point)))
+         (movable (seq-filter #'herdr-status--resume-reference entries))
+         (stuck (seq-difference entries movable))
+         (labels (herdr-status--labels movable))
+         (target (or name "default")))
+    (unless movable
+      (user-error (if stuck
+                      "%s reports no session to resume"
+                    "Nothing to move to %s")
+                  (if stuck (herdr-status--labels stuck) target)))
+    (when (yes-or-no-p (format "Move %s to %s? " labels target))
+      (dolist (entry movable)
+        (herdr-status--relaunch entry session))
+      (deactivate-mark)
+      (herdr-status-refresh)
+      (message "Moved %s to %s%s" labels target
+               (if stuck
+                   (format "; %s reports no session to resume"
+                           (herdr-status--labels stuck))
+                 "")))))
 
 (defun herdr-status--let-go (entry)
   "Let go of the agent or pane ENTRY, returning non-nil when Emacs held it."
@@ -2785,7 +2831,8 @@ Every suffix here is bound directly in `herdr-status-mode-map' as well."
     ("M-R" "rename afresh" herdr-status-rename-afresh)
     ("d" "detach, pane runs on" herdr-status-detach)
     ("x" "stop, pane closes" herdr-status-stop)
-    ("X" "restart, resuming in a fresh pane" herdr-status-restart)]
+    ("X" "restart, resuming in a fresh pane" herdr-status-restart)
+    ("M" "move to session" herdr-status-move)]
    ["List"
     ("f" "filter" herdr-status-filter)
     ("O" "sort" herdr-status-sort)

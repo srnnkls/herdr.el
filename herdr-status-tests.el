@@ -1525,7 +1525,7 @@ depending on its version."
         (and (> (length suffix) 2) (plist-get (nth 2 suffix) :command)))))
 
 (ert-deftest herdr-status-dispatch-mirrors-the-keymap ()
-  (dolist (key '("RET" "o" "R" "d" "x" "n" "N" "f" "O" "i" "h" "g" "p" "S" "q"))
+  (dolist (key '("RET" "o" "R" "d" "x" "n" "N" "f" "O" "i" "h" "g" "p" "S" "M" "q"))
     (let ((bound (keymap-lookup herdr-status-mode-map key))
           (offered (herdr-status-tests--suffix-command 'herdr-status-dispatch key)))
       (should (commandp bound))
@@ -1666,6 +1666,40 @@ giving the panes the fixture agents occupy a herd."
                          '(("claude" "api-review" "alpha" "/tmp/proj/"
                             ("--resume" "s1") nil))))
           (should (equal enlisted `((,started "alpha" . "refactor")))))))))
+
+(ert-deftest herdr-status-move-resumes-the-agent-on-another-session ()
+  (herdr-status-tests--with-herds '(("api-review" . "refactor"))
+    (herdr-status-tests--with-dashboard
+      (let (stopped starts enlisted)
+        (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
+                  ((symbol-function 'herdr-agent-stop)
+                   (lambda (target) (push target stopped)))
+                  ((symbol-function 'herdr-agent-start-session)
+                   (lambda (kind name &rest arguments)
+                     (push (list kind name herdr-session
+                                 (plist-get arguments :project-root)
+                                 (plist-get arguments :args))
+                           starts)
+                     (herdr-agent--make-session :pane "%8")))
+                  ((symbol-function 'herdr-herd-enlist)
+                   (lambda (session herd) (push (cons session herd) enlisted)))
+                  ((symbol-function 'herdr-status-refresh) #'ignore))
+          (goto-char (point-max))
+          (re-search-backward "api-review")
+          (herdr-status-move "beta")
+          (should (equal stopped '(("/tmp/alpha.sock" . "t1"))))
+          (should (equal starts
+                         '(("claude" "api-review" "beta" "/tmp/proj/"
+                            ("--resume" "s1")))))
+          (should-not enlisted))))))
+
+(ert-deftest herdr-status-move-leaves-an-agent-already-there ()
+  (herdr-status-tests--with-dashboard
+    (cl-letf (((symbol-function 'herdr-agent-stop)
+               (lambda (_) (ert-fail "Stopped an agent already on the session"))))
+      (goto-char (point-max))
+      (re-search-backward "api-review")
+      (should-error (herdr-status-move "alpha") :type 'user-error))))
 
 (ert-deftest herdr-status-new-agent-in-a-herd-s-section-joins-that-herd ()
   (herdr-status-tests--with-herds '(("api-review" . "refactor"))

@@ -114,6 +114,7 @@ While a message is being written:
 | `herdr-status-detach` | `d` | let go of the agent's or pane's terminal and buffer; the pane runs on |
 | `herdr-status-stop` | `x` | stop the agent at point, or close the pane at point, after confirmation |
 | `herdr-status-restart` | `X` | stop the agent at point and resume its conversation in a fresh pane; a herd member rejoins its herd |
+| `herdr-status-move` | `M` | move the agent at point, or the region's, to another session: its pane closes and its conversation resumes there; herds stay behind |
 | `herdr-status-resume` | `r` | read one of the harness's past sessions started in the row's directory or any worktree of its repository, by title and date with the worktree as annotation, and resume it in a new pane there; `C-u` reads the harness |
 | `herdr-status-toggle-expanded` | `e` | open every row `herdr-status-expanded-states` names, or close them all |
 | `herdr-status-toggle-details` | `i` | show or hide agent metadata under expanded rows |
@@ -193,6 +194,7 @@ on the agent at point; elsewhere they read one.
 | `d` | `herdr-status-detach` |
 | `x` | `herdr-status-stop` |
 | `X` | `herdr-status-restart` |
+| `M` | `herdr-status-move` |
 | `r` | `herdr-status-resume` |
 | `e` | `herdr-status-toggle-expanded` |
 | `i` | `herdr-status-toggle-details` |
