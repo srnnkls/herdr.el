@@ -828,12 +828,55 @@ An attachment of one of `herdr-pinned-agents' starts with it on."
       (add-hook 'window-scroll-functions #'herdr--pin-bottom nil t)
     (remove-hook 'window-scroll-functions #'herdr--pin-bottom t)))
 
-(defun herdr-pin-bottom (buffer agent)
-  "Turn on `herdr-pin-bottom-mode' in BUFFER when AGENT is pinned.
-See `herdr-pinned-agents'."
-  (when (and (buffer-live-p buffer) (member agent herdr-pinned-agents))
+(defcustom herdr-drawn-cursor-agents '("claude")
+  "Agents whose attachment hides the cursor they paint into the screen.
+These agents draw their cursor as an inverse cell, which covers the
+cursor Emacs draws for the buffer's state."
+  :type '(repeat string)
+  :group 'herdr)
+
+(defvar ghostel--cursor-char-pos)
+
+(defvar-local herdr--cursor-cell nil
+  "Overlay clearing the inverse cell under the terminal's cursor.")
+
+(defun herdr--hide-drawn-cursor (buffer &rest _)
+  "Clear the inverse cell under BUFFER's terminal cursor.
+Runs after each redraw of BUFFER while `herdr-hide-drawn-cursor-mode'
+is on there."
+  (when (and (buffer-live-p buffer)
+             (buffer-local-value 'herdr-hide-drawn-cursor-mode buffer))
     (with-current-buffer buffer
-      (herdr-pin-bottom-mode))))
+      (let ((pos (bound-and-true-p ghostel--cursor-char-pos)))
+        (if (and pos (< pos (point-max)))
+            (if (overlayp herdr--cursor-cell)
+                (move-overlay herdr--cursor-cell pos (1+ pos))
+              (setq herdr--cursor-cell (make-overlay pos (1+ pos) nil t))
+              (overlay-put herdr--cursor-cell 'face '(:inverse-video nil)))
+          (when (overlayp herdr--cursor-cell)
+            (delete-overlay herdr--cursor-cell)))))))
+
+(advice-add 'ghostel--redraw-now :after #'herdr--hide-drawn-cursor)
+
+(define-minor-mode herdr-hide-drawn-cursor-mode
+  "Hide the cursor this terminal's agent paints as an inverse cell.
+An attachment of one of `herdr-drawn-cursor-agents' starts with it on."
+  :lighter nil
+  (if herdr-hide-drawn-cursor-mode
+      (herdr--hide-drawn-cursor (current-buffer))
+    (when (overlayp herdr--cursor-cell)
+      (delete-overlay herdr--cursor-cell)
+      (setq herdr--cursor-cell nil))))
+
+(defun herdr--agent-modes (buffer agent)
+  "Turn on in BUFFER the modes AGENT's attachment starts with.
+See `herdr-pinned-agents' and `herdr-drawn-cursor-agents'."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (member agent herdr-pinned-agents)
+        (herdr-pin-bottom-mode))
+      (when (member agent herdr-drawn-cursor-agents)
+        (herdr-hide-drawn-cursor-mode)))))
 
 (defvar herdr-buffer-functions nil
   "Functions called with each buffer that starts showing a herdr terminal.
@@ -857,8 +900,8 @@ cannot drift apart.  `herdr-buffer-functions' then sees the buffer."
         (setq herdr-terminal-id terminal-id
               herdr-terminal-session session
               herdr-terminal-server-key server))
-      (when herdr-pinned-agents
-        (herdr-pin-bottom buffer (or agent (herdr--terminal-agent terminal-id session)))))
+      (when (or herdr-pinned-agents herdr-drawn-cursor-agents)
+        (herdr--agent-modes buffer (or agent (herdr--terminal-agent terminal-id session)))))
     (run-hook-with-args 'herdr-buffer-functions buffer)
     buffer))
 
@@ -872,8 +915,6 @@ cannot drift apart.  `herdr-buffer-functions' then sees the buffer."
                                 server-key)
                          (get-buffer-process buffer)))
                   (buffer-list)))))
-
-(defvar ghostel--cursor-char-pos)
 
 (defun herdr--free-buffer-name (label terminal-id &optional server-key directory)
   "Return a buffer name for LABEL that no other terminal answers to.

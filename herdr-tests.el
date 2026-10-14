@@ -899,6 +899,8 @@ looks for a replacement buffer runs into."
           (herdr-claim-buffer claude "term_claude")
           (herdr-claim-buffer shell "term_shell")
           (should (buffer-local-value 'herdr-pin-bottom-mode claude))
+          (should (buffer-local-value 'herdr-hide-drawn-cursor-mode claude))
+          (should-not (buffer-local-value 'herdr-hide-drawn-cursor-mode shell))
           (should (memq #'herdr--pin-bottom
                         (buffer-local-value 'window-scroll-functions claude)))
           (should-not (buffer-local-value 'herdr-pin-bottom-mode shell))
@@ -919,6 +921,23 @@ looks for a replacement buffer runs into."
         (herdr-pin-bottom-mode)
         (herdr--ultra-scroll-down scroll 10)
         (should (= clamped 1))))))
+
+(ert-deftest herdr-hide-drawn-cursor-clears-the-cell-under-the-cursor ()
+  (with-temp-buffer
+    (insert (propertize "abc" 'face '(:inverse-video t)))
+    (progn
+      (setq-local ghostel--cursor-char-pos 2)
+      (herdr--hide-drawn-cursor (current-buffer))
+      (should-not herdr--cursor-cell)
+      (herdr-hide-drawn-cursor-mode)
+      (should (equal (get-char-property 2 'face) '(:inverse-video nil)))
+      (should (equal (get-char-property 1 'face) '(:inverse-video t)))
+      (setq-local ghostel--cursor-char-pos 3)
+      (herdr--hide-drawn-cursor (current-buffer))
+      (should (equal (get-char-property 3 'face) '(:inverse-video nil)))
+      (should (equal (get-char-property 2 'face) '(:inverse-video t)))
+      (herdr-hide-drawn-cursor-mode -1)
+      (should (equal (get-char-property 3 'face) '(:inverse-video t))))))
 
 (ert-deftest herdr-terminal-buffer-needs-a-live-process ()
   (let ((buffer (get-buffer-create "*herdr: lookup*")))
