@@ -3055,7 +3055,7 @@ functions scheduled, and `refusals', how many renames herdr turns down."
         (let ((herdr-message-compose-functions
                (list (lambda (_target text _context) (push text composers) text))))
           (herdr-message--read target (herdr-message--context nil)))
-        ;; The context under the barrier quotes the region already.
+        ;; Without a composer the region stands in for the default context.
         (let ((herdr-message-compose-functions nil))
           (herdr-message--read target (herdr-message--context nil)))
         ;; Nor is it quoted without one.
@@ -3066,11 +3066,34 @@ functions scheduled, and `refusals', how many renames herdr turns down."
     (setq prompts (nreverse prompts))
     (should (equal composers '("why?")))
     (should (equal (nth 0 prompts)
-                   "why?\n\napp.py:1-2\n```\ndef f():\n    return 1\n```"))
-    (should (string-prefix-p "why?\n\n---\nEmacs context" (nth 1 prompts)))
+                   "@app.py:1-2\n```\ndef f():\n    return 1\n```\n\nwhy?"))
+    (should (equal (nth 1 prompts) (nth 0 prompts)))
     (let ((first (string-search "def f" (nth 1 prompts))))
       (should-not (string-search "def f" (nth 1 prompts) (1+ first))))
     (should (equal (nth 2 prompts) "why?"))))
+
+(ert-deftest herdr-message-selection-of-the-agents-conversation-is-a-blockquote ()
+  (let ((target '("/servers/a.sock" . "term_1"))
+        (herdr-message-conversation-functions nil))
+    (cl-letf (((symbol-function 'herdr-agent--public-target) #'identity))
+      (with-temp-buffer
+        (insert "  It fails here.   \n\n  Because x is nil.  \n")
+        (transient-mark-mode 1)
+        (set-mark (point-min))
+        (goto-char (point-max))
+        (activate-mark)
+        (should (string-prefix-p "```" (herdr-message--quote-selection nil target)))
+        (setq-local herdr-terminal-id "term_1"
+                    herdr-terminal-server-key "/servers/a.sock")
+        (should (equal (herdr-message--quote-selection nil target)
+                       "> It fails here.\n>\n> Because x is nil."))
+        (should (string-prefix-p
+                 "```" (herdr-message--quote-selection nil '("/servers/a.sock" . "term_2"))))
+        (setq-local herdr-terminal-id nil)
+        (let ((herdr-message-conversation-functions
+               (list (lambda (shown) (equal shown target)))))
+          (should (string-prefix-p "> It fails"
+                                   (herdr-message--quote-selection nil target))))))))
 
 (ert-deftest herdr-message-selection-fences-around-a-fence-it-holds ()
   (with-temp-buffer
@@ -3083,9 +3106,9 @@ functions scheduled, and `refusals', how many renames herdr turns down."
     (should (equal (herdr-message--quote-selection)
                    "````\n```\ncode\n```\n````"))
     (setq buffer-file-name "/srv/elsewhere/notes.md")
-    (should (string-prefix-p "/srv/elsewhere/notes.md:1-3\n"
+    (should (string-prefix-p "@/srv/elsewhere/notes.md:1-3\n"
                              (herdr-message--quote-selection "/tmp/project/")))
-    (should (string-prefix-p "elsewhere/notes.md:1-3\n"
+    (should (string-prefix-p "@elsewhere/notes.md:1-3\n"
                              (herdr-message--quote-selection "/srv/")))))
 
 (ert-deftest herdr-message-rejects-empty-text ()

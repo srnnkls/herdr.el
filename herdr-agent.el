@@ -2187,9 +2187,11 @@ context captured when the buffer opened; \\[herdr-message-cancel] discards it.")
 (defun herdr-message--context (entry)
   "Return message context for agent ENTRY from the current buffer.
 Providers on `herdr-send-context-functions' answer first; without one,
-only file-visiting buffers contribute their region or current line."
+only file-visiting buffers contribute their current line.  An active
+region is quoted with the message instead."
   (or (run-hook-with-args-until-success 'herdr-send-context-functions entry)
-      (and buffer-file-name (herdr-default-send-context entry))))
+      (and buffer-file-name (not (use-region-p))
+           (herdr-default-send-context entry))))
 
 (defun herdr-message--compose (text context)
   "Return TEXT followed by a barrier and CONTEXT when CONTEXT is non-nil."
@@ -2207,30 +2209,67 @@ barrier.")
 (defvar herdr-message--selection nil
   "The region the message being written is about, quoted, or nil.")
 
-(defun herdr-message--quote-selection (&optional directory)
-  "Return the active region fenced under the file it was taken from, or nil.
+(defvar herdr-message-conversation-functions nil
+  "Functions saying whether the current buffer shows an agent's conversation.
+Each is called with the agent target in the buffer a selection is taken
+from, and returns non-nil when the buffer shows that agent's own
+conversation, as a transcript view does.  The agent's terminal answers
+without one.")
+
+(defun herdr-message--conversation-p (target)
+  "Return non-nil when the current buffer shows TARGET's conversation."
+  (or (when-let* ((shown (herdr-agent-buffer-target (current-buffer))))
+        (equal (herdr-agent--public-target shown)
+               (herdr-agent--public-target target)))
+      (run-hook-with-args-until-success 'herdr-message-conversation-functions
+                                        target)))
+
+(defun herdr-agent--blockquoted (beginning end)
+  "Return the text from BEGINNING to END as a Markdown blockquote.
+The margin its lines share, as a terminal draws one, is left out."
+  (let* ((lines (split-string
+                 (string-trim
+                  (substring-no-properties (filter-buffer-substring beginning end))
+                  "[\n]+" "[ \t\n]+")
+                 "[ \t]*\n"))
+         (margin (cl-loop for line in lines
+                          unless (string-empty-p line)
+                          minimize (string-match-p "[^ ]" line))))
+    (mapconcat (lambda (line)
+                 (if (string-empty-p line)
+                     ">"
+                   (concat "> " (substring line margin))))
+               lines "\n")))
+
+(defun herdr-message--quote-selection (&optional directory target)
+  "Return the active region fenced under an @ mention of its file, or nil.
 A file under DIRECTORY, where the agent works, is named relative to it.
 Any other buffer goes unnamed: its name is how Emacs keeps it, not what
-the message is about, and the context names it where there is one."
-  (when (use-region-p)
+the message is about, and the context names it where there is one.  A
+region of TARGET's own conversation is a blockquote of what was said."
+  (cond
+   ((not (use-region-p)) nil)
+   ((and target (herdr-message--conversation-p target))
+    (herdr-agent--blockquoted (region-beginning) (region-end)))
+   (t
     (concat (if buffer-file-name
-                (concat (herdr-agent--place (region-beginning) (region-end)
-                                            directory)
+                (concat "@" (herdr-agent--place (region-beginning) (region-end)
+                                                directory)
                         "\n")
               "")
-            (herdr-agent--fenced (region-beginning) (region-end)))))
+            (herdr-agent--fenced (region-beginning) (region-end))))))
 
 (defun herdr-message--with-selection (text)
-  "Return TEXT followed by the selection the message is about, if any."
+  "Return TEXT under the selection the message is about, if any."
   (if herdr-message--selection
-      (concat text "\n\n" herdr-message--selection)
+      (concat herdr-message--selection "\n\n" text)
     text))
 
 (defun herdr-message--send (target text context)
   "Send TEXT with CONTEXT to agent TARGET and record TEXT in history.
-A region selected when the message was begun is quoted under TEXT, so
-the prompt itself says what it is about.  Where no composer answers, the
-context appended under the barrier quotes the region already."
+A region selected when the message was begun is quoted above TEXT, so
+the prompt itself says what it is about.  Where no composer answers, a
+context from `herdr-send-context-functions' is taken to quote it already."
   (let ((text (string-trim text)))
     (when (string-empty-p text)
       (user-error "Message is empty"))
@@ -2481,7 +2520,8 @@ minibuffer moves the draft to a `herdr-message-mode' buffer instead."
          (and (use-region-p)
               (herdr-message--quote-selection
                (ignore-errors
-                 (herdr-entry-directory (herdr--entry-for-target target)))))))
+                 (herdr-entry-directory (herdr--entry-for-target target)))
+               target))))
     (funcall herdr-message-read-function target context)))
 
 (defun herdr-message--session (scope last)
