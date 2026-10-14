@@ -207,6 +207,18 @@ whether the Nerd Font candidates are considered at all."
   :type '(alist :key-type symbol :value-type (repeat string))
   :group 'herdr-status)
 
+(defcustom herdr-status-context-glyphs
+  '(("\U000F0130" "○" "%") ("\U000F0A9E" "◔" "%") ("\U000F0A9F" "◔" "%")
+    ("\U000F0AA0" "◑" "%") ("\U000F0AA1" "◑" "%") ("\U000F0AA2" "◑" "%")
+    ("\U000F0AA3" "◕" "%") ("\U000F0AA4" "◕" "%") ("\U000F0AA5" "●" "%"))
+  "Glyphs leading the context field, from an empty window to a full one.
+The share an agent holds picks the step it falls in, so the glyph fills
+as the window does.  Each step lists candidates the way
+`herdr-status-field-glyphs' does, and a context whose share cannot be
+read takes the glyph that option gives the field."
+  :type '(repeat (repeat string))
+  :group 'herdr-status)
+
 (defcustom herdr-status-column-widths '((workspace . 20) (branch . 20))
   "How many columns a field may take before it is cut short, keyed by field.
 A field named here is cut to that width and carries what was cut in the
@@ -678,13 +690,18 @@ in.  An entry the function answers nil for is grouped under `none'.
        (or (cdr (assoc (match-string 2 figure) herdr-status--context-scales))
            1))))
 
+(defun herdr-status--context-share (context)
+  "Return the fraction of its window CONTEXT says is held, or nil."
+  (when-let* ((figures (split-string (or context "") "/"))
+              (held (herdr-status--context-tokens (car figures)))
+              (total (herdr-status--context-tokens (cadr figures)))
+              ((> total 0)))
+    (/ (float held) total)))
+
 (defun herdr-status--context-key (entry)
   "Return the share of its window ENTRY holds, the ones reporting none last."
-  (if-let* ((figures (split-string (or (herdr-status--context entry) "") "/"))
-            (held (herdr-status--context-tokens (car figures)))
-            (total (herdr-status--context-tokens (cadr figures)))
-            ((> total 0)))
-      (format "%03d" (round (/ (* 100.0 held) total)))
+  (if-let* ((share (herdr-status--context-share (herdr-status--context entry))))
+      (format "%03d" (round (* 100 share)))
     ""))
 
 (defcustom herdr-status-state-order '("working" "blocked" "idle" "done")
@@ -920,9 +937,17 @@ column of tofu still says something was there."
         (car (last candidates))
         "")))
 
-(defun herdr-status--field-glyph (field)
-  "Return the glyph drawn before FIELD, or the empty string."
-  (herdr-status-glyph (alist-get field herdr-status-field-glyphs)))
+(defun herdr-status-field-glyph (field &optional value)
+  "Return the glyph drawn before FIELD holding VALUE, or the empty string.
+The context field fills with the share VALUE reports; every other field
+takes the same glyph whatever it holds."
+  (herdr-status-glyph
+   (or (and (eq field 'context) herdr-status-context-glyphs
+            (when-let* ((share (herdr-status--context-share value))
+                        (last (1- (length herdr-status-context-glyphs))))
+              (nth (min last (floor (* share last)))
+                   herdr-status-context-glyphs)))
+       (alist-get field herdr-status-field-glyphs))))
 
 (defun herdr-status--cut (value width)
   "Return VALUE cut to WIDTH, carrying the whole of it when it was cut."
@@ -940,7 +965,7 @@ column of tofu still says something was there."
 A nil VALUE keeps the column's width in blanks so the rows stay aligned,
 and a zero WIDTH means no row has the field, so nothing is drawn."
   (unless (zerop width)
-    (let* ((glyph (herdr-status--field-glyph field))
+    (let* ((glyph (herdr-status-field-glyph field value))
            (face (or face 'herdr-status-meta))
            (value (and value (herdr-status--cut value width)))
            (lead (if (string-empty-p glyph)

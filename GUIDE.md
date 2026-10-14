@@ -556,6 +556,7 @@ show.
 | --- | --- |
 | the widest a field may be | `herdr-status-column-widths`, an alist of `(FIELD . COLUMNS)` |
 | the glyph leading a field | `herdr-status-field-glyphs`, candidates in order of preference |
+| the context glyph as the window fills | `herdr-status-context-glyphs`, one candidate list per step |
 | whether Nerd Font glyphs are used | `herdr-status-nerd-font` |
 | the state glyph | `herdr-status-state-glyph` and `herdr-status-state-glyphs` |
 | the harness marks | `herdr-status-harness-marks` |

@@ -2273,16 +2273,16 @@ Emacs releases the attachment first and the two go together."
   (let ((herdr-status-nerd-font t)
         (herdr-status-field-glyphs '((branch "" "⎇" "@") (directory "⌂" ""))))
     (cl-letf (((symbol-function 'char-displayable-p) (lambda (_char) t)))
-      (should (equal (herdr-status--field-glyph 'branch) "")))
+      (should (equal (herdr-status-field-glyph 'branch) "")))
     (cl-letf (((symbol-function 'char-displayable-p)
                (lambda (char) (not (memq char '(#xf126))))))
-      (should (equal (herdr-status--field-glyph 'branch) "⎇")))
+      (should (equal (herdr-status-field-glyph 'branch) "⎇")))
     (cl-letf (((symbol-function 'char-displayable-p)
                (lambda (char) (< char 128))))
-      (should (equal (herdr-status--field-glyph 'branch) "@"))
-      (should (equal (herdr-status--field-glyph 'directory) ""))
+      (should (equal (herdr-status-field-glyph 'branch) "@"))
+      (should (equal (herdr-status-field-glyph 'directory) ""))
       (should (equal (herdr-status--field-column 'directory "/tmp/x/" 7) "/tmp/x/")))
-    (should (equal (herdr-status--field-glyph 'pane) ""))
+    (should (equal (herdr-status-field-glyph 'pane) ""))
     (should (equal (herdr-status--field-column 'branch nil 4) "      "))
     (should-not (herdr-status--field-column 'branch nil 0))))
 
@@ -2333,6 +2333,21 @@ Emacs releases the attachment first and the two go together."
       (should (string-match-p "136k/200k" cells)))
     (let ((widths (herdr-status--widths (list silent) workspaces)))
       (should (zerop (herdr-status-field-width widths 'context))))))
+
+(ert-deftest herdr-status-context-glyph-fills-with-the-share-held ()
+  (let ((herdr-status-context-glyphs '(("e") ("q") ("h") ("t") ("f")))
+        (herdr-status-field-glyphs '((context "%"))))
+    (should (equal (herdr-status-field-glyph 'context "0/200k") "e"))
+    (should (equal (herdr-status-field-glyph 'context "60k/200k") "q"))
+    (should (equal (herdr-status-field-glyph 'context "100k/200k") "h"))
+    (should (equal (herdr-status-field-glyph 'context "199k/200k") "t"))
+    (should (equal (herdr-status-field-glyph 'context "200k/200k") "f"))
+    (should (equal (herdr-status-field-glyph 'context "300k/200k") "f"))
+    (should (equal (herdr-status-field-glyph 'context "lots") "%"))
+    (should (equal (herdr-status-field-glyph 'context) "%"))
+    (should (string-prefix-p
+             "h" (substring-no-properties
+                  (herdr-status--field-column 'context "100k/200k" 9))))))
 
 (ert-deftest herdr-status-sorts-agents-by-the-share-of-their-window ()
   (should (equal (herdr-status--context-key

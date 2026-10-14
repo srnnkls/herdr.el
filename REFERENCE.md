@@ -344,6 +344,7 @@ is `$XDG_CONFIG_HOME/herdr/sessions/NAME/herdr.sock`; `XDG_CONFIG_HOME` defaults
 | `herdr-status-name-width` | natnum or nil | nil | the widest a name may be; nil allows a third of the window |
 | `herdr-status-echo-cut-fields` | boolean | t | echo a cut field's whole value as point crosses it |
 | `herdr-status-field-glyphs` | alist of `(FIELD CANDIDATE...)` | Nerd Font, then Unicode, then ASCII | glyphs leading each field |
+| `herdr-status-context-glyphs` | list of candidate lists | a pie filling in eighths | the context glyph for each step from an empty window to a full one |
 | `herdr-status-nerd-font` | `auto`, t or nil | `auto` | whether Nerd Font glyphs are used; `auto` on graphical frames only |
 | `herdr-status-harness-marks` | alist of `(HARNESS GLYPHS . FACE)` | marks for `claude`, `codex`, `omp` | the vendor mark before a harness |
 | `herdr-status-state-glyph` | string or list | `"●"` | the state glyph |
