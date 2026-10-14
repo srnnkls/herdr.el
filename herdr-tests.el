@@ -898,10 +898,13 @@ looks for a replacement buffer runs into."
                    (lambda () '(((terminal_id . "term_claude") (agent . "claude"))))))
           (herdr-claim-buffer claude "term_claude")
           (herdr-claim-buffer shell "term_shell")
+          (should (buffer-local-value 'herdr-pin-bottom-mode claude))
           (should (memq #'herdr--pin-bottom
                         (buffer-local-value 'window-scroll-functions claude)))
+          (should-not (buffer-local-value 'herdr-pin-bottom-mode shell))
+          (with-current-buffer claude (herdr-pin-bottom-mode -1))
           (should-not (memq #'herdr--pin-bottom
-                            (buffer-local-value 'window-scroll-functions shell))))
+                            (buffer-local-value 'window-scroll-functions claude))))
       (kill-buffer claude)
       (kill-buffer shell))))
 

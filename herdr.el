@@ -806,12 +806,20 @@ holds nothing, and every redraw would snap an overscrolled window back."
                                     (herdr-agents))))
     (herdr-error nil)))
 
+(define-minor-mode herdr-pin-bottom-mode
+  "Keep this terminal's window from scrolling past its last row.
+An attachment of one of `herdr-pinned-agents' starts with it on."
+  :lighter nil
+  (if herdr-pin-bottom-mode
+      (add-hook 'window-scroll-functions #'herdr--pin-bottom nil t)
+    (remove-hook 'window-scroll-functions #'herdr--pin-bottom t)))
+
 (defun herdr-pin-bottom (buffer agent)
-  "Keep BUFFER from scrolling past its last row when AGENT is pinned.
+  "Turn on `herdr-pin-bottom-mode' in BUFFER when AGENT is pinned.
 See `herdr-pinned-agents'."
   (when (and (buffer-live-p buffer) (member agent herdr-pinned-agents))
     (with-current-buffer buffer
-      (add-hook 'window-scroll-functions #'herdr--pin-bottom nil t))))
+      (herdr-pin-bottom-mode))))
 
 (defvar herdr-buffer-functions nil
   "Functions called with each buffer that starts showing a herdr terminal.
