@@ -748,6 +748,45 @@ A drag past WINDOW's edge scrolls until new input arrives."
 (advice-add 'evil-goto-line :around #'herdr--evil-goto-line)
 (advice-add 'mouse-scroll-subr :around #'herdr--mouse-scroll)
 
+(defcustom herdr-pinned-agents '("claude")
+  "Agents whose attachment never scrolls past the terminal's last row.
+These agents redraw their screen as a TUI does, so the space below it
+holds nothing, and every redraw would snap an overscrolled window back."
+  :type '(repeat string)
+  :group 'herdr)
+
+(declare-function ghostel--pixel-anchor "ext:ghostel" (window target))
+(declare-function ghostel--set-window-vscroll "ext:ghostel"
+                  (window vscroll &optional pixels-p preserve-vscroll-p))
+
+(defun herdr--bottom-anchor (window)
+  "Return (START VSCROLL) placing the last row at WINDOW's bottom."
+  (if (display-graphic-p (window-frame window))
+      (ghostel--pixel-anchor window (point-max))
+    (with-selected-window window
+      (save-excursion
+        (goto-char (point-max))
+        (forward-line (- (if (bolp) 0 1) (floor (window-screen-lines))))
+        (list (point) 0)))))
+
+(defun herdr--pin-bottom (window start)
+  "Scroll WINDOW back when START shows space below the terminal's last row."
+  (with-current-buffer (window-buffer window)
+    (when-let* (((derived-mode-p 'ghostel-mode))
+                (anchor (herdr--bottom-anchor window))
+                ((or (> start (car anchor))
+                     (and (= start (car anchor))
+                          (> (window-vscroll window t) (nth 1 anchor))))))
+      (set-window-start window (car anchor) t)
+      (ghostel--set-window-vscroll window (nth 1 anchor) t t))))
+
+(defun herdr-pin-bottom (buffer agent)
+  "Keep BUFFER from scrolling past its last row when AGENT is pinned.
+See `herdr-pinned-agents'."
+  (when (and (buffer-live-p buffer) (member agent herdr-pinned-agents))
+    (with-current-buffer buffer
+      (add-hook 'window-scroll-functions #'herdr--pin-bottom nil t))))
+
 (defvar herdr-buffer-functions nil
   "Functions called with each buffer that starts showing a herdr terminal.
 Runs for plain attachments and for the buffers other integrations build

@@ -493,6 +493,7 @@ DISPLAY shows the buffer once attached."
                             (herdr-agent--route session))
         (setf (herdr-agent-session-buffer session) buffer
               (herdr-agent-session-attachment-process session) process)
+        (herdr-pin-bottom buffer (herdr-agent-session-kind session))
         (herdr-agent--watch-attachment session)
         (unless (and (buffer-live-p buffer) (process-live-p process)
                      (not (process-get process 'herdr-agent--died)))
