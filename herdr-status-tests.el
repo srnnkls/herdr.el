@@ -270,6 +270,33 @@
     (should (string-match-p "\\$1\\.20" (funcall cells (car entries))))
     (should-not (string-match-p "1\\.20" (funcall cells (cadr entries))))))
 
+(ert-deftest herdr-status-leaves-out-a-hidden-column ()
+  (let* ((entries (list '((agent . "claude") (pane_id . "%1") (cwd . "/repo")
+                          (workspace_id . "w1"))))
+         (workspaces (make-hash-table :test #'equal))
+         (cells (lambda ()
+                  (let ((widths (herdr-status--widths entries workspaces)))
+                    (string-join
+                     (delq nil (herdr-status--trailing-columns
+                                (car entries) widths
+                                (list :workspaces workspaces)))
+                     "  ")))))
+    (let ((herdr-status-hidden-columns '(workspace)))
+      (should-not (string-match-p "w1" (funcall cells)))
+      (should-not (herdr-status-field-width
+                   (herdr-status--widths entries workspaces) 'workspace)))
+    (let ((herdr-status-hidden-columns nil))
+      (should (string-match-p "w1" (funcall cells))))))
+
+(ert-deftest herdr-status-picks-the-columns-shown ()
+  (let ((herdr-status-hidden-columns '(workspace))
+        (herdr-status-columns '((pane) (workspace) (branch))))
+    (cl-letf (((symbol-function 'customize-set-variable)
+               (lambda (symbol value) (set symbol value)))
+              ((symbol-function 'herdr-status--buffers) #'ignore))
+      (herdr-status-pick-columns '(workspace branch))
+      (should (equal herdr-status-hidden-columns '(pane))))))
+
 (ert-deftest herdr-status-measures-a-column-of-its-own-width-per-row ()
   (let* ((entries (list '((agent . "claude") (pane_id . "%1") (cwd . "/repo"))))
          (workspaces (make-hash-table :test #'equal))
@@ -313,11 +340,12 @@
                            " claude")))))
 
 (ert-deftest herdr-status-rows-carry-pane-and-workspace-metadata ()
-  (herdr-status-tests--with-dashboard
-    (let ((agents (herdr-status-tests--section-text "Agents ")))
-      (should (string-match-p "%1" agents))
-      (should (string-match-p "herdr.el" agents))
-      (should (string-match-p "/tmp/proj/" agents)))))
+  (let ((herdr-status-hidden-columns nil))
+    (herdr-status-tests--with-dashboard
+      (let ((agents (herdr-status-tests--section-text "Agents ")))
+        (should (string-match-p "%1" agents))
+        (should (string-match-p "herdr.el" agents))
+        (should (string-match-p "/tmp/proj/" agents))))))
 
 (ert-deftest herdr-status-expanded-agents-show-terminal-and-adapter-fields ()
   (let ((herdr-status-show-details t))
@@ -1088,7 +1116,7 @@
   (herdr-status-tests--with-dashboard
     (herdr-status-tests--expand)
     (let ((panes (herdr-status-tests--tail "Panes ")))
-      (should (string-match-p "^ +shell .*▣ %9 +▤ herdr.el" panes))
+      (should (string-match-p "^ +shell .*▣ %9\\_>" panes))
       (should (string-match-p "^   ⏺ The rebase landed clean\\." panes))
       (should-not (string-match-p "┃" panes))
       (should-not (string-match-p "workspace_id" panes)))))
@@ -1310,9 +1338,9 @@
 (ert-deftest herdr-status-rows-name-the-server-they-run-on ()
   (herdr-status-tests--with-dashboard
     (goto-char (point-min))
-    (should (re-search-forward "^ +● api-review +✳ claude +alpha +▣ %1 +▤ herdr\\.el +/ /tmp/proj/$" nil t))
+    (should (re-search-forward "^ +● api-review +✳ claude +alpha +▣ %1 +/ /tmp/proj/$" nil t))
     (goto-char (point-min))
-    (should (re-search-forward "^ +● beta-work +✳ claude +beta +▣ %3 +▤ other +/ /tmp/other/$" nil t))))
+    (should (re-search-forward "^ +● beta-work +✳ claude +beta +▣ %3 +/ /tmp/other/$" nil t))))
 
 (ert-deftest herdr-status-omits-the-server-column-for-a-lone-server ()
   (let ((herdr--recent-session-targets nil)
@@ -1331,7 +1359,7 @@
             (herdr-status-refresh)
             (goto-char (point-min))
             (should (re-search-forward
-                     "^ +● api-review +✳ claude +▣ %1 +▤ herdr\\.el" nil t))))
+                     "^ +● api-review +✳ claude +▣ %1 +/ " nil t))))
       (kill-buffer buffer))))
 
 (ert-deftest herdr-status-visits-the-pane-at-point ()
@@ -2187,13 +2215,13 @@ Emacs releases the attachment first and the two go together."
               (herdr-status-refresh))
             (goto-char (point-min))
             (should (re-search-forward
-                     (concat "^ +● api-review .*\ueae3 %1 +\uea85 herdr\\.el "
+                     (concat "^ +● api-review .*\ueae3 %1 "
                              "+\uf126 feat/branch-column +\uea83 "
                              (regexp-quote (abbreviate-file-name repo)) "$")
                      nil t))
             (goto-char (point-min))
             (should (re-search-forward
-                     "^ +. +docs .*\ueae3 %2 +\uea85 herdr\\.el +\uea83 /tmp/proj/$"
+                     "^ +. +docs .*\ueae3 %2 +\uea83 /tmp/proj/$"
                      nil t))))
       (delete-directory root t))))
 

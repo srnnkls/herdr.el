@@ -120,6 +120,7 @@ While a message is being written:
 | `herdr-status-toggle-details` | `i` | show or hide agent metadata under expanded rows |
 | `herdr-status-toggle-grouping` | `u` | draw the agent list in groups, or as one list |
 | `herdr-status-group-by` | `U` | pick what the agent list groups by |
+| `herdr-status-pick-columns` | `c` | pick the fields the rows show |
 | `herdr-status-filter` | `f` | open the filter menu |
 | `herdr-status-add-filter` | `f x` | add any filter in `herdr-status-predicates` |
 | `herdr-status-remove-filter` | `f -` | drop one filter |
@@ -202,6 +203,7 @@ on the agent at point; elsewhere they read one.
 | `O` | `herdr-status-sort` |
 | `u` | `herdr-status-toggle-grouping` |
 | `U` | `herdr-status-group-by` |
+| `c` | `herdr-status-pick-columns` |
 | `h` | `herdr-herd-dispatch` |
 | `g` | `herdr-status-refresh` |
 | `p` | `herdr-status-toggle-project` |
@@ -337,6 +339,7 @@ is `$XDG_CONFIG_HOME/herdr/sessions/NAME/herdr.sock`; `XDG_CONFIG_HOME` defaults
 | Option | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `herdr-status-columns` | alist of `(FIELD . PLIST)` | pane, workspace, branch, model, context, directory | the fields after the harness; plist keys `:value`, `:face`, `:width` |
+| `herdr-status-hidden-columns` | list of fields | `(workspace)` | the fields of `herdr-status-columns` left out; `c` picks the shown ones |
 | `herdr-status-column-widths` | alist of `(FIELD . COLUMNS)` | `((workspace . 20) (branch . 20))` | the widest a field may be before it is cut |
 | `herdr-status-name-width` | natnum or nil | nil | the widest a name may be; nil allows a third of the window |
 | `herdr-status-echo-cut-fields` | boolean | t | echo a cut field's whole value as point crosses it |

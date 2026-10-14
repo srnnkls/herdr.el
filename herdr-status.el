@@ -1016,6 +1016,37 @@ a field added here is drawn whole without touching either."
   :type '(alist :key-type symbol :value-type plist)
   :group 'herdr-status)
 
+(defcustom herdr-status-hidden-columns '(workspace)
+  "The fields of `herdr-status-columns' the dashboard leaves out.
+The workspace label is left out by default: an agent's own workspace
+carries the agent's name, which the row already leads with.
+\[herdr-status-pick-columns] picks the fields shown."
+  :type '(repeat symbol)
+  :group 'herdr-status)
+
+(defun herdr-status--shown-columns ()
+  "Return the entries of `herdr-status-columns' the dashboard draws."
+  (seq-remove (lambda (column) (memq (car column) herdr-status-hidden-columns))
+              herdr-status-columns))
+
+(defun herdr-status-pick-columns (fields)
+  "Show FIELDS of `herdr-status-columns' and hide the rest, in every dashboard."
+  (interactive
+   (list (mapcar #'intern
+                 (completing-read-multiple
+                  "Columns: " (mapcar (lambda (column) (symbol-name (car column)))
+                                      herdr-status-columns)
+                  nil t
+                  (mapconcat (lambda (column) (symbol-name (car column)))
+                             (herdr-status--shown-columns) ",")))))
+  (customize-set-variable
+   'herdr-status-hidden-columns
+   (seq-remove (lambda (field) (memq field fields))
+               (mapcar #'car herdr-status-columns)))
+  (dolist (buffer (herdr-status--buffers))
+    (with-current-buffer buffer
+      (herdr-status--redraw t))))
+
 (defun herdr-status-column-pane (entry)
   "Return the pane ENTRY runs in."
   (alist-get 'pane_id entry))
@@ -1058,7 +1089,7 @@ row's value; every other field shares one width with the rows around it."
             field value
             (or (herdr-status-column-width field) (string-width value))
             face)))))
-   herdr-status-columns))
+   (herdr-status--shown-columns)))
 
 (defun herdr-status--harness-mark (entry)
   "Return the glyph and face marking ENTRY's harness, or nil."
@@ -1186,7 +1217,7 @@ take exactly the widest value and zero where no entry has one."
                               (lambda (entry)
                                 (herdr-status--column-value field entry context))
                               0 field)))))
-                 herdr-status-columns)))))
+                 (herdr-status--shown-columns))))))
 
 (defconst herdr-status--detail-fields
   '(server_key session terminal_id pane_id workspace_id tab_id agent
@@ -1629,6 +1660,7 @@ are bound by that package and unbound where it is not installed."
   "e" #'herdr-status-toggle-expanded
   "u" #'herdr-status-toggle-grouping
   "U" #'herdr-status-group-by
+  "c" #'herdr-status-pick-columns
   "i" #'herdr-status-toggle-details
   "g" #'herdr-status-refresh
   "p" #'herdr-status-toggle-project
@@ -2844,6 +2876,7 @@ Every suffix here is bound directly in `herdr-status-mode-map' as well."
     ("u" herdr-status-toggle-grouping
      :description (lambda () (if herdr-status--grouping "one list" "group")))
     ("U" "group unit" herdr-status-group-by)
+    ("c" "columns" herdr-status-pick-columns)
     ("i" herdr-status-toggle-details
      :description herdr-status--details-description)
     ("g" "refresh" herdr-status-refresh)]
