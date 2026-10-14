@@ -66,6 +66,18 @@ another client holds it."
   :type 'boolean
   :group 'herdr)
 
+(defcustom herdr-raw-attach nil
+  "Whether terminals attach through `bin/herdr-raw'.
+The attachment then receives the pane's own output and the history
+herdr keeps, instead of rendered frames, so the terminal buffer holds
+that history and scrolls it locally.  It also gives up and takes back
+the size as `bin/herdr-yield' does.  It needs `python3' and a herdr
+server whose control stream offers pane geometry, geometry release and
+output resume; against any other server the attachment runs
+`herdr-executable' as before."
+  :type 'boolean
+  :group 'herdr)
+
 (defcustom herdr-buffer-name-function #'herdr-default-buffer-name
   "Function naming the Emacs buffer of an attached terminal.
 Called with the terminal's label and the directory it works in, which
@@ -236,12 +248,47 @@ or `detection'.  LINES limits how many lines are returned."
                        (list "no terminal backend: install ghostel, vterm or eat"))))
     herdr-terminal-backend))
 
+(defun herdr--raw-program ()
+  "Return the path of `bin/herdr-raw' when it can run, or nil."
+  (when-let* ((library (locate-library "herdr"))
+              (script (expand-file-name "bin/herdr-raw" (file-name-directory library)))
+              ((file-executable-p script)))
+    script))
+
+(defconst herdr--raw-features '("pane_geometry" "geometry_release" "output_resume")
+  "Control stream features `bin/herdr-raw' needs from the server.")
+
+(defun herdr--raw-supported-p (session)
+  "Return non-nil when SESSION's server offers what `bin/herdr-raw' needs."
+  (condition-case nil
+      (herdr-with-session session
+        (let ((features (alist-get 'control_features
+                                   (alist-get 'capabilities (herdr-api-ping)))))
+          (seq-every-p (lambda (feature) (member feature features))
+                       herdr--raw-features)))
+    (herdr-error nil)))
+
+(defun herdr--raw-environment ()
+  "Return the environment entries `bin/herdr-raw' runs herdr by.
+It runs the herdr `bin/herdr-yield' stands in for, and falls back to
+`herdr-executable' itself."
+  (list (concat "HERDR_RAW_HERDR="
+                (if (equal (file-name-nondirectory herdr-executable) "herdr-yield")
+                    (or (getenv "HERDR_YIELD_HERDR") "herdr")
+                  herdr-executable))
+        (concat "HERDR_RAW_FALLBACK=" herdr-executable)))
+
 (defun herdr-attach-command (terminal-id &optional takeover session)
   "Return the command attaching TERMINAL-ID with TAKEOVER on SESSION.
-SESSION defaults to `herdr-session'."
-  `(,herdr-executable "--session" ,(or (herdr-session-name session) "default")
-                      "terminal" "attach" ,terminal-id
-                      ,@(when takeover '("--takeover"))))
+SESSION defaults to `herdr-session'.  With `herdr-raw-attach' the
+command runs `bin/herdr-raw' when the server supports it."
+  (let ((program (or (and herdr-raw-attach
+                          (herdr--raw-supported-p session)
+                          (herdr--raw-program))
+                     herdr-executable)))
+    `(,program "--session" ,(or (herdr-session-name session) "default")
+               "terminal" "attach" ,terminal-id
+               ,@(when takeover '("--takeover")))))
 
 (defun herdr--terminal-exec (buffer program args)
   "Run PROGRAM with ARGS inside BUFFER and return the buffer used."
@@ -406,6 +453,11 @@ fallback."
 One of `shown', `hidden' and `unknown'; nil for any other attachment.")
 (put 'herdr--yield 'permanent-local t)
 
+(defvar-local herdr--raw nil
+  "Non-nil when this attachment runs through `bin/herdr-raw'.
+Its buffer then holds the terminal's history itself.")
+(put 'herdr--raw 'permanent-local t)
+
 (defvar-local herdr-terminal-id nil
   "Id of the herdr terminal this buffer shows.")
 (put 'herdr-terminal-id 'permanent-local t)
@@ -524,7 +576,9 @@ focus-in still goes through."
 An attachment's buffer holds only its terminal's screen; what scrolled
 off it stays with herdr, which the wheel reaches while keys go to the
 terminal.  Non-nil sends the wheel, the scroll commands, line motion and
-a mouse drag past the buffer's edge there in `ghostel-emacs-mode' too."
+a mouse drag past the buffer's edge there in `ghostel-emacs-mode' too.
+An attachment through `herdr-raw-attach' holds the history itself and
+scrolls it as any buffer does."
   :type 'boolean
   :group 'herdr)
 
@@ -542,6 +596,7 @@ Set it to herdr's `mouse_scroll_lines'."
   "Return non-nil when scrolling this buffer scrolls herdr's history."
   (and herdr-scroll-read-only
        herdr-terminal-id
+       (not herdr--raw)
        (derived-mode-p 'ghostel-mode)
        (eq (bound-and-true-p ghostel--input-mode) 'emacs)
        (bound-and-true-p ghostel--term)))
@@ -785,10 +840,15 @@ the buffer when non-nil.  Returns the buffer."
             (message "herdr: %s works in %s, which is gone"
                      (or label terminal-id)
                      (abbreviate-file-name directory)))))
-      (setq buffer (herdr--terminal-exec buffer (car command) (cdr command)))
+      (let ((process-environment
+             (if (string-suffix-p "herdr-raw" (car command))
+                 (append (herdr--raw-environment) process-environment)
+               process-environment)))
+        (setq buffer (herdr--terminal-exec buffer (car command) (cdr command))))
       (with-current-buffer buffer
         (setq herdr--buffer-name (buffer-name))
-        (when (string-suffix-p "herdr-yield" (car command))
+        (setq herdr--raw (string-suffix-p "herdr-raw" (car command)))
+        (when (string-match-p "herdr-\\(?:yield\\|raw\\)\\'" (car command))
           (setq herdr--yield 'unknown)))
       (herdr-claim-buffer buffer terminal-id session)
       (when display (herdr-display-buffer buffer))

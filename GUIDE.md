@@ -179,6 +179,15 @@ otherwise the tab takes the size of a client looking at it, and showing the buff
 it takes the size back. It needs `python3`, and runs every command other than the attach through
 `herdr` unchanged.
 
+Setting `herdr-raw-attach` attaches through `bin/herdr-raw` instead, when the server's control
+stream offers pane geometry, geometry release and output resume. The attachment then receives the
+pane's own output rather than rendered frames: the buffer starts with the history herdr keeps, up
+to 8 MiB, and holds what arrives after it, so Emacs scrolls, searches and copies it like any
+buffer and `herdr-scroll-read-only` leaves it alone. It gives up and takes back the size as
+`bin/herdr-yield` does, keeps one connection while hidden, and after a dropped connection resumes
+with only the output it missed when the server still holds it. Against any other server the
+attachment runs `herdr-executable` as before. It also needs `python3`.
+
 ### When an attachment fails
 
 With Ghostel, an attachment that ends with an error from the herdr CLI raises an Emacs warning

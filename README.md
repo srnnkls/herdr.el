@@ -156,6 +156,7 @@ Where the code lives:
 - `herdr-status.el`: the dashboard.
 - `herdr-herd.el` and `bin/herdr-herd`: herds.
 - `bin/herdr-yield`: a `herdr` that lets an idle attachment give up the terminal's size.
+- `bin/herdr-raw`: an attachment over herdr's raw control stream, holding the pane's history.
 - `herdr-transient.el`: the `herdr-transient` menu.
 
 ## License

@@ -1,0 +1,293 @@
+#!/usr/bin/env python3
+# herdr-raw — `herdr terminal attach' over herdr's raw control stream.
+#
+# The attach receives the pane's own output and history instead of
+# rendered frames, so the terminal buffer holds the scrollback herdr
+# keeps and scrolls it locally.  It needs a server whose control stream
+# advertises pane_geometry, geometry_release and output_resume; against
+# any other server it runs HERDR_RAW_FALLBACK (default: herdr) with the
+# same arguments.
+#
+# Like herdr-yield, the attach owns the pane's size until its input
+# carries `ESC _ herdr-yield;hide ESC \', and takes it back on
+# `ESC _ herdr-yield;show ESC \' or a key; a lost stream reconnects for
+# up to HERDR_YIELD_RECONNECT seconds (30), resuming the output it missed
+# when the server still holds it, to the terminal named by the last
+# `ESC _ herdr-yield;target;TERMINAL ESC \'.
+#
+# HERDR_RAW_HERDR names the herdr it runs (default: herdr), and
+# HERDR_RAW_HISTORY_BYTES the history an attach replays (default: 8 MiB,
+# the server's maximum).  Every command other than the attach is herdr's
+# own.
+import base64, fcntl, json, os, re, select, signal, struct, subprocess, sys, termios, time, tty
+
+herdr = os.environ.get("HERDR_RAW_HERDR", "herdr")
+args = sys.argv[1:]
+at = next((i for i, a in enumerate(args[:-1]) if a == "terminal" and args[i + 1] == "attach"), None)
+if at is None:
+    os.execvp(herdr, [herdr, *args])
+
+global_args, rest = args[:at], args[at + 2:]
+takeover = "--takeover" in rest
+target = next(a for a in rest if not a.startswith("--"))
+HISTORY = int(os.environ.get("HERDR_RAW_HISTORY_BYTES", str(8 << 20)))
+REQUIRED = {"pane_geometry", "geometry_release", "output_resume"}
+CONTROL_ENV = {**os.environ, "HERDR_CONTROL_PROTOCOL": "3",
+               "HERDR_CONTROL_CLIENT": "herdr.el/raw"}
+
+
+def supported():
+    """Whether the server's control stream offers what this attach needs."""
+    try:
+        probe = subprocess.Popen([herdr, *global_args, "control"], stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                 env=CONTROL_ENV)
+    except OSError:
+        return False
+    line = probe.stdout.readline() if select.select([probe.stdout], [], [], 5)[0] else b""
+    probe.kill()
+    probe.wait()
+    try:
+        features = json.loads(line)["result"]["capabilities"]["control_features"]
+    except (ValueError, KeyError, TypeError):
+        return False
+    return REQUIRED <= set(features)
+
+
+if not supported():
+    fallback = os.environ.get("HERDR_RAW_FALLBACK", herdr)
+    os.execvp(fallback, [fallback, *args])
+RECONNECT = float(os.environ.get("HERDR_YIELD_RECONNECT", "30"))
+VISIBILITY = re.compile(rb"\x1b_herdr-yield;(show|hide)\x1b\\")
+TARGET = re.compile(rb"\x1b_herdr-yield;target;([^\x1b]+)\x1b\\")
+# What the local emulator answers on its own: focus changes, cursor and
+# mode reports, OSC and DCS replies.
+REPORTS = re.compile(
+    rb"\x1b\[[IO]|\x1b\[\d+;\d+R|\x1b\[[?>][\d;]*\$?[a-zA-Z]"
+    rb"|\x1b[]P_][^\x07\x1b]*(?:\x07|\x1b\\)")
+
+tty_in = sys.stdin.fileno()
+out = sys.stdout.buffer
+wake_r, wake_w = os.pipe()
+os.set_blocking(wake_w, False)
+signal.set_wakeup_fd(wake_w)
+signal.signal(signal.SIGWINCH, lambda *_: None)
+
+
+def finish(line, status=0):
+    sys.stderr.write(line + "\n")
+    sys.exit(status)
+
+
+def replay(snapshot):
+    """Bytes that rebuild the local screen and scrollback from a snapshot."""
+    parts = ["\x18\x1b[?2026h\x1b[?1049l\x1b[0m\x1b[?25l",
+             "\x1b[r\x1b[?69l\x1b[?6l\x1b[?7h\x1b[4l\x1b(B\x0f",
+             "\x1b[3J\x1b[2J\x1b[H", snapshot.get("primary") or ""]
+    if snapshot["active_screen"] == "alternate":
+        parts += ["\x1b[?1049h\x1b[2J\x1b[H", snapshot.get("alternate") or ""]
+    state = snapshot["state_ansi"]
+    cursor = snapshot["cursor"]
+    row, col = cursor["y"] + 1, cursor["x"] + 1
+    if "\x1b[?6h" in state:
+        tops = re.findall(r"\x1b\[(\d+);\d+r", state)
+        if tops:
+            row = max(1, row - int(tops[-1]) + 1)
+    parts += [state, f"\x1b[{row};{col}H"]
+    if cursor.get("pending_wrap") and cursor.get("pending_wrap_cell"):
+        parts += ["\x1b[0m", cursor["pending_wrap_cell"], "\x1b[0m", snapshot.get("pen_ansi", "")]
+    parts.append("\x1b[?2026l")
+    return "".join(parts).encode()
+
+
+# The output position the local screen reflects, for resuming.
+point = None
+
+
+class Stream:
+    def __init__(self, mode, quiet=False):
+        self.mode, self.lines, self.next_id = mode, b"", 0
+        self.attach = self.pane = self.tab = None
+        self.features = set()
+        self.proc = subprocess.Popen(
+            [herdr, *global_args, "control"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL if quiet else None, env=CONTROL_ENV)
+        # Size the pane before attaching: a resize after the snapshot would
+        # start a new output epoch and void its resume point.
+        self.request("pane.list", {}, "panes")
+
+    def attach_terminal(self):
+        params = {"target": target, "answer_queries": "client",
+                  "history_limit_bytes": HISTORY, "takeover": takeover and self.mode == "control"}
+        if point:
+            params["resume"] = point
+        self.request("terminal.attach", params, "attach")
+
+    def request(self, method, params, tag=None):
+        self.next_id += 1
+        try:
+            self.proc.stdin.write((json.dumps(
+                {"id": f"{tag or 'r'}:{self.next_id}", "method": method, "params": params})
+                + "\n").encode())
+            self.proc.stdin.flush()
+        except OSError:
+            pass
+
+    def claim(self):
+        if self.mode != "control" or not self.tab:
+            return
+        rows, cols, width, height = struct.unpack(
+            "HHHH", fcntl.ioctl(tty_in, termios.TIOCGWINSZ, b"\0" * 8))
+        size = {"cols": cols, "rows": rows,
+                "cell_width_px": width // cols if width and cols else 8,
+                "cell_height_px": height // rows if height and rows else 16}
+        self.request("tab.set_pane_geometry", {
+            "tab_id": self.tab, **size, "chrome": "none", "panes": {self.pane: size}}, "geometry")
+
+    def show(self, mode):
+        """Switch between owning the pane's size and leaving it; False
+        when the server cannot release without closing the stream."""
+        if "geometry_release" not in self.features:
+            return False
+        self.mode = mode
+        if mode == "control":
+            self.claim()
+        elif self.attach:
+            self.request("tab.release_geometry", {"attach_id": self.attach}, "release")
+        return True
+
+    def input(self, data, auto=False):
+        if self.attach and data:
+            params = {"attach_id": self.attach, "bytes": base64.b64encode(data).decode()}
+            if auto:
+                params["auto"] = True
+            self.request("terminal.input", params)
+
+    def close(self):
+        if self.attach:
+            self.request("terminal.detach", {"attach_id": self.attach})
+        self.proc.kill()
+        self.proc.wait()
+
+    def handle(self, record):
+        global point
+        rid = record.get("id", "")
+        kind = record.get("type")
+        if rid == "control" and "result" in record:
+            self.features = set(record["result"]["capabilities"].get("control_features", []))
+        elif "error" in record:
+            if rid.startswith("attach"):
+                finish(f"server shut down: terminal attach failed: {record['error']['message']}", 1)
+            sys.stderr.write(f"herdr-raw: {record['error']['message']}\n")
+        elif rid.startswith("panes"):
+            for pane in record["result"]["panes"]:
+                if target in (pane["pane_id"], pane["terminal_id"]):
+                    self.pane, self.tab = pane["pane_id"], pane["tab_id"]
+                    self.claim()
+            self.attach_terminal()
+        elif rid.startswith("attach"):
+            self.attach = record["result"]["attach_id"]
+            if not self.tab:
+                self.pane = record["result"]["pane_id"]
+                self.request("pane.get", {"pane_id": self.pane}, "pane")
+        elif rid.startswith("pane"):
+            self.tab = record["result"]["pane"]["tab_id"]
+            self.claim()
+        elif kind == "terminal.snapshot":
+            out.write(replay(record["snapshot"]))
+            point = record["snapshot"].get("resume")
+        elif kind == "terminal.resumed":
+            point = record["resume"]
+        elif kind == "terminal.output":
+            data = base64.b64decode(record["bytes"])
+            out.write(data)
+            if point and record.get("offset") is not None:
+                point = {"epoch": point["epoch"], "offset": record["offset"] + len(data)}
+        elif kind == "terminal.gap":
+            params = {"attach_id": self.attach}
+            if point:
+                params["resume"] = point
+            self.request("terminal.snapshot", params)
+        elif kind == "terminal.detached" and record.get("attach_id") == self.attach:
+            if record["reason"] == "takeover":
+                finish("server shut down: terminal attach taken over")
+            finish(f"server shut down: terminal {target} exited")
+
+
+saved = termios.tcgetattr(tty_in)
+tty.setraw(tty_in)
+mode = "control"
+stream = Stream(mode)
+pending = b""
+reconnect_by = None
+try:
+    while True:
+        if reconnect_by and stream is None:
+            if time.monotonic() > reconnect_by:
+                finish(f"herdr-raw: lost the stream of {target}", 1)
+            stream = Stream(mode, quiet=True)
+        fds = [tty_in, wake_r] + ([stream.proc.stdout] if stream else [])
+        ready, _, _ = select.select(fds, [], [], 0.25 if reconnect_by else None)
+        if wake_r in ready:
+            os.read(wake_r, 512)
+            if stream:
+                stream.claim()
+        if tty_in in ready:
+            data = pending + os.read(tty_in, 65536)
+            pending, keys, i = b"", bytearray(), 0
+            while i < len(data):
+                if data[i] != 2:
+                    keys.append(data[i])
+                elif i + 1 == len(data):
+                    pending = b"\x02"
+                elif data[i + 1] == ord("q"):
+                    finish(f"detached from {target}")
+                else:
+                    keys.append(data[i + 1])
+                    i += 1
+                i += 1
+            keys = bytes(keys)
+            targets = TARGET.findall(keys)
+            keys = TARGET.sub(b"", keys)
+            if targets:
+                target = targets[-1].decode()
+                if reconnect_by and stream:
+                    stream.close()
+                    stream = None
+            wanted = VISIBILITY.findall(keys)
+            keys = VISIBILITY.sub(b"", keys)
+            wanted = wanted[-1] if wanted else None
+            reports = b"".join(REPORTS.findall(keys))
+            typed = REPORTS.sub(b"", keys)
+            if mode == "observe" and typed:
+                wanted = b"show"
+            if wanted:
+                new = "control" if wanted == b"show" else "observe"
+                if new != mode:
+                    mode = new
+                    if stream and not reconnect_by and not stream.show(mode):
+                        stream.close()
+                        stream = Stream(mode)
+            if stream and not reconnect_by:
+                stream.input(reports, auto=True)
+                stream.input(typed)
+        if stream and stream.proc.stdout in ready:
+            chunk = os.read(stream.proc.stdout.fileno(), 1 << 20)
+            if not chunk:
+                stream.proc.wait()
+                stream = None
+                if not reconnect_by:
+                    reconnect_by = time.monotonic() + RECONNECT
+                continue
+            *records, stream.lines = (stream.lines + chunk).split(b"\n")
+            for record in map(json.loads, filter(None, records)):
+                if record.get("type") in ("terminal.snapshot", "terminal.resumed"):
+                    reconnect_by = None
+                stream.handle(record)
+            out.flush()
+finally:
+    out.write(b"\x1b[?1049l\x1b[0m\x1b[?25h")
+    out.flush()
+    termios.tcsetattr(tty_in, termios.TCSADRAIN, saved)
+    if stream:
+        stream.proc.kill()
