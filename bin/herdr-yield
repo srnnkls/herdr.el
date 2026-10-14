@@ -37,9 +37,10 @@ global_args, rest = args[:at], args[at + 2:]
 takeover = "--takeover" in rest
 target = next(a for a in rest if not a.startswith("--"))
 # The modes `herdr terminal attach` sets, so the wheel reaches the
-# scrollback herdr keeps as it does there.
-MODES_ON = b"\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h"
-MODES_OFF = b"\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?1049l"
+# scrollback herdr keeps as it does there, and a paste arrives bracketed:
+# an agent reading an unbracketed paste in waves splits it into several.
+MODES_ON = b"\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?2004h"
+MODES_OFF = b"\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?1049l"
 MOUSE = re.compile(rb"\x1b\[<(\d+);(\d+);(\d+)([Mm])")
 VISIBILITY = re.compile(rb"\x1b_herdr-yield;(show|hide)\x1b\\")
 TARGET = re.compile(rb"\x1b_herdr-yield;target;([^\x1b]+)\x1b\\")
