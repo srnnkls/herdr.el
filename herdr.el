@@ -258,24 +258,41 @@ or `detection'.  LINES limits how many lines are returned."
 (defconst herdr--raw-features '("pane_geometry" "geometry_release" "output_resume")
   "Control stream features `bin/herdr-raw' needs from the server.")
 
+(defun herdr--raw-herdr ()
+  "Return the herdr `bin/herdr-raw' runs.
+It is the herdr `bin/herdr-yield' stands in for, or `herdr-executable'."
+  (if (equal (file-name-nondirectory herdr-executable) "herdr-yield")
+      (or (getenv "HERDR_YIELD_HERDR") "herdr")
+    herdr-executable))
+
+(defun herdr--raw-client-p (program)
+  "Return non-nil when PROGRAM has the `control' command `bin/herdr-raw' runs.
+A herdr without it prints its general usage for `control --help'."
+  (with-temp-buffer
+    (and (ignore-errors
+           (let ((default-directory temporary-file-directory))
+             (eql 0 (call-process program nil t nil "control" "--help"))))
+         (progn (goto-char (point-min))
+                (search-forward "Usage: herdr control" nil t)))))
+
 (defun herdr--raw-supported-p (session)
-  "Return non-nil when SESSION's server offers what `bin/herdr-raw' needs."
-  (condition-case nil
-      (herdr-with-session session
-        (let ((features (alist-get 'control_features
-                                   (alist-get 'capabilities (herdr-api-ping)))))
-          (seq-every-p (lambda (feature) (member feature features))
-                       herdr--raw-features)))
-    (herdr-error nil)))
+  "Return non-nil when `bin/herdr-raw' can attach on SESSION.
+SESSION's server offers the control features it needs, and the herdr
+it runs has the `control' command to reach them; it falls back to
+`herdr-executable' otherwise."
+  (and (condition-case nil
+           (herdr-with-session session
+             (let ((features (alist-get 'control_features
+                                        (alist-get 'capabilities (herdr-api-ping)))))
+               (seq-every-p (lambda (feature) (member feature features))
+                            herdr--raw-features)))
+         (herdr-error nil))
+       (herdr--raw-client-p (herdr--raw-herdr))))
 
 (defun herdr--raw-environment ()
   "Return the environment entries `bin/herdr-raw' runs herdr by.
-It runs the herdr `bin/herdr-yield' stands in for, and falls back to
-`herdr-executable' itself."
-  (list (concat "HERDR_RAW_HERDR="
-                (if (equal (file-name-nondirectory herdr-executable) "herdr-yield")
-                    (or (getenv "HERDR_YIELD_HERDR") "herdr")
-                  herdr-executable))
+It runs `herdr--raw-herdr', and falls back to `herdr-executable'."
+  (list (concat "HERDR_RAW_HERDR=" (herdr--raw-herdr))
         (concat "HERDR_RAW_FALLBACK=" herdr-executable)))
 
 (defun herdr-attach-command (terminal-id &optional takeover session)
