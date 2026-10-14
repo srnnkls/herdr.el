@@ -562,10 +562,11 @@ show.
 | the harness marks | `herdr-status-harness-marks` |
 | whether a cut value is echoed | `herdr-status-echo-cut-fields` |
 
-A glyph setting lists candidates, and the first one the display can draw wins, so a frame without
-a Nerd Font falls back to Unicode shapes and a terminal to ASCII. An empty candidate draws the
-field without a glyph. On a graphical frame without a patched font, set `herdr-status-nerd-font`
-to nil to avoid boxes.
+A glyph setting lists candidates, and the first one the display can draw wins, so a terminal
+without the Unicode shapes falls back to ASCII. An empty candidate draws the field without a
+glyph. The dashboard draws Unicode shapes out of the box; with a Nerd Font installed, set
+`herdr-status-nerd-font` to `auto` for its glyphs, and give `herdr-status-nerd-glyph` a `:height`
+below 1.0 where they sit larger than the text.
 
 ## Herds
 
@@ -767,7 +768,7 @@ the commands do not cover.
   `herdr-report-focus-loss` nil.
 - An attachment closed with a warning: read `*herdr-errors*` for the CLI's reason and the output
   that preceded it.
-- Boxes appear instead of glyphs in the dashboard: set `herdr-status-nerd-font` to nil, or
+- Boxes appear instead of glyphs in the dashboard: set `herdr-status-nerd-font` back to nil, or
   install a Nerd Font.
 - A message arrived glued to text already in the agent's prompt: Emacs only preserves a draft for
   a terminal it has attached. Attach the agent, or clear its prompt first.

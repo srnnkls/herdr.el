@@ -2225,6 +2225,11 @@ Emacs releases the attachment first and the two go together."
                      nil t))))
       (delete-directory root t))))
 
+(ert-deftest herdr-status-draws-unicode-glyphs-at-text-size-out-of-the-box ()
+  (should-not (eval (car (get 'herdr-status-nerd-font 'standard-value)) t))
+  (should-not (plist-get (cdr (car (face-default-spec 'herdr-status-nerd-glyph)))
+                         :height)))
+
 (ert-deftest herdr-status-takes-the-nerd-font-glyphs-down-to-the-text ()
   (let ((herdr-status-nerd-font t))
     (let ((column (herdr-status--harness-column '((agent . "claude")) 6)))

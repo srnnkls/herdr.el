@@ -131,21 +131,22 @@ reads as brown beside the other states, so the colour is its own."
   :group 'herdr-status)
 
 (defface herdr-status-nerd-glyph
-  '((t :height 0.75))
+  '((t))
   "Face lending every Nerd Font glyph its size, over its own colour.
-The patched glyphs are drawn larger than the text around them, so they
-are taken down to sit with it.  A line is as tall as the tallest glyph
-on it, and nothing shrinks it again, so a glyph scaled past 1.0 spreads
-the whole list."
+A patched glyph may be drawn larger than the text around it; a :height
+below 1.0 takes it down to sit with the text.  A line is as tall as the
+tallest glyph on it, and nothing shrinks it again, so a glyph scaled
+past 1.0 spreads the whole list."
   :group 'herdr-status)
 
-(defcustom herdr-status-nerd-font 'auto
+(defcustom herdr-status-nerd-font nil
   "Whether a glyph may be drawn from a Nerd Font.
-`auto' draws one on a graphical frame and leaves a terminal the Unicode
-shape behind it.  Emacs answers that a Private Use Area character is
-displayable whether or not a font holds it, so a graphical frame without
-a patched font draws tofu until this is set to nil.  Non-nil asks for
-the glyph on any display, and nil never draws one."
+nil, the default, draws only the Unicode shapes, which need no patched
+font.  `auto' draws a Nerd Font glyph on a graphical frame and leaves a
+terminal the Unicode shape behind it; set it only with a patched font
+installed, since Emacs answers that a Private Use Area character is
+displayable whether or not a font holds it, and a frame without one
+draws tofu.  t asks for the glyph on any display."
   :type '(choice (const :tag "Where a font covers it" auto)
                  (const :tag "Always" t)
                  (const :tag "Never" nil))
