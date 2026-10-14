@@ -15,6 +15,7 @@
 # HERDR_YIELD_RECONNECT seconds (30), to the terminal named by the last
 # `ESC _ herdr-yield;target;TERMINAL ESC \' it read, which herdr.el
 # writes once it knows the new number.
+
 #
 #   (setq herdr-executable "herdr-yield")
 
@@ -28,7 +29,7 @@ case " $* " in
 esac
 
 exec python3 -c '
-import base64, json, os, re, select, signal, subprocess, sys, termios, time, tty
+import base64, json, os, re, select, signal, subprocess, sys, termios, time, tomllib, tty
 
 herdr = sys.argv[1]
 args = sys.argv[2:]
@@ -45,6 +46,21 @@ MOUSE = re.compile(rb"\x1b\[<(\d+);(\d+);(\d+)([Mm])")
 VISIBILITY = re.compile(rb"\x1b_herdr-yield;(show|hide)\x1b\\")
 TARGET = re.compile(rb"\x1b_herdr-yield;target;([^\x1b]+)\x1b\\")
 RECONNECT = float(os.environ.get("HERDR_YIELD_RECONNECT", "30"))
+
+
+def wheel_lines():
+    path = os.environ.get("HERDR_CONFIG_PATH") or os.path.join(
+        os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+        "herdr", "config.toml")
+    try:
+        with open(path, "rb") as config:
+            lines = tomllib.load(config).get("ui", {}).get("mouse_scroll_lines", 3)
+    except (OSError, tomllib.TOMLDecodeError):
+        return 3
+    return max(1, int(lines))
+
+
+WHEEL_LINES = wheel_lines()
 # What the outer terminal answers on its own - focus changes, cursor and
 # mode reports, OSC and DCS replies - to the modes a replayed frame sets.
 REPORTS = re.compile(
@@ -94,7 +110,7 @@ def close(stream):
 def mouse(match):
     code, column, row = (int(n) for n in match.groups()[:3])
     if code & 64:
-        return {"type": "terminal.scroll", "lines": 3,
+        return {"type": "terminal.scroll", "lines": WHEEL_LINES,
                 "direction": "down" if code & 1 else "up"}
     button = ("left", "middle", "right", None)[code & 3]
     action = ("drag" if button else "move") if code & 32 else (

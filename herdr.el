@@ -532,8 +532,11 @@ a mouse drag past the buffer's edge there in `ghostel-emacs-mode' too."
 (defvar ghostel--input-mode)
 (defvar mouse-scroll-delay)
 
-(defconst herdr--wheel-lines 3
-  "Lines herdr scrolls a terminal for one wheel step.")
+(defcustom herdr-wheel-lines 3
+  "Lines herdr scrolls a terminal for one wheel step.
+Set it to herdr's `mouse_scroll_lines'."
+  :type 'natnum
+  :group 'herdr)
 
 (defun herdr--scroll-history-p ()
   "Return non-nil when scrolling this buffer scrolls herdr's history."
@@ -548,7 +551,7 @@ a mouse drag past the buffer's edge there in `ghostel-emacs-mode' too."
 Negative LINES scroll forward, toward the live screen.  Returns non-nil
 when the terminal took the wheel steps doing so."
   (let ((sent nil))
-    (dotimes (_ (ceiling (abs lines) herdr--wheel-lines) sent)
+    (dotimes (_ (ceiling (abs lines) herdr-wheel-lines) sent)
       (when (ghostel--mouse-event ghostel--term 0 (if (> lines 0) 4 5) 0 0 0)
         (setq sent t)))))
 
@@ -565,7 +568,7 @@ Ghostel forwards the wheel only while keys reach the terminal."
   (or (funcall function event button)
       (and (herdr--scroll-history-p)
            (herdr--scroll-history
-            (if (eq button 4) herdr--wheel-lines (- herdr--wheel-lines))))))
+            (if (eq button 4) herdr-wheel-lines (- herdr-wheel-lines))))))
 
 (defun herdr--scroll-up (function &optional arg)
   "Call FUNCTION with ARG, or scroll herdr's history forward instead."
