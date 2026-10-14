@@ -297,6 +297,92 @@
       (herdr-status-pick-columns '(workspace branch))
       (should (equal herdr-status-hidden-columns '(pane))))))
 
+(defmacro herdr-status-tests--choosing (&rest body)
+  "Run BODY with `herdr-status-choose' handing its arguments to `chose'."
+  (declare (indent 0) (debug (body)))
+  `(let (chose)
+     (cl-letf (((symbol-function 'herdr-status-choose)
+                (lambda (groups pending commit &rest options)
+                  (setq chose (list :groups groups :pending pending
+                                    :commit commit :options options)))))
+       ,@body)))
+
+(ert-deftest herdr-status-keys-each-choice-by-a-free-letter ()
+  (should (equal (herdr-status--choice-keys '(pane path "pin" model mode))
+                 '("p" "a" "i" "m" "o"))))
+
+(ert-deftest herdr-status-holds-a-choice-until-it-is-applied ()
+  (let* ((committed nil)
+         (choices (herdr-status--choices-make
+                   :groups `(("Fields" a b (c . ,(lambda (_ _) '("x" "y")))))
+                   :pending (list (cons 'b t))
+                   :commit (lambda (chosen) (setq committed chosen)))))
+    (cl-letf (((symbol-function 'herdr-status--choices) (lambda () choices)))
+      (herdr-status--choice-toggle 'a)
+      (herdr-status--choice-toggle (cons 'c (lambda (_ _) '("x" "y"))))
+      (herdr-status--choice-toggle 'b)
+      (should-not committed)
+      (should (string-match-p
+               "^2 c x,y$"
+               (substring-no-properties
+                (herdr-status--choice-description
+                 (cons 'c #'ignore) t))))
+      (herdr-status-choice-apply)
+      (should (equal committed '((a . t) (c "x" "y")))))))
+
+(ert-deftest herdr-status-picks-the-columns-shown-from-the-menu ()
+  (let ((herdr-status-hidden-columns '(workspace))
+        (herdr-status-columns '((pane) (workspace) (branch))))
+    (cl-letf (((symbol-function 'customize-set-variable)
+               (lambda (symbol value) (set symbol value)))
+              ((symbol-function 'herdr-status--buffers) #'ignore))
+      (herdr-status-tests--choosing
+        (herdr-status-columns-menu)
+        (should (equal (plist-get chose :pending) '((pane . t) (branch . t))))
+        (funcall (plist-get chose :commit) '((workspace . t)))
+        (should (equal herdr-status-hidden-columns '(pane branch)))))))
+
+(ert-deftest herdr-status-orders-the-agents-by-several-columns ()
+  (let ((herdr-status-sorts
+         '(("first" . (lambda (entry) (alist-get 'first entry)))
+           ("second" . (lambda (entry) (alist-get 'second entry)))))
+        (entries '(((first . "b") (second . "1"))
+                   ((first . "a") (second . "2"))
+                   ((first . "a") (second . "1")))))
+    (with-temp-buffer
+      (setq-local herdr-status--sort '(("first" "second")))
+      (should (equal (herdr-status--sorted entries)
+                     '(((first . "a") (second . "1"))
+                       ((first . "a") (second . "2"))
+                       ((first . "b") (second . "1"))))))))
+
+(ert-deftest herdr-status-sorts-by-the-columns-chosen-in-order ()
+  (herdr-status-tests--with-dashboard
+    (herdr-status-tests--choosing
+      (herdr-status-sort)
+      (should (plist-get (plist-get chose :options) :ordered))
+      (funcall (plist-get chose :commit) '(("name" . t) (reverse . t))))
+    (should (equal herdr-status--sort '(("name") . t)))
+    (should (equal (mapcar #'herdr--entry-label (herdr-status-visible-agents))
+                   '("docs" "beta-work" "api-review")))
+    (should (string-match-p "· by name ↑"
+                            (herdr-status-tests--section-text "Agents ")))))
+
+(ert-deftest herdr-status-filters-a-field-by-the-values-read ()
+  (herdr-status-tests--with-dashboard
+    (herdr-status-tests--choosing
+      (herdr-status-filter)
+      (funcall (plist-get chose :commit) '(("state" "working" "idle"))))
+    (should (equal herdr-status--field-filters '(("state" "working" "idle"))))
+    (should (equal (sort (mapcar #'herdr-status--state (herdr-status-visible-agents))
+                         #'string<)
+                   '("idle" "working")))
+    (should (string-match-p "state=working,idle"
+                            (herdr-status-tests--section-text "Agents ")))
+    (herdr-status-tests--choosing
+      (herdr-status-filter)
+      (should (equal (plist-get chose :pending) '(("state" "working" "idle")))))))
+
 (ert-deftest herdr-status-measures-a-column-of-its-own-width-per-row ()
   (let* ((entries (list '((agent . "claude") (pane_id . "%1") (cwd . "/repo"))))
          (workspaces (make-hash-table :test #'equal))

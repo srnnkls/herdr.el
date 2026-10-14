@@ -120,26 +120,16 @@ While a message is being written:
 | `herdr-status-toggle-details` | `i` | show or hide agent metadata under expanded rows |
 | `herdr-status-toggle-grouping` | `u` | draw the agent list in groups, or as one list |
 | `herdr-status-group-by` | `U` | pick what the agent list groups by |
-| `herdr-status-pick-columns` | `c` | pick the fields the rows show |
-| `herdr-status-filter` | `f` | open the filter menu |
-| `herdr-status-add-filter` | `f x` | add any filter in `herdr-status-predicates` |
-| `herdr-status-remove-filter` | `f -` | drop one filter |
-| `herdr-status-clear-filters` | `f DEL` | drop every filter |
-| `herdr-status-filter-by-harness` | `f h` | keep one harness |
-| `herdr-status-filter-by-state` | `f S` | keep one state |
-| `herdr-status-filter-by-project` | `f p` | keep the current project |
-| `herdr-status-filter-by-workspace` | `f w` | keep the current editor workspace |
-| `herdr-status-filter-attached` | `f a` | keep agents Emacs has a buffer for |
-| `herdr-status-sort` | `O` | open the order menu |
-| `herdr-status-sort-by` | `O x` | order by any key in `herdr-status-sorts`; again to reverse |
-| `herdr-status-sort-by-state` | `O s` | order by state |
-| `herdr-status-sort-by-name` | `O n` | order by name |
-| `herdr-status-sort-by-harness` | `O h` | order by harness |
-| `herdr-status-sort-by-pane` | `O p` | order by pane |
-| `herdr-status-sort-by-session` | `O S` | order by session |
-| `herdr-status-sort-by-directory` | `O d` | order by directory |
-| `herdr-status-sort-reverse` | `O r` | reverse the order |
-| `herdr-status-sort-clear` | `O DEL` | return to herdr's order |
+| `herdr-status-columns-menu` | `c` | choose the fields of `herdr-status-columns` the rows show, key by key, and apply them with `RET` |
+| `herdr-status-pick-columns` | | pick the fields the rows show in one completing read |
+| `herdr-status-filter` | `f` | choose what the agent list keeps, key by key, and apply it with `RET`: each field of `herdr-status-groups` keeps the values read for it, comma-separated, and each filter of `herdr-status-predicates` turns on and off |
+| `herdr-status-add-filter` | | add any filter in `herdr-status-predicates` |
+| `herdr-status-remove-filter` | | drop one filter |
+| `herdr-status-clear-filters` | | drop every filter |
+| `herdr-status-sort` | `O` | choose the columns of `herdr-status-sorts` the agent list orders by, in the order chosen, and whether it is reversed, and apply them with `RET` |
+| `herdr-status-sort-by` | | order by one key in `herdr-status-sorts`; again to reverse |
+| `herdr-status-sort-reverse` | | reverse the order |
+| `herdr-status-sort-clear` | | return to herdr's order |
 | `herdr-status-dispatch` | `?` | open the dashboard menu |
 
 ### Herds
@@ -203,7 +193,7 @@ on the agent at point; elsewhere they read one.
 | `O` | `herdr-status-sort` |
 | `u` | `herdr-status-toggle-grouping` |
 | `U` | `herdr-status-group-by` |
-| `c` | `herdr-status-pick-columns` |
+| `c` | `herdr-status-columns-menu` |
 | `h` | `herdr-herd-dispatch` |
 | `g` | `herdr-status-refresh` |
 | `p` | `herdr-status-toggle-project` |
@@ -321,7 +311,7 @@ is `$XDG_CONFIG_HOME/herdr/sessions/NAME/herdr.sock`; `XDG_CONFIG_HOME` defaults
 | `herdr-status-counted-states` | list of strings | `("working" "blocked")` | states the `Agents` heading counts |
 | `herdr-status-state-order` | list of strings | `("working" "blocked" "idle" "done")` | the order states sort in |
 | `herdr-status-sorts` | alist of `(NAME . FUNCTION)` | state, name, harness, pane, session, model, context, directory | keys `herdr-status-sort-by` offers |
-| `herdr-status-groups` | alist of `(NAME . FUNCTION)` | project, directory, session, harness, model, state | units `herdr-status-group-by` offers |
+| `herdr-status-groups` | alist of `(NAME . FUNCTION)` | project, directory, session, harness, model, state | units `herdr-status-group-by` offers, and the fields `f` filters by |
 | `herdr-status-preview-lines` | integer | 16 | lines of recent output a preview shows; 0 turns previews off |
 | `herdr-status-preview-read-lines` | integer | 160 | lines read to find them |
 | `herdr-status-preview-ignore-regexps` | list of regexps | rules, prompts, status bars, tool calls | lines a preview drops |
@@ -339,7 +329,7 @@ is `$XDG_CONFIG_HOME/herdr/sessions/NAME/herdr.sock`; `XDG_CONFIG_HOME` defaults
 | Option | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `herdr-status-columns` | alist of `(FIELD . PLIST)` | pane, workspace, branch, model, context, directory | the fields after the harness; plist keys `:value`, `:face`, `:width` |
-| `herdr-status-hidden-columns` | list of fields | `(workspace)` | the fields of `herdr-status-columns` left out; `c` picks the shown ones |
+| `herdr-status-hidden-columns` | list of fields | `(workspace)` | the fields of `herdr-status-columns` left out; `c` toggles them |
 | `herdr-status-column-widths` | alist of `(FIELD . COLUMNS)` | `((workspace . 20) (branch . 20))` | the widest a field may be before it is cut |
 | `herdr-status-name-width` | natnum or nil | nil | the widest a name may be; nil allows a third of the window |
 | `herdr-status-echo-cut-fields` | boolean | t | echo a cut field's whole value as point crosses it |
@@ -415,7 +405,7 @@ is `$XDG_CONFIG_HOME/herdr/sessions/NAME/herdr.sock`; `XDG_CONFIG_HOME` defaults
 | Variable | Holds |
 | --- | --- |
 | `herdr-agent-harnesses` | harness descriptors keyed by kind: `claude`, `codex`, `pi`, `omp` |
-| `herdr-status-predicates` | the dashboard's named filters: `agent-harness`, `agent-state`, `project`, `workspace`, `attached` |
+| `herdr-status-predicates` | the dashboard's named filters: `project`, `workspace`, `attached` |
 | `herdr-message-history` | messages sent to agents, most recent first |
 | `herdr-attach-session-workspace` | the value `herdr-workspace-open-function` returned, while a group is attached |
 | `herdr-entries-in-scope-function` | returns the entries a command reads a target from; the dashboard binds it to what it shows |

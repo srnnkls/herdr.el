@@ -478,13 +478,20 @@ no title of its own is shown as `herdr-agent-title-function` makes it.
 
 ### Filtering, ordering and grouping
 
-`f` opens the filter menu: by harness, by state, to the current project, to the current editor
-workspace, or to the agents Emacs has a buffer for. Harness and state offer the values of the
-section at point, so filtering inside a herd asks about that herd. Filters combine, stay through
-a refresh, and are listed in the `Agents` heading. `f -` drops one and `f DEL` clears them all.
+`c`, `f` and `O` open menus that hold a choice until it is made: each key changes it, the menu
+stays open, `RET` applies it and `C-g` drops it. `DEL` empties it.
 
-Each filter is an entry of `herdr-status-predicates`, and adding an entry adds a filter, reachable
-under `f x`:
+`c` shows and hides the fields of `herdr-status-columns`.
+
+`f` lists the fields of `herdr-status-groups` - project, directory, session, harness, model and
+state - and the named filters. A field's key reads the values to keep, comma-separated, among
+those of the section at point, so filtering inside a herd asks about that herd; an agent passes
+when it holds one of them. The named filters keep the current project, the current editor
+workspace, or the agents Emacs has a buffer for. Filters combine, stay through a refresh, and are
+listed in the `Agents` heading.
+
+Each named filter is an entry of `herdr-status-predicates`, and adding an entry adds a filter to
+the menu:
 
 ```elisp
 (add-to-list 'herdr-status-predicates
@@ -493,12 +500,12 @@ under `f x`:
                      (lambda (entry) (null (alist-get 'name entry))))))
 ```
 
-The outer function runs when the filter is added and may prompt. It returns a predicate of one
+The outer function runs when the filter is applied and may prompt. It returns a predicate of one
 entry, or nil to add nothing.
 
-`O` orders the agent list by state, name, harness, pane, session or directory, or by any key in
-`herdr-status-sorts` under `O x`; choosing the same column again reverses it. States sort in
-`herdr-status-state-order`.
+`O` orders the agent list by the keys of `herdr-status-sorts` - state, name, harness, pane,
+session, model, context and directory - in the order they are chosen, each one ordering what the
+ones before it leave tied, and `r` reverses it. States sort in `herdr-status-state-order`.
 
 `u` draws the agent list in groups and `U` picks what to group by: project, directory, session,
 harness, model or state, from `herdr-status-groups`. A collapsed group stays collapsed through a

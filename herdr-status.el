@@ -424,6 +424,10 @@ keystrokes stalls the typing; this keeps it until the user has stopped."
 (defvar-local herdr-status--filters nil
   "Active filters, each a cons of a name and a predicate.")
 
+(defvar-local herdr-status--field-filters nil
+  "Active field filters, each a field and the values it keeps.
+The fields are those of `herdr-status-groups'.")
+
 (defvar-local herdr-status--details nil
   "Adapter status alists already fetched since the last refresh.")
 
@@ -517,25 +521,183 @@ Each pane is returned stamped with its server key."
                         pane)
                 panes))))))
 
+;;;; Choice menus
+
+(defvar herdr-status-groups)
+
+(cl-defstruct (herdr-status--choices (:constructor herdr-status--choices-make)
+                                     (:copier nil))
+  "The menu `herdr-status-choose' opened, and what it holds so far."
+  groups pending ordered commit)
+
+(cl-defun herdr-status-choose (groups pending commit &key ordered)
+  "Open a menu over the items of GROUPS and pass what is chosen to COMMIT.
+GROUPS is a list of (HEADING . ITEMS).  An item is a name, a string or a
+symbol, which its key turns on and off, or (NAME . READ), whose key
+calls READ with NAME's value so far and holds what it answers, nil
+turning NAME off.  PENDING is the alist of (NAME . VALUE) chosen to
+start with, a toggled item's value being t.  The menu stays open while
+keys change the choice; RET calls COMMIT with the alist in the order the
+names were chosen, and quitting drops it.  With ORDERED,
+the first group's chosen items show their place in that order."
+  (transient-setup 'herdr-status-choice-menu nil nil
+                   :scope (herdr-status--choices-make
+                           :groups groups :pending (copy-alist pending)
+                           :ordered ordered :commit commit)))
+
+(defun herdr-status--choices ()
+  "Return the choice the open menu holds."
+  (transient-scope 'herdr-status-choice-menu))
+
+(defun herdr-status--choice-name (item)
+  "Return ITEM's name."
+  (if (consp item) (car item) item))
+
+(defun herdr-status--choice-keys (names)
+  "Return a key for each of NAMES, the first letter of its name still free."
+  (let (taken)
+    (mapcar (lambda (name)
+              (let* ((free (lambda (char) (not (memq char taken))))
+                     (key (or (seq-find free (downcase (format "%s" name)))
+                              (seq-find free "abcdefghijklmnopqrstuvwxyz")
+                              (seq-find free "ABCDEFGHIJKLMNOPQRSTUVWXYZ"))))
+                (push key taken)
+                (char-to-string key)))
+            names)))
+
+(defun herdr-status--choice-toggle (item)
+  "Turn ITEM on or off in the open menu, reading its value where it has one."
+  (let* ((choices (herdr-status--choices))
+         (name (herdr-status--choice-name item))
+         (pending (herdr-status--choices-pending choices))
+         (cell (assoc name pending))
+         (value (if (consp item)
+                    (funcall (cdr item) name (cdr cell))
+                  (not cell))))
+    (setf (herdr-status--choices-pending choices)
+          (cond ((not value) (remove cell pending))
+                (cell (setcdr cell value) pending)
+                (t (append pending (list (cons name value))))))))
+
+(defun herdr-status--choice-description (item ordered)
+  "Return ITEM's label, lit while chosen, led by its place when ORDERED."
+  (let* ((name (herdr-status--choice-name item))
+         (pending (herdr-status--choices-pending (herdr-status--choices)))
+         (cell (assoc name pending)))
+    (concat (and ordered
+                 (if cell (format "%d " (1+ (seq-position pending cell))) "  "))
+            (propertize (format "%s" name)
+                        'face (if cell 'transient-value 'transient-inactive-value))
+            (and cell (consp (cdr cell))
+                 (propertize (concat " " (string-join (cdr cell) ","))
+                             'face 'transient-value)))))
+
+(defun herdr-status--choice-keyed (choices)
+  "Return every item of CHOICES with its key, as (KEY ITEM GROUP-INDEX)."
+  (let* ((groups (herdr-status--choices-groups choices))
+         (items (seq-mapcat
+                 (lambda (group)
+                   (mapcar (lambda (item)
+                             (list item (seq-position groups group)))
+                           (cdr group)))
+                 groups)))
+    (seq-mapn #'cons
+              (herdr-status--choice-keys
+               (mapcar (lambda (item) (herdr-status--choice-name (car item))) items))
+              items)))
+
+(defun herdr-status--choice-suffixes (index)
+  "Return the suffixes of the open menu's group at INDEX."
+  (let ((choices (herdr-status--choices)))
+    (transient-parse-suffixes
+     'herdr-status-choice-menu
+     (delq nil
+           (mapcar
+            (pcase-lambda (`(,key ,item ,group))
+              (when (eq group index)
+                (let ((ordered (and (eq index 0)
+                                    (herdr-status--choices-ordered choices))))
+                  (list key
+                        (lambda () (interactive) (herdr-status--choice-toggle item))
+                        :description
+                        (lambda () (herdr-status--choice-description item ordered))
+                        :transient t))))
+            (herdr-status--choice-keyed choices))))))
+
+(defun herdr-status--choice-heading (index)
+  "Return the heading of the open menu's group at INDEX, or nil."
+  (car (nth index (herdr-status--choices-groups (herdr-status--choices)))))
+
+(defun herdr-status--choice-first-heading ()
+  "Return the heading of the open menu's first group."
+  (herdr-status--choice-heading 0))
+
+(defun herdr-status--choice-second-heading ()
+  "Return the heading of the open menu's second group, or nil."
+  (herdr-status--choice-heading 1))
+
+(defun herdr-status--choice-first-suffixes (_)
+  "Return the suffixes of the open menu's first group."
+  (herdr-status--choice-suffixes 0))
+
+(defun herdr-status--choice-second-suffixes (_)
+  "Return the suffixes of the open menu's second group."
+  (herdr-status--choice-suffixes 1))
+
+(defun herdr-status-choice-apply ()
+  "Pass what the open menu holds to its commit function."
+  (interactive)
+  (let ((choices (herdr-status--choices)))
+    (funcall (herdr-status--choices-commit choices)
+             (herdr-status--choices-pending choices))))
+
+(defun herdr-status-choice-clear ()
+  "Turn every item of the open menu off."
+  (interactive)
+  (setf (herdr-status--choices-pending (herdr-status--choices)) nil))
+
+(transient-define-prefix herdr-status-choice-menu ()
+  "Change a choice key by key and apply it once it is made."
+  [[:description
+    herdr-status--choice-first-heading
+    :setup-children
+    herdr-status--choice-first-suffixes]
+   [:if
+    herdr-status--choice-second-heading
+    :description
+    herdr-status--choice-second-heading
+    :setup-children
+    herdr-status--choice-second-suffixes]]
+  [:class transient-row
+          ("RET" "apply" herdr-status-choice-apply)
+          ("DEL" "none" herdr-status-choice-clear :transient t)])
+
 ;;;; Filters
 
-(defun herdr-status--read-field (prompt field entries)
-  "Read one FIELD value present in ENTRIES, asking with PROMPT."
-  (let ((values (delete-dups
-                 (delq nil (mapcar (lambda (entry) (alist-get field entry))
+(defun herdr-status--field-values (field entries)
+  "Return the values of FIELD of `herdr-status-groups' ENTRIES hold."
+  (let ((key (alist-get field herdr-status-groups nil nil #'equal)))
+    (delete-dups (delq nil (mapcar (lambda (entry)
+                                     (when-let* ((value (funcall key entry)))
+                                       (format "%s" value)))
                                    entries)))))
-    (unless values
-      (user-error "No agent reports a %s to filter on" field))
-    (completing-read prompt values nil t)))
 
-(defun herdr-status--field-predicate (prompt field)
-  "Return a predicate keeping entries whose FIELD matches a read value.
-PROMPT asks for the value among those the section at point shows, so
-filtering from inside a herd offers that herd's harnesses and states
-rather than every one the dashboard holds."
-  (let ((value (herdr-status--read-field prompt field
-                                         (herdr-status--entries-in-scope))))
-    (lambda (entry) (equal (alist-get field entry) value))))
+(defun herdr-status--read-field-values (field current)
+  "Read the values of FIELD to keep, CURRENT the ones kept so far.
+The values offered are those the section at point shows, so filtering
+from inside a herd offers that herd's harnesses and states rather than
+every one the dashboard holds."
+  (completing-read-multiple
+   (format "%s: " field)
+   (herdr-status--field-values field (herdr-status--entries-in-scope))
+   nil nil (and current (string-join current ","))))
+
+(defun herdr-status--field-filter-p (filter entry)
+  "Return whether ENTRY holds one of the values FILTER keeps.
+FILTER is a field of `herdr-status-groups' and the values it keeps."
+  (when-let* ((key (alist-get (car filter) herdr-status-groups nil nil #'equal))
+              (value (funcall key entry)))
+    (member (format "%s" value) (cdr filter))))
 
 (defun herdr-status--project-root (directory)
   "Return DIRECTORY's project root, or nil when it cannot be read.
@@ -569,19 +731,14 @@ answers for no project rather than taking the dashboard down."
         (equal label (herdr-workspace-label cwd))))))
 
 (defvar herdr-status-predicates
-  `((agent-harness . ,(lambda ()
-                        (herdr-status--field-predicate "Harness: " 'agent)))
-    (agent-state . ,(lambda ()
-                      (herdr-status--field-predicate "Agent state: "
-                                                     'agent_status)))
-    (project . ,#'herdr-status--project-predicate)
+  `((project . ,#'herdr-status--project-predicate)
     (workspace . ,#'herdr-status--workspace-predicate)
     (attached . ,(lambda () (lambda (entry) (herdr--entry-buffer entry)))))
   "Named filters the dashboard offers.
 Each element maps a symbol to a function of no arguments.  That function
 may prompt and returns a predicate of one session entry, or nil to add
 no filter.  Adding an element makes a custom filter available to
-`herdr-status-add-filter' and the filter transient.")
+`herdr-status-add-filter' and the filter menu.")
 
 (defun herdr-status--push-filter (name)
   "Build the filter registered as NAME and apply it."
@@ -610,8 +767,10 @@ under.  `herdr-status-sort-by' offers these names."
   :group 'herdr-status)
 
 (defvar-local herdr-status--sort nil
-  "The column the agent list is ordered by, and whether that is reversed.
-Nil leaves the order herdr reports the agents in.")
+  "The columns the agent list is ordered by, and whether that is reversed.
+A cons of the names in `herdr-status-sorts', the later ones ordering what
+the earlier leave tied, and the reversal.  Nil leaves the order herdr
+reports the agents in.")
 
 (defun herdr-status--project-group (entry)
   "Return the name of the project ENTRY works in."
@@ -629,7 +788,8 @@ Nil leaves the order herdr reports the agents in.")
   "Units the agent list can be grouped by, named after what they group by.
 Each value is a function of one entry answering with the group it belongs
 in.  An entry the function answers nil for is grouped under `none'.
-`herdr-status-group-by' offers these names."
+`herdr-status-group-by' offers these names, and the filter menu filters
+by each of them."
   :type '(alist :key-type string :value-type function)
   :group 'herdr-status)
 
@@ -718,13 +878,25 @@ A state left out of the list sorts after the ones in it, by name."
                    (length herdr-status-state-order))))
     (format "%02d%s" rank state)))
 
+(defun herdr-status--keys-lessp (keys a b)
+  "Return whether A sorts before B by the first of KEYS telling them apart."
+  (catch 'order
+    (dolist (key keys)
+      (let ((x (funcall key a))
+            (y (funcall key b)))
+        (cond ((string-lessp x y) (throw 'order t))
+              ((string-lessp y x) (throw 'order nil)))))
+    nil))
+
 (defun herdr-status--sorted (entries)
   "Return ENTRIES in the order `herdr-status--sort' asks for."
   (if-let* ((sort herdr-status--sort)
-            (key (alist-get (car sort) herdr-status-sorts nil nil #'equal)))
+            (keys (delq nil (mapcar (lambda (column)
+                                      (alist-get column herdr-status-sorts
+                                                 nil nil #'equal))
+                                    (car sort)))))
       (let ((ordered (sort (copy-sequence entries)
-                           (lambda (a b)
-                             (string-lessp (funcall key a) (funcall key b))))))
+                           (lambda (a b) (herdr-status--keys-lessp keys a b)))))
         (if (cdr sort) (nreverse ordered) ordered))
     entries))
 
@@ -763,8 +935,10 @@ the screen, so a filter applies the moment it is added."
   (herdr-status--sorted
    (cl-remove-if-not
     (lambda (entry)
-      (cl-every (lambda (filter) (funcall (cdr filter) entry))
-                herdr-status--filters))
+      (and (cl-every (lambda (filter) (funcall (cdr filter) entry))
+                     herdr-status--filters)
+           (cl-every (lambda (filter) (herdr-status--field-filter-p filter entry))
+                     herdr-status--field-filters)))
     (herdr-status--agents herdr-status--entries))))
 
 ;;;; Rendering
@@ -1046,7 +1220,7 @@ a field added here is drawn whole without touching either."
   "The fields of `herdr-status-columns' the dashboard leaves out.
 The workspace label is left out by default: an agent's own workspace
 carries the agent's name, which the row already leads with.
-\[herdr-status-pick-columns] picks the fields shown."
+\[herdr-status-columns-menu] shows or hides each field."
   :type '(repeat symbol)
   :group 'herdr-status)
 
@@ -1065,13 +1239,29 @@ carries the agent's name, which the row already leads with.
                   nil t
                   (mapconcat (lambda (column) (symbol-name (car column)))
                              (herdr-status--shown-columns) ",")))))
-  (customize-set-variable
-   'herdr-status-hidden-columns
+  (herdr-status--hide-columns
    (seq-remove (lambda (field) (memq field fields))
-               (mapcar #'car herdr-status-columns)))
+               (mapcar #'car herdr-status-columns))))
+
+(defun herdr-status--hide-columns (fields)
+  "Hide FIELDS of `herdr-status-columns' and redraw every dashboard."
+  (customize-set-variable 'herdr-status-hidden-columns fields)
   (dolist (buffer (herdr-status--buffers))
     (with-current-buffer buffer
       (herdr-status--redraw t))))
+
+;;;###autoload
+(defun herdr-status-columns-menu ()
+  "Choose the fields of `herdr-status-columns' shown, applying them at once."
+  (interactive)
+  (let ((fields (mapcar #'car herdr-status-columns)))
+    (herdr-status-choose
+     (list (cons "Columns" fields))
+     (mapcar (lambda (column) (cons (car column) t))
+             (herdr-status--shown-columns))
+     (lambda (shown)
+       (herdr-status--hide-columns
+        (seq-remove (lambda (field) (assq field shown)) fields))))))
 
 (defun herdr-status-column-pane (entry)
   "Return the pane ENTRY runs in."
@@ -1511,7 +1701,7 @@ only by the heading's own total."
 (defun herdr-status--sort-summary ()
   "Return the order the agents are in, rendered for their heading."
   (when herdr-status--sort
-    (propertize (format "  · by %s%s" (car herdr-status--sort)
+    (propertize (format "  · by %s%s" (string-join (car herdr-status--sort) ", ")
                         (if (cdr herdr-status--sort) " ↑" " ↓"))
                 'font-lock-face 'herdr-status-meta)))
 
@@ -1523,12 +1713,17 @@ only by the heading's own total."
 
 (defun herdr-status--filter-summary ()
   "Return the active filters rendered for the agents heading."
-  (when herdr-status--filters
+  (when (or herdr-status--filters herdr-status--field-filters)
     (concat "  "
-            (propertize (string-join (mapcar (lambda (filter)
-                                               (symbol-name (car filter)))
-                                             (reverse herdr-status--filters))
-                                     " ")
+            (propertize (string-join
+                         (append
+                          (mapcar (lambda (filter)
+                                    (format "%s=%s" (car filter)
+                                            (string-join (cdr filter) ",")))
+                                  herdr-status--field-filters)
+                          (mapcar (lambda (filter) (symbol-name (car filter)))
+                                  (reverse herdr-status--filters)))
+                         " ")
                         'font-lock-face 'herdr-status-active-filter))))
 
 (defun herdr-status--unreachable-summary ()
@@ -1686,7 +1881,7 @@ are bound by that package and unbound where it is not installed."
   "e" #'herdr-status-toggle-expanded
   "u" #'herdr-status-toggle-grouping
   "U" #'herdr-status-group-by
-  "c" #'herdr-status-pick-columns
+  "c" #'herdr-status-columns-menu
   "i" #'herdr-status-toggle-details
   "g" #'herdr-status-refresh
   "p" #'herdr-status-toggle-project
@@ -2716,46 +2911,62 @@ as well when no Emacs session holds it."
   (herdr-status--push-filter name))
 
 (defun herdr-status-remove-filter (name)
-  "Drop the active filter called NAME."
+  "Drop the active filter called NAME, a symbol, or the field filter NAME."
   (interactive
-   (list (intern (completing-read
-                  "Drop filter: "
-                  (mapcar (lambda (filter) (symbol-name (car filter)))
-                          herdr-status--filters)
-                  nil t))))
-  (setq herdr-status--filters (assq-delete-all name herdr-status--filters))
+   (let ((names (append (mapcar #'car herdr-status--field-filters)
+                        (mapcar (lambda (filter) (symbol-name (car filter)))
+                                herdr-status--filters))))
+     (let ((name (completing-read "Drop filter: " names nil t)))
+       (list (if (assoc name herdr-status--field-filters) name (intern name))))))
+  (setq herdr-status--filters (assq-delete-all name herdr-status--filters)
+        herdr-status--field-filters (seq-remove (lambda (filter)
+                                                  (equal (car filter) name))
+                                                herdr-status--field-filters))
   (herdr-status-refresh))
 
 (defun herdr-status-clear-filters ()
   "Drop every active filter."
   (interactive)
-  (setq herdr-status--filters nil)
+  (setq herdr-status--filters nil
+        herdr-status--field-filters nil)
   (herdr-status-refresh))
 
-(defun herdr-status-filter-by-harness ()
-  "Keep only agents of one harness."
-  (interactive)
-  (herdr-status--push-filter 'agent-harness))
+(defun herdr-status--apply-filters (chosen)
+  "Filter the agent list by CHOSEN, the filter menu's choice.
+A field holds the values it keeps; a named filter of
+`herdr-status-predicates' already active keeps its predicate, and one
+newly chosen builds it."
+  (let (filters fields)
+    (pcase-dolist (`(,name . ,value) chosen)
+      (if (stringp name)
+          (push (cons name value) fields)
+        (when-let* ((filter
+                     (or (assq name herdr-status--filters)
+                         (when-let* ((predicate
+                                      (funcall (alist-get name herdr-status-predicates))))
+                           (cons name predicate)))))
+          (push filter filters))))
+    (setq herdr-status--filters filters
+          herdr-status--field-filters (nreverse fields))
+    (herdr-status-refresh)))
 
-(defun herdr-status-filter-by-state ()
-  "Keep only agents in one state."
+;;;###autoload
+(defun herdr-status-filter ()
+  "Choose what the agent list keeps, applying it at once.
+Each field of `herdr-status-groups' keeps the values read for it, and
+each filter of `herdr-status-predicates' turns on and off."
   (interactive)
-  (herdr-status--push-filter 'agent-state))
-
-(defun herdr-status-filter-by-project ()
-  "Keep only agents rooted in the current project."
-  (interactive)
-  (herdr-status--push-filter 'project))
-
-(defun herdr-status-filter-by-workspace ()
-  "Keep only agents in the current editor workspace."
-  (interactive)
-  (herdr-status--push-filter 'workspace))
-
-(defun herdr-status-filter-attached ()
-  "Keep only the agents an Emacs buffer already displays."
-  (interactive)
-  (herdr-status--push-filter 'attached))
+  (unless (derived-mode-p 'herdr-status-mode)
+    (user-error "Not a herdr status buffer"))
+  (herdr-status-choose
+   (list (cons "Fields" (mapcar (lambda (group)
+                                  (cons (car group) #'herdr-status--read-field-values))
+                                herdr-status-groups))
+         (cons "Filters" (mapcar #'car herdr-status-predicates)))
+   (append (copy-alist herdr-status--field-filters)
+           (mapcar (lambda (filter) (cons (car filter) t))
+                   (reverse herdr-status--filters)))
+   #'herdr-status--apply-filters))
 
 (defun herdr-status-sort-by (column)
   "Order the agent list by COLUMN, reversing it when it already sorts by it."
@@ -2765,9 +2976,9 @@ as well when no Emacs session holds it."
   (unless (derived-mode-p 'herdr-status-mode)
     (user-error "Not a herdr status buffer"))
   (setq-local herdr-status--sort
-              (if (equal (car-safe herdr-status--sort) column)
-                  (cons column (not (cdr herdr-status--sort)))
-                (cons column nil)))
+              (if (equal (car-safe herdr-status--sort) (list column))
+                  (cons (list column) (not (cdr herdr-status--sort)))
+                (cons (list column) nil)))
   (herdr-status-refresh))
 
 (defun herdr-status-group-by (unit)
@@ -2803,20 +3014,6 @@ as well when no Emacs session holds it."
                                        (not (cdr herdr-status--sort))))
   (herdr-status-refresh))
 
-(defmacro herdr-status--define-sort-command (column)
-  "Define a command ordering the dashboard by COLUMN."
-  `(defun ,(intern (format "herdr-status-sort-by-%s" column)) ()
-     ,(format "Order the herdr dashboard's agents by %s." column)
-     (interactive)
-     (herdr-status-sort-by ,column)))
-
-(herdr-status--define-sort-command "state")
-(herdr-status--define-sort-command "name")
-(herdr-status--define-sort-command "harness")
-(herdr-status--define-sort-command "pane")
-(herdr-status--define-sort-command "session")
-(herdr-status--define-sort-command "directory")
-
 (defun herdr-status-sort-clear ()
   "Return the agent list to the order herdr reports."
   (interactive)
@@ -2824,35 +3021,24 @@ as well when no Emacs session holds it."
   (herdr-status-refresh))
 
 ;;;###autoload
-(transient-define-prefix herdr-status-sort ()
-  "Order the herdr dashboard's agent list."
-  [["Column"
-    ("s" "state" herdr-status-sort-by-state)
-    ("n" "name" herdr-status-sort-by-name)
-    ("h" "harness" herdr-status-sort-by-harness)]
-   ["Where"
-    ("p" "pane" herdr-status-sort-by-pane)
-    ("S" "session" herdr-status-sort-by-session)
-    ("d" "directory" herdr-status-sort-by-directory)]
-   ["Order"
-    ("r" "reverse" herdr-status-sort-reverse)
-    ("x" "column" herdr-status-sort-by)
-    ("DEL" "clear" herdr-status-sort-clear)]])
-
-;;;###autoload
-(transient-define-prefix herdr-status-filter ()
-  "Filter the herdr dashboard's agent list."
-  [["Field"
-    ("h" "harness" herdr-status-filter-by-harness)
-    ("S" "state" herdr-status-filter-by-state)]
-   ["Scope"
-    ("p" "project" herdr-status-filter-by-project)
-    ("w" "workspace" herdr-status-filter-by-workspace)
-    ("a" "attached" herdr-status-filter-attached)]
-   ["Manage"
-    ("x" "custom" herdr-status-add-filter)
-    ("-" "drop one" herdr-status-remove-filter)
-    ("DEL" "clear" herdr-status-clear-filters)]])
+(defun herdr-status-sort ()
+  "Choose the columns the agent list is ordered by, applying them at once.
+The columns order in the sequence they are chosen, each one ordering what
+the ones before it leave tied."
+  (interactive)
+  (unless (derived-mode-p 'herdr-status-mode)
+    (user-error "Not a herdr status buffer"))
+  (herdr-status-choose
+   (list (cons "Order by" (mapcar #'car herdr-status-sorts))
+         (list "Direction" 'reverse))
+   (append (mapcar (lambda (column) (cons column t)) (car herdr-status--sort))
+           (and (cdr herdr-status--sort) '((reverse . t))))
+   (lambda (chosen)
+     (let ((columns (seq-filter #'stringp (mapcar #'car chosen))))
+       (setq-local herdr-status--sort
+                   (and columns (cons columns (and (assq 'reverse chosen) t))))
+       (herdr-status-refresh)))
+   :ordered t))
 
 (defun herdr-status--details-description ()
   "Return the label of the detail toggle, carrying its state."
@@ -2902,7 +3088,7 @@ Every suffix here is bound directly in `herdr-status-mode-map' as well."
     ("u" herdr-status-toggle-grouping
      :description (lambda () (if herdr-status--grouping "one list" "group")))
     ("U" "group unit" herdr-status-group-by)
-    ("c" "columns" herdr-status-pick-columns)
+    ("c" "columns" herdr-status-columns-menu)
     ("i" herdr-status-toggle-details
      :description herdr-status--details-description)
     ("g" "refresh" herdr-status-refresh)]
