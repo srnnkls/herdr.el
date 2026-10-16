@@ -1798,5 +1798,33 @@ RESPOND is called with each connection and the request line it sent."
                      "\e]10;rgb:ffff/ffff/ffff\e\\"
                      "\e[?997;2n")))))
 
+(ert-deftest herdr-tell-appearance-reports-unchanged-colors-once-the-reporter-is-gone ()
+  (let ((buffer (generate-new-buffer " *herdr-reporter-test*"))
+        (herdr-session nil)
+        (herdr--host-themes (make-hash-table :test #'equal))
+        (live '(process))
+        (started 0))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (setq herdr-terminal-id "term_a" herdr-terminal-session "work"))
+          (cl-letf (((symbol-function 'get-buffer-process) (lambda (_) 'process))
+                    ((symbol-function 'process-live-p) (lambda (p) (memq p live)))
+                    ((symbol-function 'herdr--host-colors)
+                     (lambda () '("rgb:0000/0000/0000" . "rgb:ffff/ffff/ffff")))
+                    ((symbol-function 'herdr--appearance) (lambda () 'light))
+                    ((symbol-function 'herdr-agents) #'ignore)
+                    ((symbol-function 'make-process)
+                     (lambda (&rest _) (cl-incf started) (push 'client live) 'client))
+                    ((symbol-function 'set-process-window-size) #'ignore)
+                    ((symbol-function 'run-with-timer) #'ignore)
+                    ((symbol-function 'delete-process) #'ignore))
+            (herdr-tell-appearance)
+            (herdr-tell-appearance)
+            (setq live (delq 'client live))
+            (herdr-tell-appearance)))
+      (kill-buffer buffer))
+    (should (= started 2))))
+
 (provide 'herdr-tests)
 ;;; herdr-tests.el ends here

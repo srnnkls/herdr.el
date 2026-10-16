@@ -1092,11 +1092,14 @@ COLORS is a cons of foreground and background specs; APPEARANCE is
 Herdr paints panes after the theme its foreground client reports, and
 an attachment reports none, so a throwaway full client attaches long
 enough to answer herdr's color queries.  BUFFERS are the session's
-attachments; the first one shown lends the client its size."
+attachments; the first one shown lends the client its size.  Another
+client may report its own theme after this one detaches, so the same
+colors are reported again unless their reporter is still attached."
   (when-let* ((colors (herdr--host-colors))
               (appearance (herdr--appearance)))
     (let ((last (gethash name herdr--host-themes)))
-      (unless (equal (list (car colors) (cdr colors)) (seq-take last 2))
+      (unless (and (equal (list (car colors) (cdr colors)) (seq-take last 2))
+                   (process-live-p (nth 2 last)))
         (when (process-live-p (nth 2 last))
           (delete-process (nth 2 last)))
         (let* ((window (seq-some (lambda (buffer) (get-buffer-window buffer t))
