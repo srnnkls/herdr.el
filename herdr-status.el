@@ -45,10 +45,17 @@
   :group 'herdr-status)
 
 (defface herdr-status-label-foreground
-  '((((class color) (min-colors 88) (background light)) :foreground "#a07800")
-    (((class color) (min-colors 88) (background dark)) :foreground "#e5c07b")
+  '((((class color) (min-colors 88) (background dark)) :foreground "#e5c07b")
     (t :inherit warning))
   "Face for the name of the foreground agent."
+  :group 'herdr-status)
+
+(defface herdr-status-foreground-row
+  '((((class color) (min-colors 88) (background light)) :background "#e7e7e7" :extend t)
+    (((class color) (min-colors 88) (background dark)) :background "#343942" :extend t)
+    (t :inherit hl-line :extend t))
+  "Face shading the row of the foreground agent.
+`herdr-status-shade-foreground-row' turns it off."
   :group 'herdr-status)
 
 (defface herdr-status-path
@@ -280,6 +287,11 @@ anything, so they are drawn in `herdr-status-preview-status'."
 (defcustom herdr-status-preview-rule "┃"
   "String drawn down the left of a preview, in its agent's own colour."
   :type 'string
+  :group 'herdr-status)
+
+(defcustom herdr-status-shade-foreground-row t
+  "Non-nil shades the foreground agent's row in `herdr-status-foreground-row'."
+  :type 'boolean
   :group 'herdr-status)
 
 (defcustom herdr-status-attached-glyph "•"
@@ -1058,7 +1070,32 @@ agent this is as much as the tail of a name does."
             (put-text-property match position 'font-lock-face
                                (herdr-status--label-face
                                 (get-text-property match 'herdr-status-label)
-                                herdr-status--foreground))))))))
+                                herdr-status--foreground)))))
+      (herdr-status--shade-foreground))))
+
+(defvar-local herdr-status--foreground-rows nil
+  "Overlays shading the foreground agent's rows.")
+
+(defun herdr-status--shade-foreground ()
+  "Shade the rows of `herdr-status--foreground' in this dashboard."
+  (mapc #'delete-overlay herdr-status--foreground-rows)
+  (setq herdr-status--foreground-rows nil)
+  (when (and herdr-status-shade-foreground-row herdr-status--foreground)
+    (let ((position (point-min))
+          match)
+      (while (setq match (text-property-not-all
+                          position (point-max) 'herdr-status-label nil))
+        (setq position (next-single-property-change
+                        match 'herdr-status-label nil (point-max)))
+        (when (equal (herdr--entry-target (get-text-property match 'herdr-status-label))
+                     herdr-status--foreground)
+          (let ((overlay (save-excursion
+                           (goto-char match)
+                           (make-overlay (line-beginning-position)
+                                         (min (1+ (line-end-position)) (point-max))))))
+            (overlay-put overlay 'face 'herdr-status-foreground-row)
+            (overlay-put overlay 'priority -60)
+            (push overlay herdr-status--foreground-rows)))))))
 
 (add-hook 'herdr-foreground-functions #'herdr-status--recolour-labels)
 (add-hook 'window-buffer-change-functions #'herdr-status--recolour-labels)
@@ -2164,6 +2201,7 @@ that section folds it away too."
     (pcase-dolist (`(,window . ,start) starts)
       (when (window-live-p window)
         (set-window-start window (min start (point-max)) t)))
+    (herdr-status--shade-foreground)
     (run-hooks 'herdr-status-refresh-hook)))
 
 (defun herdr-status--expanded-sections ()
