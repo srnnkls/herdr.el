@@ -2267,23 +2267,53 @@ region of TARGET's own conversation is a blockquote of what was said."
       (concat herdr-message--selection "\n\n" text)
     text))
 
+(defvar herdr-message-preface-functions nil
+  "Functions returning text sent just above a message.
+Each is called with the agent target and returns a string or nil.  What
+they return stands between a quoted selection and the message, and
+neither the history nor `herdr-message-compose-functions' see it.  A
+message with a preface may be empty.")
+
+(defun herdr-message--preface (target)
+  "Return what `herdr-message-preface-functions' give for TARGET, or nil."
+  (let (prefaces)
+    (run-hook-wrapped 'herdr-message-preface-functions
+                      (lambda (function)
+                        (when-let* ((preface (funcall function target))
+                                    ((not (string-blank-p preface))))
+                          (push (string-trim preface) prefaces))
+                        nil))
+    (and prefaces (string-join (nreverse prefaces) "\n\n"))))
+
+(defun herdr-message--prefaced (preface text)
+  "Return TEXT under PREFACE, either of which may be nil or empty."
+  (string-join (seq-remove (lambda (part) (or (null part) (string-empty-p part)))
+                           (list preface text))
+               "\n\n"))
+
 (defun herdr-message--send (target text context)
   "Send TEXT with CONTEXT to agent TARGET and record TEXT in history.
 A region selected when the message was begun is quoted above TEXT, so
 the prompt itself says what it is about.  Where no composer answers, a
 context from `herdr-send-context-functions' is taken to quote it already."
-  (let ((text (string-trim text)))
-    (when (string-empty-p text)
+  (let ((text (string-trim text))
+        (preface (herdr-message--preface target)))
+    (when (and (string-empty-p text) (not preface))
       (user-error "Message is empty"))
-    (add-to-history 'herdr-message-history text)
+    (unless (string-empty-p text)
+      (add-to-history 'herdr-message-history text))
     (herdr-agent-prompt target
                         (if-let* ((composed (run-hook-with-args-until-success
                                              'herdr-message-compose-functions
                                              target text context)))
-                            (herdr-message--with-selection composed)
-                          (herdr-message--compose
-                           (if context text (herdr-message--with-selection text))
-                           context)))
+                            (herdr-message--with-selection
+                             (herdr-message--prefaced preface composed))
+                          (let ((prefaced (herdr-message--prefaced preface text)))
+                            (herdr-message--compose
+                             (if context
+                                 prefaced
+                               (herdr-message--with-selection prefaced))
+                             context))))
     target))
 
 (defcustom herdr-message-show-agent t

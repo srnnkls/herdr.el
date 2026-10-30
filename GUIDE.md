@@ -746,6 +746,7 @@ records.
 | --- | --- |
 | provide the context a message carries | `herdr-send-context-functions` |
 | build the prompt a message becomes | `herdr-message-compose-functions` |
+| set text just above the message | `herdr-message-preface-functions` |
 | keep an agent's terminal hidden when the buffer shows the agent | `herdr-message-shown-functions` |
 | claim an entry before it is attached as a plain terminal | `herdr-attach-functions` |
 | act on every buffer that starts showing a terminal | `herdr-buffer-functions` |

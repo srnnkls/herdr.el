@@ -392,6 +392,7 @@ is `$XDG_CONFIG_HOME/herdr/sessions/NAME/herdr.sock`; `XDG_CONFIG_HOME` defaults
 | `herdr-agent-handoff-functions` | server key, alist of old to new terminal ids | once a server that went away answers again and its terminals are carried over |
 | `herdr-send-context-functions` | the agent entry | to provide context; the first string wins |
 | `herdr-message-compose-functions` | target, message, context | to build the prompt; the first string wins |
+| `herdr-message-preface-functions` | the agent target | to add text between a quoted selection and the message; every string is kept, out of the history, and a message with one may be empty |
 | `herdr-message-shown-functions` | the agent target, in the buffer written from | to say that buffer already shows the agent, which leaves its terminal alone |
 | `herdr-status-sections-functions` | agents, widths, tab index, workspace index | inside the dashboard, above `Recent` |
 | `herdr-status-refresh-hook` | nothing, in the dashboard | after a redraw |

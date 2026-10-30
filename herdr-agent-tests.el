@@ -3032,6 +3032,42 @@ functions scheduled, and `refusals', how many renames herdr turns down."
                    `((,target "fix this <hooked>")
                      (,target "plain"))))))
 
+(ert-deftest herdr-message-preface-stands-between-selection-and-message ()
+  (let ((herdr-message-history nil)
+        (herdr-message--selection "> quoted")
+        (target '("/servers/a.sock" . "shared"))
+        (herdr-message-preface-functions
+         (list (lambda (_target) "  notes  ") (lambda (_target) nil)))
+        composers prompts)
+    (cl-letf (((symbol-function 'herdr-agent-prompt)
+               (lambda (_target text) (push text prompts))))
+      (let ((herdr-message-compose-functions
+             (list (lambda (_target text _context) (push text composers) text))))
+        (herdr-message--send target "why?" "Emacs context"))
+      (let ((herdr-message-compose-functions nil))
+        (herdr-message--send target "how?" nil)
+        (herdr-message--send target "when?" "Emacs context")))
+    (should (equal composers '("why?")))
+    (should (equal herdr-message-history '("when?" "how?" "why?")))
+    (should (equal (nreverse prompts)
+                   '("> quoted\n\nnotes\n\nwhy?"
+                     "> quoted\n\nnotes\n\nhow?"
+                     "notes\n\nwhen?\n\n---\nEmacs context")))))
+
+(ert-deftest herdr-message-preface-alone-is-a-message ()
+  (let ((herdr-message-history nil)
+        (herdr-message-compose-functions nil)
+        (target '("/servers/a.sock" . "shared"))
+        prompts)
+    (cl-letf (((symbol-function 'herdr-agent-prompt)
+               (lambda (_target text) (push text prompts))))
+      (let ((herdr-message-preface-functions (list (lambda (_target) "notes"))))
+        (herdr-message--send target "  " nil))
+      (let ((herdr-message-preface-functions nil))
+        (should-error (herdr-message--send target "" nil) :type 'user-error)))
+    (should (equal prompts '("notes")))
+    (should-not herdr-message-history)))
+
 (ert-deftest herdr-message-quotes-a-selected-region-under-the-message ()
   (let* ((herdr-message-history nil)
          (herdr-send-context-functions nil)
