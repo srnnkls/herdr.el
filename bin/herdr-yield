@@ -120,6 +120,19 @@ def mouse(match):
             "modifiers": (code & 4 and 1) | (code & 16 and 2) | (code & 8 and 4)}
 
 
+def coalesce(events):
+    merged = []
+    for event in events:
+        last = merged[-1] if merged else None
+        if (event["type"] == "terminal.scroll" and last
+                and last["type"] == "terminal.scroll"
+                and last["direction"] == event["direction"]):
+            last["lines"] += event["lines"]
+        else:
+            merged.append(event)
+    return merged
+
+
 def finish(line, status=0):
     sys.stderr.write(line + "\n")
     sys.exit(status)
@@ -177,7 +190,7 @@ try:
             wanted = VISIBILITY.findall(keys)
             keys = VISIBILITY.sub(b"", keys)
             wanted = wanted[-1] if wanted else None
-            events = [mouse(match) for match in MOUSE.finditer(keys)]
+            events = coalesce([mouse(match) for match in MOUSE.finditer(keys)])
             keys = MOUSE.sub(b"", keys)
             if mode == "observe" and (events or REPORTS.sub(b"", keys)):
                 wanted = b"show"
