@@ -247,7 +247,8 @@ is `$XDG_CONFIG_HOME/herdr/sessions/NAME/herdr.sock`; `XDG_CONFIG_HOME` defaults
 | --- | --- | --- | --- |
 | `herdr-terminal-backend` | `auto`, `ghostel`, `vterm` or `eat` | `auto` | the emulator; `auto` takes the first installed |
 | `herdr-attach-takeover` | boolean | t | whether attaching claims input ownership |
-| `herdr-buffer-name-function` | function | `herdr-default-buffer-name` | names a buffer from the terminal's label and directory |
+| `herdr-buffer-name-format` | string | `"*herdr %k: %p %w %b*"` | the name `herdr-default-buffer-name` gives: `%k` agent or pane, `%p` pane id, `%w` worktree, `%r` project, `%b` branch, `%l` label |
+| `herdr-buffer-name-function` | function | `herdr-default-buffer-name` | names a buffer from the terminal's label, directory, pane id and agent |
 | `herdr-use-side-window` | boolean | t | show attached terminals in a side window |
 | `herdr-window-side` | `left`, `right`, `top` or `bottom` | `right` | the side window's side |
 | `herdr-window-width` | integer | 100 | body width of a left or right side window |

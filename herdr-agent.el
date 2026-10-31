@@ -475,7 +475,8 @@ DISPLAY shows the buffer once attached."
           :label (herdr-agent--session-label session)
           :directory (herdr-agent-session-project session)
           :takeover herdr-attach-takeover :display display
-          :agent (herdr-agent-session-kind session))))
+          :agent (herdr-agent-session-kind session)
+          :pane (herdr-agent-session-pane session))))
     (herdr-agent-claim-attachment session buffer (get-buffer-process buffer))))
 
 (defun herdr-agent-claim-attachment (session buffer process)

@@ -56,7 +56,7 @@ herdr reports for this project, and there are none yet.
 Press `N` and pick `claude`, or another harness you have installed. herdr.el starts a herdr server
 if none is running, opens a tab in a herdr workspace named after the project, and starts the agent
 there. Emacs attaches the agent's terminal and shows it in a side window, in a buffer named
-`*herdr: app@main agent*`: the project, its branch, and the agent's name. The dashboard redraws,
+`*herdr agent: wF3:p1 app main*`: the pane, its worktree, and its branch. The dashboard redraws,
 and the agent appears under `Agents` with its state, harness, pane, workspace, branch and
 directory.
 

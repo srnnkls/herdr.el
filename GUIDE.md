@@ -140,10 +140,11 @@ as a terminal. A pane running no agent is attached as a plain terminal.
 
 ### Buffers and windows
 
-A buffer's name leads with the project and git branch the terminal works in, as in
-`*herdr: app@main review*`. A linked worktree is named after its main checkout, so every checkout
-of a repository reads as one project. `herdr-buffer-name-function` names buffers differently. Two
-terminals with the same label get a counter.
+A buffer's name says whether an agent or a plain pane runs there, then the pane, the worktree and
+the git branch it works in, as in `*herdr agent: wF3:p1 app-wt main*`. `herdr-buffer-name-format`
+rearranges these and adds the project (`%r`) or the terminal's label (`%l`);
+`herdr-buffer-name-function` replaces the naming outright. Two terminals that would share a name
+get a counter.
 
 Attached terminals open in a side window on the right, each in its own slot so several sit side
 by side. `herdr-window-side`, `herdr-window-width`, `herdr-window-height` and

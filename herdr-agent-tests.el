@@ -326,7 +326,7 @@
             (setq server-b (herdr-server-key)))
           (let ((herdr-attach-functions (list #'herdr-agent-attach-entry))
                 (herdr-buffer-name-function
-                 (lambda (label &optional _directory) (format "*herdr: %s*" label))))
+                 (lambda (label &rest _) (format "*herdr: %s*" label))))
             (cl-letf (((symbol-function 'herdr--terminal-exec)
                        (lambda (buffer &rest _)
                          (push herdr-session routed)

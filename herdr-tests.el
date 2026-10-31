@@ -414,28 +414,31 @@ alist.  Returns the socket path."
                        '("workspace.list" "workspace.create" "tab.rename"))))
     (herdr-tests--teardown)))
 
-(ert-deftest herdr-default-buffer-name-leads-with-project-and-branch ()
+(ert-deftest herdr-default-buffer-name-names-pane-worktree-and-branch ()
   (let* ((root (make-temp-file "herdr-name" t))
          (repo (expand-file-name "app" root))
-         (worktree (expand-file-name "app-wt" root))
-         (name (file-name-nondirectory root)))
+         (worktree (expand-file-name "app-wt" root)))
     (make-directory repo)
     (unwind-protect
         (let ((default-directory repo))
-          (should (equal (herdr-default-buffer-name "claude") "*herdr: claude*"))
-          (should (equal (herdr-default-buffer-name "claude" root)
-                         (format "*herdr: %s claude*" name)))
+          (should (equal (herdr-default-buffer-name "zsh" nil "1-2") "*herdr pane: 1-2*"))
+          (should (equal (herdr-default-buffer-name "claude" root "1-2" "claude")
+                         "*herdr agent: 1-2*"))
           (should (zerop (call-process "git" nil nil nil "init" "-q" "-b" "topic/x")))
           (should (equal (herdr-directory-branch repo) "topic/x"))
-          (should (equal (herdr-default-buffer-name "claude" (file-name-as-directory repo))
-                         "*herdr: app@topic/x claude*"))
+          (should (equal (herdr-default-buffer-name "claude" (file-name-as-directory repo)
+                                                    "1-2" "claude")
+                         "*herdr agent: 1-2 app topic/x*"))
           (should (zerop (call-process "git" nil nil nil "-c" "user.name=t"
                                        "-c" "user.email=t@t" "commit" "-q"
                                        "--allow-empty" "-m" "init")))
           (should (zerop (call-process "git" nil nil nil "worktree" "add" "-q"
                                        "-b" "feat/y" worktree)))
-          (should (equal (herdr-default-buffer-name "claude" worktree)
-                         "*herdr: app@feat/y claude*"))
+          (should (equal (herdr-default-buffer-name "claude" worktree "1-2" "claude")
+                         "*herdr agent: 1-2 app-wt feat/y*"))
+          (let ((herdr-buffer-name-format "*herdr %k: %r %l*"))
+            (should (equal (herdr-default-buffer-name "claude" worktree "1-2" "claude")
+                           "*herdr agent: app claude*")))
           (should (equal (herdr-directory-branch (expand-file-name "src" worktree))
                          nil))
           (make-directory (expand-file-name "src" worktree))
@@ -473,7 +476,8 @@ alist.  Returns the socket path."
                    "zsh"))))
 
 (ert-deftest herdr-buffer-names-make-room-for-repeated-labels ()
-  (let ((first (get-buffer-create "*herdr: 1*"))
+  (let ((herdr-buffer-name-function (lambda (label &rest _) (format "*herdr: %s*" label)))
+        (first (get-buffer-create "*herdr: 1*"))
         (second nil))
     (unwind-protect
         (progn
@@ -1752,7 +1756,7 @@ RESPOND is called with each connection and the request line it sent."
 
 (ert-deftest herdr-attach-terminal-remembers-the-name-it-gave ()
   (let ((herdr-buffer-name-function
-         (lambda (label _directory) (format "*herdr-given: %s*" label)))
+         (lambda (label &rest _) (format "*herdr-given: %s*" label)))
         buffer)
     (unwind-protect
         (cl-letf (((symbol-function 'herdr-session-server-key)

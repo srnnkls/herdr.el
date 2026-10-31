@@ -29,6 +29,7 @@
 
 (require 'cl-lib)
 (require 'color)
+(require 'format-spec)
 
 (defconst herdr-version "0.1.0"
   "Herdr package version.")
@@ -78,10 +79,19 @@ output resume; against any other server the attachment runs
   :type 'boolean
   :group 'herdr)
 
+(defcustom herdr-buffer-name-format "*herdr %k: %p %w %b*"
+  "Format of the name `herdr-default-buffer-name' gives a terminal buffer.
+%k is what runs there, `agent' or `pane'; %p the pane's id; %w the
+worktree and %r the project it belongs to; %b the git branch; %l the
+terminal's label.  A spec with nothing to say drops out together with
+the space before it."
+  :type 'string
+  :group 'herdr)
+
 (defcustom herdr-buffer-name-function #'herdr-default-buffer-name
   "Function naming the Emacs buffer of an attached terminal.
-Called with the terminal's label and the directory it works in, which
-may be nil."
+Called with the terminal's label, the directory it works in, its pane
+id and the agent running there; all but the label may be nil."
   :type 'function
   :group 'herdr)
 
@@ -402,15 +412,27 @@ Elsewhere it is the `herdr-workspace-label' of DIRECTORY."
       (file-name-nondirectory root)
     (herdr-workspace-label directory)))
 
-(defun herdr-default-buffer-name (label &optional directory)
-  "Return the buffer name for a terminal named LABEL working in DIRECTORY.
-The name leads with the project and its git branch, so the terminal
-reads as *herdr: app@main LABEL*."
-  (let ((place (when directory
-                 (concat (herdr-directory-project directory)
-                         (when-let* ((branch (herdr-directory-branch directory)))
-                           (concat "@" branch))))))
-    (format "*herdr: %s*" (string-join (delq nil (list place label)) " "))))
+(defun herdr-directory-worktree (directory)
+  "Return the name of the git checkout DIRECTORY belongs to, or nil.
+A linked worktree answers with its own name, not its main checkout's."
+  (when-let* (((and directory (file-directory-p directory)))
+              (root (locate-dominating-file directory ".git")))
+    (file-name-nondirectory (directory-file-name root))))
+
+(defun herdr-default-buffer-name (label &optional directory pane agent)
+  "Return the buffer name for terminal LABEL working in DIRECTORY.
+PANE is its pane id and AGENT what runs there; `herdr-buffer-name-format'
+lays them out, so the terminal reads as *herdr agent: wF3:p1 app main*."
+  (let ((name (format-spec
+               herdr-buffer-name-format
+               `((?k . ,(if agent "agent" "pane"))
+                 (?p . ,(or pane ""))
+                 (?w . ,(or (and directory (herdr-directory-worktree directory)) ""))
+                 (?r . ,(or (and directory (herdr-directory-project directory)) ""))
+                 (?b . ,(or (and directory (herdr-directory-branch directory)) ""))
+                 (?l . ,(or label ""))))))
+    (replace-regexp-in-string " +\\([*]?\\)\\'" "\\1"
+                              (replace-regexp-in-string "  +" " " name))))
 
 ;;;; Windows
 
@@ -993,17 +1015,17 @@ from the mode hooks that run on attach to every later command."
 
 (cl-defun herdr-attach-terminal (terminal-id &key (session herdr-session)
                                              label directory takeover display
-                                             agent)
+                                             agent pane)
   "Attach TERMINAL-ID on SESSION to an Emacs terminal buffer.
-LABEL names the buffer, DIRECTORY sets its `default-directory' when one
-still answers for it, TAKEOVER claims input ownership, and DISPLAY shows
-the buffer when non-nil.  AGENT names what runs there, as
-`herdr-claim-buffer' takes it.  Returns the buffer."
+LABEL, PANE and AGENT name the buffer, DIRECTORY sets its
+`default-directory' when one still answers for it, TAKEOVER claims input
+ownership, and DISPLAY shows the buffer when non-nil.  AGENT names what
+runs there, as `herdr-claim-buffer' takes it.  Returns the buffer."
   (let* ((herdr-session session)
          (herdr-socket-path nil)
          (server (herdr-session-server-key session))
          (name (herdr--free-buffer-name (or label terminal-id) terminal-id
-                                        server directory)))
+                                        server directory pane agent)))
     (when-let* ((existing (get-buffer name)))
       (kill-buffer existing))
     (let ((buffer (get-buffer-create name))
@@ -1218,17 +1240,20 @@ An agent's label moves when it titles its conversation or sheds the
 placeholder name it launched under; its buffer keeps the name herdr gave
 it until then.  A buffer renamed by hand is left as it is."
   (dolist (entry entries)
-    (let ((directory (herdr-entry-directory entry)))
+    (let ((directory (herdr-entry-directory entry))
+          (pane (alist-get 'pane_id entry))
+          (agent (alist-get 'agent entry)))
       (when-let* ((target (herdr--entry-target entry))
                   (buffer (herdr-terminal-buffer (cdr target) (car target)))
                   (given (buffer-local-value 'herdr--buffer-name buffer))
                   ((equal (buffer-name buffer) given))
                   (label (herdr--entry-label entry))
-                  ((not (equal (funcall herdr-buffer-name-function label directory)
+                  ((not (equal (funcall herdr-buffer-name-function
+                                        label directory pane agent)
                                given)))
                   (name (ignore-error user-error
                           (herdr--free-buffer-name label (cdr target) (car target)
-                                                   directory))))
+                                                   directory pane agent))))
         (with-current-buffer buffer
           (rename-buffer name)
           (setq herdr--buffer-name name))))))
@@ -1656,7 +1681,8 @@ Gives `herdr-attach-functions' the first chance to claim ENTRY."
                                :directory (herdr-entry-directory entry)
                                :takeover herdr-attach-takeover
                                :display t
-                               :agent (alist-get 'agent entry)))))
+                               :agent (alist-get 'agent entry)
+                               :pane (alist-get 'pane_id entry)))))
 
 ;;;###autoload
 (defun herdr-attach-agent (agent)
