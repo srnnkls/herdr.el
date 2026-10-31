@@ -43,10 +43,17 @@
           (unless files
             (error "No test file matches %S under %s"
                    herdr-test-file-spec default-directory))
-          (mapconcat #'identity
-                     (cons "eask test ert"
-                           (mapcar #'shell-quote-argument files))
-                     " ")))
+          (let ((quoted (mapcar #'shell-quote-argument files)))
+            (mapconcat #'identity
+                       (list "sh bin/herdr-herd-tests.sh"
+                             "eask compile --clean"
+                             (mapconcat #'identity
+                                        (append '("eask compile" "--clean") quoted)
+                                        " ")
+                             (mapconcat #'identity
+                                        (cons "eask test ert" quoted)
+                                        " "))
+                       " && "))))
 
 (add-hook 'eask-before-compile-hook
           (lambda ()

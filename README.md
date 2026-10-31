@@ -134,11 +134,8 @@ Each of these is optional, and herdr.el runs without any of them.
 
 ```sh
 eask install-deps --dev
-eask compile
-eask run script test            # every ERT suite
-eask lint checkdoc --strict
-scripts/compile-and-test.sh     # compile and test with plain Emacs
-bin/herdr-herd-tests.sh         # tests for the herd helper
+mise run test                   # compile and run every suite, plus the herd helper
+mise run check                  # the same, then the lints
 ```
 
 CI runs the suites on Ubuntu and macOS with Emacs 29.1, 30.1 and 31.1, plus a soft-failing Emacs

@@ -1,2 +1,10 @@
 [tools]
 hk = "2.0.1"
+
+[tasks.test]
+description = "Run every suite"
+run = ["eask run script test", "eask clean elc"]
+
+[tasks.check]
+description = "Compile, lint and test"
+run = ["eask run script test", "eask clean elc", "hk check"]
