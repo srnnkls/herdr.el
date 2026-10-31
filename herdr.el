@@ -2026,13 +2026,17 @@ asks for.  Projects nothing was assigned to take their session from
   (or (herdr-session-name session) "default"))
 
 ;;;###autoload
-(defun herdr-session-start (session)
+(defun herdr-session-start (session &optional directory)
   "Start the herdr server of SESSION, creating the session when herdr has none.
-The server is detached from Emacs, as `herdr-start-server' starts it."
+The server is detached from Emacs, as `herdr-start-server' starts it,
+and runs in DIRECTORY, the home directory unless a prefix argument
+asks for another."
   (interactive
    (list (herdr-read-session "Start herdr session"
                              nil (lambda (record)
-                                   (not (alist-get 'running record))))))
+                                   (not (alist-get 'running record))))
+         (when current-prefix-arg
+           (read-directory-name "Run herdr server in: " "~/" nil t))))
   (when (and (stringp session) (string-blank-p session))
     (user-error "A herdr session needs a name"))
   (herdr-with-session session
@@ -2040,7 +2044,7 @@ The server is detached from Emacs, as `herdr-start-server' starts it."
      ((herdr-available-p)
       (message "herdr session %s is already running" (herdr--session-label session)))
      ((condition-case err
-          (herdr-start-server)
+          (herdr-start-server directory)
         (herdr-error (user-error "%s" (error-message-string err))))
       (run-hooks 'herdr-session-change-hook)
       (message "Started herdr session %s" (herdr--session-label session)))
@@ -2088,6 +2092,26 @@ herdr keeps the session, so `herdr-session-start' brings it back."
         (herdr-error (user-error "%s" (error-message-string err))))
       (run-hooks 'herdr-session-change-hook)
       (message "Stopped herdr session %s" name))))
+
+;;;###autoload
+(defun herdr-session-cold-restart (session directory)
+  "Stop SESSION's herdr server and start a fresh one in DIRECTORY.
+Unlike `herdr-restart-server', no pane survives: the new server shares
+nothing with the old one, its working directory and environment
+included."
+  (interactive
+   (list (herdr-read-session "Cold-restart herdr session" herdr-session
+                             (lambda (record) (alist-get 'running record)))
+         (read-directory-name "Run herdr server in: " "~/" nil t)))
+  (let ((name (herdr--session-label session)))
+    (when (or (not (called-interactively-p 'any))
+              (yes-or-no-p (format "Stop herdr session %s and every pane in it? " name)))
+      (herdr-session-stop session)
+      (herdr-with-session session
+        (let ((deadline (+ (float-time) herdr-server-start-timeout)))
+          (while (and (< (float-time) deadline) (herdr-available-p))
+            (sleep-for 0.1))))
+      (herdr-session-start session directory))))
 
 ;;;###autoload
 (defun herdr-session-delete (session)

@@ -1784,25 +1784,26 @@ only by the heading's own total."
               (herdr-status--unreachable-summary)))
     (dolist (server herdr-status--session-records)
       (let ((snapshot (alist-get 'snapshot server)))
-        (magit-insert-section (herdr-status-session (alist-get 'key server) t)
-          (magit-insert-heading
-            (herdr-status--clickable
-             (format "%s  %s"
-                     (herdr-status--session-name server)
-                     (propertize (abbreviate-file-name (alist-get 'key server))
-                                 'font-lock-face 'herdr-status-path))))
-          (magit-insert-section-body
-            (herdr-status--insert-field
-             "reachable" (if (alist-get 'reachable server) "yes" "no"))
-            (herdr-status--insert-field "error" (alist-get 'error server))
-            (herdr-status--insert-field "version" (alist-get 'version snapshot))
-            (herdr-status--insert-field
-             "protocol"
-             (herdr-status--format-value (alist-get 'protocol snapshot)))
-            (dolist (field '(workspaces tabs panes agents))
-              (herdr-status--insert-field
-               (symbol-name field)
-               (number-to-string (length (alist-get field snapshot)))))))))))
+        (magit-insert-section section (herdr-status-session (alist-get 'key server) t)
+                              (oset section keymap 'herdr-status-session-map)
+                              (magit-insert-heading
+                                (herdr-status--clickable
+                                 (format "%s  %s"
+                                         (herdr-status--session-name server)
+                                         (propertize (abbreviate-file-name (alist-get 'key server))
+                                                     'font-lock-face 'herdr-status-path))))
+                              (magit-insert-section-body
+                                (herdr-status--insert-field
+                                 "reachable" (if (alist-get 'reachable server) "yes" "no"))
+                                (herdr-status--insert-field "error" (alist-get 'error server))
+                                (herdr-status--insert-field "version" (alist-get 'version snapshot))
+                                (herdr-status--insert-field
+                                 "protocol"
+                                 (herdr-status--format-value (alist-get 'protocol snapshot)))
+                                (dolist (field '(workspaces tabs panes agents))
+                                  (herdr-status--insert-field
+                                   (symbol-name field)
+                                   (number-to-string (length (alist-get field snapshot)))))))))))
 
 (defun herdr-status-recent-agents ()
   "Return the dashboard's agents in most-recently-used order."
@@ -1926,7 +1927,8 @@ are bound by that package and unbound where it is not installed."
   "g" #'herdr-status-refresh
   "p" #'herdr-status-toggle-project
   "S" #'herdr-session-dispatch
-  "Z" #'herdr-restart-server
+  "M-S" #'herdr-session-start
+  "Z" #'herdr-status-restart-server
   "M-Z" #'herdr-update
   "q" #'quit-window)
 
@@ -2421,6 +2423,62 @@ of prompting."
     (cl-find (oref section value) herdr-status--session-records
              :key (lambda (server) (alist-get 'key server))
              :test #'equal)))
+
+(defun herdr-status--session-record-at-point ()
+  "Return the session record at point, or signal that there is none."
+  (or (herdr-status--session-at-point)
+      (user-error "No herdr session at point")))
+
+(defun herdr-status-restart-server (&optional directory)
+  "Restart the herdr server at point, its panes running on.
+A session row names the server, as does the session an agent or pane
+row lives on; elsewhere `herdr-restart-server' picks it.  A session
+whose server answers nothing is started instead, and its agents
+attached again.  With a prefix argument, read DIRECTORY and restart
+cold through `herdr-session-cold-restart', ending every pane."
+  (interactive
+   (list (when current-prefix-arg
+           (read-directory-name "Run herdr server in: " "~/" nil t))))
+  (if directory
+      (let ((session (or (alist-get 'session (herdr-status--session-at-point))
+                         (alist-get 'session (herdr-status-entry-at-point))
+                         (herdr-read-session
+                          "Cold-restart herdr session" herdr-session
+                          (lambda (record) (alist-get 'running record))))))
+        (when (yes-or-no-p
+               (format "Stop herdr session %s and every pane in it? "
+                       (herdr--session-label session)))
+          (herdr-session-cold-restart session directory)
+          (herdr-attach-session session)))
+    (if-let* ((server (herdr-status--session-at-point)))
+        (let ((session (alist-get 'session server)))
+          (if (alist-get 'reachable server)
+              (herdr-restart-server session)
+            (herdr-session-start session)
+            (herdr-attach-session session)))
+      (if-let* ((entry (herdr-status-entry-at-point)))
+          (herdr-restart-server (alist-get 'session entry))
+        (call-interactively #'herdr-restart-server)))))
+
+(defun herdr-status-session-stop ()
+  "Stop the herdr session at point, after asking."
+  (interactive)
+  (funcall-interactively
+   #'herdr-session-stop
+   (alist-get 'session (herdr-status--session-record-at-point))))
+
+(defun herdr-status-session-delete ()
+  "Delete the stopped herdr session at point, after asking."
+  (interactive)
+  (funcall-interactively
+   #'herdr-session-delete
+   (alist-get 'session (herdr-status--session-record-at-point))))
+
+(defvar-keymap herdr-status-session-map
+  :doc "Keys a session row in the dashboard answers in place of the agent keys."
+  "n" #'herdr-session-start
+  "x" #'herdr-status-session-stop
+  "D" #'herdr-status-session-delete)
 
 (defun herdr-status-visit (&optional focus)
   "Show whatever the section at point stands for.
@@ -3094,6 +3152,7 @@ the ones before it leave tied."
    ("a" "attach" herdr-session-attach)
    ("A" "attach session + all agents" herdr-session-attach-all)
    ("x" "stop" herdr-session-stop)
+   ("Z" "restart, panes run on" herdr-session-restart)
    ("D" "delete" herdr-session-delete)])
 
 ;;;###autoload
@@ -3138,7 +3197,8 @@ Every suffix here is bound directly in `herdr-status-mode-map' as well."
     ("h" "herds" herdr-herd-dispatch)]
    ["Server"
     ("S" "sessions" herdr-session-dispatch)
-    ("Z" "restart, panes run on" herdr-restart-server)
+    ("M-S" "start server" herdr-session-start)
+    ("Z" "restart at point, panes run on" herdr-status-restart-server)
     ("M-Z" "update herdr" herdr-update)]
    ]
   [:class transient-row
@@ -3171,11 +3231,14 @@ The fresh prefix inherits evil's, so binding into it leaves evil's alone."
 (defun herdr-status-evil-setup ()
   "Put the dashboard's keys ahead of evil's normal state.
 Keys other packages add to `herdr-status-mode-map' later take effect
-too, since evil consults the keymap itself."
+too, since evil consults the keymap itself.  `Z' is bound in normal
+state as well, where a `ZZ' bound for `magit-section-mode' would win."
   (evil-make-overriding-map herdr-status-mode-map 'normal)
   (dolist (key '("d" "x"))
     (evil-define-key* 'visual herdr-status-mode-map (kbd key)
                       (keymap-lookup herdr-status-mode-map key)))
+  (evil-define-key* 'normal herdr-status-mode-map (kbd "Z")
+                    (keymap-lookup herdr-status-mode-map "Z"))
   (pcase-dolist (`(,key . ,_) herdr-status-evil-renames)
     (evil-define-key* 'normal herdr-status-mode-map (kbd key) (herdr-status--evil-own key)))
   (pcase-dolist (`(,key . ,moved) herdr-status-evil-renames)

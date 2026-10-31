@@ -41,7 +41,8 @@ A prefix argument is written `C-u`.
 | `herdr-session-stop` | stop a running session and every pane in it, after confirming |
 | `herdr-session-delete` | delete a stopped session, after confirming |
 | `herdr-assign-project-session` | route the current project to a session and store it in `herdr-state-file`; `C-u` skips storing |
-| `herdr-restart-server` | replace the server in scope with one from the installed herdr, handing its panes over live; `C-u` reads the session |
+| `herdr-restart-server` | replace the server in scope with one from the installed herdr, handing its panes over live; reads the session when more than one runs, or with `C-u` |
+| `herdr-session-restart` | `herdr-restart-server` on a running session it reads |
 | `herdr-update` | run `herdr update --handoff` in `*herdr-update*`, then carry every attachment over to its server's new terminals |
 
 ### The agent at hand
@@ -116,6 +117,9 @@ While a message is being written:
 | `herdr-status-restart` | `X` | stop the agent at point and resume its conversation in a fresh pane; a herd member rejoins its herd |
 | `herdr-status-move` | `M` | move the agent at point, or the region's, to another session: its pane closes and its conversation resumes there; herds stay behind |
 | `herdr-status-resume` | `r` | read one of the harness's past sessions started in the row's directory or any worktree of its repository, by title and date with the worktree as annotation, and resume it in a new pane there; `C-u` reads the harness |
+| `herdr-status-restart-server` | `Z` | restart the server of the session, agent or pane at point, its panes running on; a stopped session on its row is started and its agents attached again |
+| `herdr-status-session-stop` | `x` on a session row | stop the session at point, after confirmation |
+| `herdr-status-session-delete` | `D` on a session row | delete the stopped session at point, after confirmation |
 | `herdr-status-toggle-expanded` | `e` | open every row `herdr-status-expanded-states` names, or close them all |
 | `herdr-status-toggle-details` | `i` | show or hide agent metadata under expanded rows |
 | `herdr-status-toggle-grouping` | `u` | draw the agent list in groups, or as one list |
@@ -198,7 +202,7 @@ on the agent at point; elsewhere they read one.
 | `g` | `herdr-status-refresh` |
 | `p` | `herdr-status-toggle-project` |
 | `S` | `herdr-session-dispatch` |
-| `Z` | `herdr-restart-server` |
+| `Z` | `herdr-status-restart-server` |
 | `M-Z` | `herdr-update` |
 | `q` | `quit-window` |
 

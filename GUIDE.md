@@ -106,13 +106,18 @@ running, stopped or new.
 | `A` | `herdr-session-attach-all` | both: every agent of the session as a buffer, then herdr's client on it |
 | `x` | `herdr-session-stop` | stop a session's server, ending its panes; herdr keeps the session |
 | `D` | `herdr-session-delete` | delete a stopped session for good |
+| `Z` | `herdr-session-restart` | restart a running session's server, its panes running on |
+
+On a row of the dashboard's `Sessions` section, `n`, `x` and `D` act on that session without
+asking which, and `Z` restarts it, starting a stopped one and attaching its agents again.
 
 ### Restarting and updating servers
 
 `herdr-restart-server` replaces a session's server with one started from the herdr installed now.
 herdr hands every pane's process over to it live, so agents keep running through a restart, and a
-release installed since the server started takes effect. It restarts the session in scope; `C-u`
-reads one. `herdr-update` runs `herdr update --handoff` in `*herdr-update*`, where its questions
+release installed since the server started takes effect. It restarts the session in scope, and
+reads one when more than one runs or with `C-u`; in the dashboard, `Z` restarts the server of the
+session, agent or pane at point. `herdr-update` runs `herdr update --handoff` in `*herdr-update*`, where its questions
 can be answered, and so hands every running server over to the new release. The dashboard and the
 herdr menu bind both, to `Z` and `M-Z`. `herdr update` works only for herdr's own installer;
 after a Homebrew, mise or Nix update, `herdr-restart-server` carries a server over to the new

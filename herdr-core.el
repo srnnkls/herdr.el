@@ -516,11 +516,13 @@ seconds, by default `herdr-request-timeout'."
       (and (herdr-request "ping") t)
     (herdr-error nil)))
 
-(defun herdr-start-server ()
+(defun herdr-start-server (&optional directory)
   "Start a headless herdr server and wait for it to answer.
 Returns non-nil once it does.  The server is detached from Emacs, so
 it outlives this session the way a herdr server started from a shell
-does."
+does.  It runs in DIRECTORY, the home directory by default, with the
+global environment, so no buffer-local project environment reaches its
+panes."
   (unless (executable-find herdr-executable)
     (signal 'herdr-error
             (list (format "herdr executable not found: %s" herdr-executable))))
@@ -530,7 +532,11 @@ does."
                                             (herdr-global-args)
                                             (list "server"))
                                     " ")))
-        (process-environment (herdr-process-environment)))
+        (default-directory (file-name-as-directory
+                            (expand-file-name (or directory "~/"))))
+        (process-environment
+         (let ((process-environment (default-value 'process-environment)))
+           (herdr-process-environment))))
     (call-process-shell-command command nil 0)
     (let ((deadline (+ (float-time) herdr-server-start-timeout)))
       (while (and (< (float-time) deadline) (not (herdr-available-p)))

@@ -1206,9 +1206,14 @@ RENAMES is an alist from each old terminal id to its new one."
 herdr hands every pane's process over to a server started from the
 herdr installed now, so a restart picks up an update without ending an
 agent, and attachments reconnect to their panes.  SESSION defaults to
-the session in scope; with \\[universal-argument] it is read."
+the session in scope; it is read when more than one session runs, or
+with \\[universal-argument]."
   (interactive
-   (list (when current-prefix-arg (herdr-read-session "Restart herdr session"))))
+   (list (when (or current-prefix-arg
+                   (cdr (seq-filter (lambda (record) (alist-get 'running record))
+                                    (ignore-error herdr-error (herdr-session-list)))))
+           (herdr-read-session "Restart herdr session" herdr-session
+                               (lambda (record) (alist-get 'running record))))))
   (herdr-with-session session
     (let ((server (herdr-server-key))
           (name (or (herdr-session-name) "default")))
@@ -1223,6 +1228,14 @@ the session in scope; with \\[universal-argument] it is read."
          (message "herdr: restarting %s failed: %s" name (error-message-string err)))
        herdr-handoff-timeout)
       (message "herdr: restarting %s..." name))))
+
+;;;###autoload
+(defun herdr-session-restart (session)
+  "Replace running SESSION's herdr server, read, as `herdr-restart-server' does."
+  (interactive
+   (list (herdr-read-session "Restart herdr session" herdr-session
+                             (lambda (record) (alist-get 'running record)))))
+  (herdr-restart-server session))
 
 ;;;###autoload
 (defun herdr-update ()
