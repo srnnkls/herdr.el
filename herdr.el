@@ -1470,7 +1470,8 @@ AFFIXATION draws one entry, standing in for the annotation: it is called
 with a candidate and its entry and answers with the name to show and
 what goes before and after it.  A shortened name is only what the row
 shows, so the whole of it still matches.  GROUP nil offers the entries
-flat, which is what a list of one kind wants."
+flat, which is what a list of one kind wants; a function is called with
+an entry and answers with the heading it goes under."
   (let* ((entries (if require-agent
                       (cl-remove-if-not
                        (lambda (entry) (equal (alist-get 'agent entry) require-agent))
@@ -1498,7 +1499,9 @@ flat, which is what a list of one kind wants."
                      (if transform
                          candidate
                        (when-let* ((entry (cdr (assoc candidate candidates))))
-                         (or (alist-get 'kind entry) "herdr")))))))
+                         (if (functionp group)
+                             (funcall group entry)
+                           (or (alist-get 'kind entry) "herdr"))))))))
            '((display-sort-function . identity)
              (cycle-sort-function . identity)
              (category . herdr-entry)))))
@@ -1516,7 +1519,7 @@ flat, which is what a list of one kind wants."
 (declare-function herdr-status--read-agent-affixation "herdr-status" (entries))
 (declare-function herdr-status-switch-agents "herdr-status" ())
 
-(defun herdr-read-agent (prompt &optional entries)
+(defun herdr-read-agent (prompt &optional entries local)
   "Read one of the running agents with PROMPT and return its entry.
 ENTRIES defaults to the agents in scope, which inside a dashboard are
 the ones it shows.  Every command that picks an agent reads it here, so
@@ -1525,17 +1528,27 @@ branch and working directory behind it, drawn in the dashboard's own
 faces.  A name too long for `herdr-read-agent-name-width' is cut short
 in the row alone and still matches in full.  The agent reached for most
 recently leads, so the one meant is usually the one already under the
-cursor.  Without the dashboard installed the plain annotation stands
-in."
-  (if (require 'herdr-status nil t)
-      (let ((entries (herdr-recent-first
-                      (or entries (herdr-status-switch-agents)))))
+cursor.  The members of LOCAL lead under a workspace heading and the
+rest follow under a global one.  Without the dashboard installed the
+plain annotation stands in."
+  (let* ((dashboard (require 'herdr-status nil t))
+         (entries (herdr-recent-first
+                   (or entries (if dashboard
+                                   (herdr-status-switch-agents)
+                                 (herdr-entries-in-scope)))))
+         (local (seq-filter (lambda (entry) (memq entry local)) entries))
+         (entries (if local
+                      (append local (seq-remove (lambda (entry) (memq entry local))
+                                                entries))
+                    entries))
+         (group (and local
+                     (lambda (entry)
+                       (if (memq entry local) "Workspace" "Global")))))
+    (if dashboard
         (herdr-read-entry prompt entries
                           :affixation (herdr-status--read-agent-affixation entries)
-                          :group nil))
-    (herdr-read-entry prompt
-                      (herdr-recent-first (or entries (herdr-entries-in-scope)))
-                      :group nil)))
+                          :group group)
+      (herdr-read-entry prompt entries :group group))))
 
 ;;;; Sessions
 

@@ -2657,14 +2657,13 @@ there arrives colourless without this."
 It is called with a candidate and its entry and answers with the name to
 show, what goes before it and what goes after.  The state leads, the
 name is cut to the width the longest one is allowed, and the harness,
-branch and working directory follow it in columns.  The pane and
-workspace the dashboard shows are left out: nobody picks an agent by
-them."
+branch, pane and working directory follow it in columns."
   (let ((name (herdr-status--read-agent-width entries))
         (harness (herdr-status--width entries
                                       (lambda (entry) (alist-get 'agent entry)) 6))
         (branch (herdr-status--width entries #'herdr-status--branch 0))
         (session (herdr-status--width entries #'herdr-status--session-name 6))
+        (pane (herdr-status--width entries #'herdr-status-column-pane 0))
         (many (cdr (herdr-known-sessions))))
     (lambda (candidate entry)
       (let ((shown (truncate-string-to-width candidate name nil nil t)))
@@ -2686,6 +2685,10 @@ them."
                         (when (> branch 0)
                           (propertize (herdr-status--pad
                                        (herdr-status--branch entry) branch)
+                                      'font-lock-face 'herdr-status-meta))
+                        (when (> pane 0)
+                          (propertize (herdr-status--pad
+                                       (herdr-status-column-pane entry) pane)
                                       'font-lock-face 'herdr-status-meta))
                         (when-let* ((place (herdr-status--agent-place entry)))
                           (propertize place 'font-lock-face 'herdr-status-path))))

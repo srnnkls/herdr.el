@@ -2577,7 +2577,11 @@ minibuffer moves the draft to a `herdr-message-mode' buffer instead."
          (entries (herdr-agent--send-scope-entries all scope))
          (entry (if last
                     (herdr-agent--last-send-entry entries scope)
-                  (herdr-read-agent "Message agent: " entries)))
+                  (herdr-read-agent
+                   "Message agent: " entries
+                   (and (eq scope 'all)
+                        (ignore-errors
+                          (herdr-agent--send-scope-entries entries 'workspace))))))
          (target (herdr--entry-target entry)))
     (herdr-message--read target (herdr-message--context entry))))
 

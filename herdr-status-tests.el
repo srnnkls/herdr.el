@@ -1572,6 +1572,7 @@
       (should (string-match-p "✳ claude" suffix))
       (should (string-prefix-p "  " suffix))
       (should (string-match-p "proj" suffix))
+      (should (string-match-p "%1  " suffix))
       (should-not (string-match-p "▣" suffix))
       (should-not (string-match-p "▤" suffix))
       (should-not (string-match-p "/tmp/proj/" suffix))
@@ -1611,6 +1612,22 @@
       (should (equal (funcall (alist-get 'affixation-function metadata)
                               '("nothing here"))
                      '(("nothing here" "" "")))))))
+
+(ert-deftest herdr-read-agent-puts-local-agents-under-a-workspace-heading ()
+  (herdr-status-tests--with-dashboard
+    (let* ((entries (herdr-status-switch-agents))
+           (docs (cl-find "docs" entries :key #'herdr--entry-label :test #'equal))
+           table)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest _)
+                   (setq table collection)
+                   "docs")))
+        (should (eq (herdr-read-agent "Message: " entries (list docs)) docs)))
+      (let ((group (alist-get 'group-function (cdr (funcall table "" nil 'metadata))))
+            (candidates (funcall table "" nil t)))
+        (should (equal (car candidates) "docs"))
+        (should (equal (funcall group "docs" nil) "Workspace"))
+        (should (equal (funcall group "api-review" nil) "Global"))))))
 
 (ert-deftest herdr-status-switch-visits-the-agent-that-was-read ()
   (herdr-status-tests--with-dashboard
