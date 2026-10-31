@@ -260,6 +260,8 @@
          (herdr-status-columns
           (append herdr-status-columns
                   '((cost :value herdr-status-tests--cost))))
+         (herdr-status-global-columns
+          (append herdr-status-global-columns '(cost)))
          (widths (herdr-status--widths entries workspaces))
          (cells (lambda (entry)
                   (string-join
@@ -281,21 +283,34 @@
                                 (car entries) widths
                                 (list :workspaces workspaces)))
                      "  ")))))
-    (let ((herdr-status-hidden-columns '(workspace)))
+    (let ((herdr-status-global-columns '(pane branch)))
       (should-not (string-match-p "w1" (funcall cells)))
       (should-not (herdr-status-field-width
                    (herdr-status--widths entries workspaces) 'workspace)))
-    (let ((herdr-status-hidden-columns nil))
+    (let ((herdr-status-global-columns '(pane workspace branch)))
       (should (string-match-p "w1" (funcall cells))))))
 
 (ert-deftest herdr-status-picks-the-columns-shown ()
-  (let ((herdr-status-hidden-columns '(workspace))
+  (let ((herdr-status-global-columns '(pane))
+        (herdr-status-workspace-columns '(pane))
         (herdr-status-columns '((pane) (workspace) (branch))))
     (cl-letf (((symbol-function 'customize-set-variable)
                (lambda (symbol value) (set symbol value)))
               ((symbol-function 'herdr-status--buffers) #'ignore))
-      (herdr-status-pick-columns '(workspace branch))
-      (should (equal herdr-status-hidden-columns '(pane))))))
+      (herdr-status-pick-columns '(branch workspace))
+      (should (equal herdr-status-global-columns '(workspace branch)))
+      (should (equal herdr-status-workspace-columns '(pane))))))
+
+(ert-deftest herdr-status-shows-the-project-only-on-a-global-dashboard ()
+  (let ((herdr-status-global-columns '(pane project branch))
+        (herdr-status-workspace-columns '(pane branch))
+        (herdr-status-columns '((pane) (project) (branch))))
+    (with-temp-buffer
+      (should (equal (mapcar #'car (herdr-status--shown-columns))
+                     '(pane project branch)))
+      (setq herdr-status--project-root "/work/app/")
+      (should (equal (mapcar #'car (herdr-status--shown-columns))
+                     '(pane branch))))))
 
 (defmacro herdr-status-tests--choosing (&rest body)
   "Run BODY with `herdr-status-choose' handing its arguments to `chose'."
@@ -331,7 +346,7 @@
       (should (equal committed '((a . t) (c "x" "y")))))))
 
 (ert-deftest herdr-status-picks-the-columns-shown-from-the-menu ()
-  (let ((herdr-status-hidden-columns '(workspace))
+  (let ((herdr-status-global-columns '(pane branch))
         (herdr-status-columns '((pane) (workspace) (branch))))
     (cl-letf (((symbol-function 'customize-set-variable)
                (lambda (symbol value) (set symbol value)))
@@ -340,7 +355,7 @@
         (herdr-status-columns-menu)
         (should (equal (plist-get chose :pending) '((pane . t) (branch . t))))
         (funcall (plist-get chose :commit) '((workspace . t)))
-        (should (equal herdr-status-hidden-columns '(pane branch)))))))
+        (should (equal herdr-status-global-columns '(workspace)))))))
 
 (ert-deftest herdr-status-orders-the-agents-by-several-columns ()
   (let ((herdr-status-sorts
@@ -426,7 +441,8 @@
                            " claude")))))
 
 (ert-deftest herdr-status-rows-carry-pane-and-workspace-metadata ()
-  (let ((herdr-status-hidden-columns nil))
+  (let ((herdr-status-workspace-columns (mapcar #'car herdr-status-columns))
+        (herdr-status-global-columns (mapcar #'car herdr-status-columns)))
     (herdr-status-tests--with-dashboard
       (let ((agents (herdr-status-tests--section-text "Agents ")))
         (should (string-match-p "%1" agents))
@@ -2307,7 +2323,8 @@ Emacs releases the attachment first and the two go together."
       (insert "ref: refs/heads/feat/branch-column\n"))
     (unwind-protect
         (herdr-status-tests--with-dashboard
-          (let ((herdr-status-nerd-font t))
+          (let ((herdr-status-nerd-font t)
+                (herdr-status-global-columns '(pane branch directory)))
             (cl-letf (((symbol-function 'herdr-sessions)
                        (lambda ()
                          (mapcar (lambda (entry)
@@ -2420,6 +2437,19 @@ Emacs releases the attachment first and the two go together."
                             silent widths (list :workspaces workspaces))))
       (should (zerop (herdr-status-field-width widths 'model)))
       (should-not (nth 3 columns)))))
+
+(ert-deftest herdr-status-splits-the-effort-off-the-model ()
+  (let ((suffixed '((tokens . ((model . "Opus 5.5/xhigh")))))
+        (own '((tokens . ((model . "Opus 5.5/xhigh") (effort . "low")))))
+        (provider '((tokens . ((model . "anthropic/claude-sonnet")))))
+        (bare '((tokens . ((model . "Opus 5.5"))))))
+    (should (equal (herdr-status--model suffixed) "Opus 5.5"))
+    (should (equal (herdr-status--effort suffixed) "xhigh"))
+    (should (equal (herdr-status--effort own) "low"))
+    (should (equal (herdr-status--model provider) "anthropic/claude-sonnet"))
+    (should-not (herdr-status--effort provider))
+    (should (equal (herdr-status--model bare) "Opus 5.5"))
+    (should-not (herdr-status--effort bare))))
 
 (ert-deftest herdr-status-draws-the-context-window-an-agent-reports ()
   (let* ((reported '((agent . "claude") (pane_id . "%1")

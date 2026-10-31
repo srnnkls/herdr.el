@@ -442,8 +442,8 @@ the level for the whole buffer. `n` and `p` belong to the dashboard, so move bet
 A row starts with `herdr-status-attached-glyph` when Emacs has a buffer for the agent, then the
 state glyph in the state's colour (hollow for `idle`), the name, and the harness behind its vendor
 mark. The session follows once more than one server is in play. Then come the pane, the herdr
-workspace, the git branch, the model, the share of its context window the agent holds, and the
-directory. A column no row has a value for takes no room.
+workspace, the git branch, the model, the reasoning effort it answers at, the share of its context
+window the agent holds, and the directory. A column no row has a value for takes no room.
 
 The directory is herdr's `foreground_cwd` when it reports one, otherwise the directory the pane
 opened in. An agent that moves itself into a worktree therefore moves its row, its project scope
@@ -496,7 +496,9 @@ no title of its own is shown as `herdr-agent-title-function` makes it.
 `c`, `f` and `O` open menus that hold a choice until it is made: each key changes it, the menu
 stays open, `RET` applies it and `C-g` drops it. `DEL` empties it.
 
-`c` shows and hides the fields of `herdr-status-columns`.
+`c` shows and hides the fields of `herdr-status-columns`. A project's dashboard draws the fields of
+`herdr-status-workspace-columns` and a global one those of `herdr-status-global-columns`, so the
+project shows only where the rows span several; `c` changes the list of the dashboard it runs in.
 
 `f` lists the fields of `herdr-status-groups` - project, directory, session, harness, model and
 state - and the named filters. A field's key reads the values to keep, comma-separated, among
@@ -559,7 +561,12 @@ how to compute it. This one appends a `host` column read from a token the pane r
              `(host :value ,(lambda (entry)
                               (alist-get 'host (alist-get 'tokens entry))))
              t)
+(add-to-list 'herdr-status-global-columns 'host t)
+(add-to-list 'herdr-status-workspace-columns 'host t)
 ```
+
+A dashboard draws a field only when its scope's list, `herdr-status-workspace-columns` or
+`herdr-status-global-columns`, names it.
 
 - `:value` is a function of the entry, or of the entry and a plist whose `:workspaces` resolves a
   herdr workspace label. It returns the text, or nil for none.
@@ -568,10 +575,11 @@ how to compute it. This one appends a `host` column read from a token the pane r
   width of its own value.
 
 Values come from three places. `pane` and `workspace` are fields herdr reports. `branch` and
-`directory` are computed from the working directory. `model` and `context` are read from the
-entry's `tokens`, the metadata any program reports to its pane through herdr's
-`pane.report_metadata`; `herdr-status-model-token` and `herdr-status-context-token` name the
-tokens. Any package that reaches the herdr socket can report tokens of its own for a column to
+`directory` are computed from the working directory. `model`, `effort` and `context` are read from
+the entry's `tokens`, the metadata any program reports to its pane through herdr's
+`pane.report_metadata`; `herdr-status-model-token`, `herdr-status-effort-token` and
+`herdr-status-context-token` name the tokens. A model reported as `Opus 5.5/high` is split into
+model and effort when the suffix is one of `herdr-status-effort-levels`. Any package that reaches the herdr socket can report tokens of its own for a column to
 show.
 
 | To change | Set |

@@ -326,6 +326,8 @@ is `$XDG_CONFIG_HOME/herdr/sessions/NAME/herdr.sock`; `XDG_CONFIG_HOME` defaults
 | `herdr-status-preview-rule` | string | `"┃"` | drawn down a preview's left edge in the agent's colour |
 | `herdr-status-preview-spacing` | natnum | 3 | pixels of space above a preview |
 | `herdr-status-model-token` | string | `"model"` | the pane metadata token the model column reads |
+| `herdr-status-effort-token` | string | `"effort"` | the pane metadata token the effort column reads |
+| `herdr-status-effort-levels` | list of strings | low, medium, high, xhigh, max | effort suffixes split off a reported model after a slash |
 | `herdr-status-context-token` | string | `"context"` | the pane metadata token the context column reads |
 | `herdr-read-agent-name-width` | float or natnum | 0.4 | how wide a name may be while an agent is read: a share of the frame, or columns |
 
@@ -333,9 +335,10 @@ is `$XDG_CONFIG_HOME/herdr/sessions/NAME/herdr.sock`; `XDG_CONFIG_HOME` defaults
 
 | Option | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `herdr-status-columns` | alist of `(FIELD . PLIST)` | pane, workspace, branch, model, context, directory | the fields after the harness; plist keys `:value`, `:face`, `:width` |
-| `herdr-status-hidden-columns` | list of fields | `(workspace)` | the fields of `herdr-status-columns` left out; `c` toggles them |
-| `herdr-status-column-widths` | alist of `(FIELD . COLUMNS)` | `((workspace . 20) (branch . 20))` | the widest a field may be before it is cut |
+| `herdr-status-columns` | alist of `(FIELD . PLIST)` | pane, project, workspace, branch, model, effort, context, directory | the fields after the harness; plist keys `:value`, `:face`, `:width` |
+| `herdr-status-workspace-columns` | list of fields | pane, branch, model, effort, context, directory | the fields of `herdr-status-columns` a project's dashboard draws; `c` toggles them there |
+| `herdr-status-global-columns` | list of fields | pane, project, branch, model, effort, context, directory | the fields a global dashboard draws; `c` toggles them there |
+| `herdr-status-column-widths` | alist of `(FIELD . COLUMNS)` | `((project . 20) (workspace . 20) (branch . 20))` | the widest a field may be before it is cut |
 | `herdr-status-name-width` | natnum or nil | nil | the widest a name may be; nil allows a third of the window |
 | `herdr-status-echo-cut-fields` | boolean | t | echo a cut field's whole value as point crosses it |
 | `herdr-status-field-glyphs` | alist of `(FIELD CANDIDATE...)` | Nerd Font, then Unicode, then ASCII | glyphs leading each field |

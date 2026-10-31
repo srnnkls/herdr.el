@@ -201,9 +201,11 @@ preference, of which the first the display can show is drawn."
 
 (defcustom herdr-status-field-glyphs
   '((pane "\ueae3" "▣" "#")
+    (project "\uea62" "◫" "")
     (workspace "\uea85" "▤" "")
     (branch "\uf126" "\ue0a0" "⎇" "@")
     (model "\U000F035B" "◆" "*")
+    (effort "\U000F140B" "⚡" "~")
     (context "\U000F1278" "◔" "%")
     (directory "\uea83" "/" ""))
   "Glyphs leading the fields that trail a row, keyed by field.
@@ -221,13 +223,14 @@ whether the Nerd Font candidates are considered at all."
     ("\U000F0AA3" "◕" "%") ("\U000F0AA4" "◕" "%") ("\U000F0AA5" "●" "%"))
   "Glyphs leading the context field, from an empty window to a full one.
 The share an agent holds picks the step nearest it, so the glyph fills
-as the window does; the last step stands for a full window alone.  Each step lists candidates the way
-`herdr-status-field-glyphs' does, and a context whose share cannot be
-read takes the glyph that option gives the field."
+as the window does; the last step stands for a full window alone.
+Each step lists candidates the way `herdr-status-field-glyphs' does,
+and a context whose share cannot be read takes the glyph that option
+gives the field."
   :type '(repeat (repeat string))
   :group 'herdr-status)
 
-(defcustom herdr-status-column-widths '((workspace . 20) (branch . 20))
+(defcustom herdr-status-column-widths '((project . 20) (workspace . 20) (branch . 20))
   "How many columns a field may take before it is cut short, keyed by field.
 A field named here is cut to that width and carries what was cut in the
 echo area as point crosses it; a field left out takes the widest value
@@ -1205,13 +1208,44 @@ a harness that reports none."
   :type 'string
   :group 'herdr-status)
 
+(defcustom herdr-status-effort-token "effort"
+  "Metadata token naming the reasoning effort an agent answers at.
+A harness that reports no such token but writes its effort after the
+model, as in \"Opus 5.5/high\", has it read from there instead."
+  :type 'string
+  :group 'herdr-status)
+
+(defcustom herdr-status-effort-levels '("low" "medium" "high" "xhigh" "max")
+  "Effort levels a reported model may end in after a slash.
+Only these are split off the model, so a model named by provider and
+name, as in \"anthropic/claude\", stays whole."
+  :type '(repeat string)
+  :group 'herdr-status)
+
+(defun herdr-status--token (entry token)
+  "Return the non-empty string ENTRY reports under TOKEN, or nil."
+  (when-let* ((value (alist-get (intern token) (alist-get 'tokens entry)))
+              ((stringp value))
+              ((not (string-empty-p value))))
+    value))
+
+(defun herdr-status--model-effort (entry)
+  "Return the model and the effort ENTRY reports, as a cons of either or nil."
+  (let ((model (herdr-status--token entry herdr-status-model-token))
+        (effort (herdr-status--token entry herdr-status-effort-token)))
+    (if (and model
+             (string-match "\\`\\(.+\\)/\\([^/]+\\)\\'" model)
+             (member (match-string 2 model) herdr-status-effort-levels))
+        (cons (match-string 1 model) (or effort (match-string 2 model)))
+      (cons model effort))))
+
 (defun herdr-status--model (entry)
   "Return the model ENTRY reports itself running, or nil."
-  (when-let* ((model (alist-get (intern herdr-status-model-token)
-                                (alist-get 'tokens entry)))
-              ((stringp model))
-              ((not (string-empty-p model))))
-    model))
+  (car (herdr-status--model-effort entry)))
+
+(defun herdr-status--effort (entry)
+  "Return the reasoning effort ENTRY reports itself answering at, or nil."
+  (cdr (herdr-status--model-effort entry)))
 
 (defcustom herdr-status-context-token "context"
   "Metadata token naming how much of its context window an agent holds.
@@ -1231,9 +1265,11 @@ a harness that reports none."
 
 (defcustom herdr-status-columns
   '((pane :value herdr-status-column-pane)
+    (project :value herdr-status--project-group)
     (workspace :value herdr-status-column-workspace)
     (branch :value herdr-status--branch)
     (model :value herdr-status--model)
+    (effort :value herdr-status--effort)
     (context :value herdr-status--context)
     (directory :value herdr-status--directory :face herdr-status-path
                :width own))
@@ -1256,21 +1292,37 @@ a field added here is drawn whole without touching either."
   :type '(alist :key-type symbol :value-type plist)
   :group 'herdr-status)
 
-(defcustom herdr-status-hidden-columns '(workspace)
-  "The fields of `herdr-status-columns' the dashboard leaves out.
-The workspace label is left out by default: an agent's own workspace
-carries the agent's name, which the row already leads with.
-\[herdr-status-columns-menu] shows or hides each field."
+(defcustom herdr-status-workspace-columns
+  '(pane branch model effort context directory)
+  "The fields of `herdr-status-columns' a project's dashboard draws.
+The project is left out, as every row would repeat it, and so is the
+workspace label: an agent's own workspace carries the agent's name,
+which the row already leads with.  \\[herdr-status-columns-menu] shows or
+hides each field."
   :type '(repeat symbol)
   :group 'herdr-status)
 
+(defcustom herdr-status-global-columns
+  '(pane project branch model effort context directory)
+  "The fields of `herdr-status-columns' a global dashboard draws.
+\\[herdr-status-columns-menu] shows or hides each field."
+  :type '(repeat symbol)
+  :group 'herdr-status)
+
+(defun herdr-status--columns-variable ()
+  "Return the option naming the fields this dashboard's scope draws."
+  (if herdr-status--project-root
+      'herdr-status-workspace-columns
+    'herdr-status-global-columns))
+
 (defun herdr-status--shown-columns ()
   "Return the entries of `herdr-status-columns' the dashboard draws."
-  (seq-remove (lambda (column) (memq (car column) herdr-status-hidden-columns))
-              herdr-status-columns))
+  (let ((fields (symbol-value (herdr-status--columns-variable))))
+    (seq-filter (lambda (column) (memq (car column) fields))
+                herdr-status-columns)))
 
 (defun herdr-status-pick-columns (fields)
-  "Show FIELDS of `herdr-status-columns' and hide the rest, in every dashboard."
+  "Show FIELDS of `herdr-status-columns' in every dashboard of this scope."
   (interactive
    (list (mapcar #'intern
                  (completing-read-multiple
@@ -1279,29 +1331,30 @@ carries the agent's name, which the row already leads with.
                   nil t
                   (mapconcat (lambda (column) (symbol-name (car column)))
                              (herdr-status--shown-columns) ",")))))
-  (herdr-status--hide-columns
-   (seq-remove (lambda (field) (memq field fields))
-               (mapcar #'car herdr-status-columns))))
+  (herdr-status--show-columns fields))
 
-(defun herdr-status--hide-columns (fields)
-  "Hide FIELDS of `herdr-status-columns' and redraw every dashboard."
-  (customize-set-variable 'herdr-status-hidden-columns fields)
+(defun herdr-status--show-columns (fields)
+  "Show FIELDS in this scope's dashboards and redraw every dashboard."
+  (customize-set-variable
+   (herdr-status--columns-variable)
+   (seq-filter (lambda (field) (memq field fields))
+               (mapcar #'car herdr-status-columns)))
   (dolist (buffer (herdr-status--buffers))
     (with-current-buffer buffer
       (herdr-status--redraw t))))
 
 ;;;###autoload
 (defun herdr-status-columns-menu ()
-  "Choose the fields of `herdr-status-columns' shown, applying them at once."
+  "Choose the fields of `herdr-status-columns' shown, applying them at once.
+The choice holds for every dashboard of this one's scope, project or
+global."
   (interactive)
-  (let ((fields (mapcar #'car herdr-status-columns)))
-    (herdr-status-choose
-     (list (cons "Columns" fields))
-     (mapcar (lambda (column) (cons (car column) t))
-             (herdr-status--shown-columns))
-     (lambda (shown)
-       (herdr-status--hide-columns
-        (seq-remove (lambda (field) (assq field shown)) fields))))))
+  (herdr-status-choose
+   (list (cons "Columns" (mapcar #'car herdr-status-columns)))
+   (mapcar (lambda (column) (cons (car column) t))
+           (herdr-status--shown-columns))
+   (lambda (shown)
+     (herdr-status--show-columns (mapcar #'car shown)))))
 
 (defun herdr-status-column-pane (entry)
   "Return the pane ENTRY runs in."
