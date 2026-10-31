@@ -923,15 +923,29 @@ is on there."
 
 (advice-add 'ghostel--redraw-now :after #'herdr--hide-drawn-cursor)
 
+(defvar ghostel-ignore-cursor-change)
+(declare-function evil-refresh-cursor "ext:evil-common" (&optional state buffer))
+
 (define-minor-mode herdr-hide-drawn-cursor-mode
   "Hide the cursor this terminal's agent paints as an inverse cell.
-An attachment of one of `herdr-drawn-cursor-agents' starts with it on."
+The agent hides the terminal's own cursor too, so the terminal's cursor
+requests are ignored and the cursor is the one the buffer's state asks
+for: a terminal herdr rebuilt shows its cursor, and the agent does not
+hide it again.  An attachment of one of `herdr-drawn-cursor-agents'
+starts with it on."
   :lighter nil
-  (if herdr-hide-drawn-cursor-mode
-      (herdr--hide-drawn-cursor (current-buffer))
+  (cond
+   (herdr-hide-drawn-cursor-mode
+    (setq-local ghostel-ignore-cursor-change t)
+    (setq cursor-type (default-value 'cursor-type))
+    (when (fboundp 'evil-refresh-cursor)
+      (evil-refresh-cursor))
+    (herdr--hide-drawn-cursor (current-buffer)))
+   (t
+    (kill-local-variable 'ghostel-ignore-cursor-change)
     (when (overlayp herdr--cursor-cell)
       (delete-overlay herdr--cursor-cell)
-      (setq herdr--cursor-cell nil))))
+      (setq herdr--cursor-cell nil)))))
 
 (defun herdr--agent-modes (buffer agent)
   "Turn on in BUFFER the modes AGENT's attachment starts with.

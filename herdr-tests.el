@@ -21,6 +21,7 @@
 (defvar ghostel-mode-hook)
 (defvar ghostel-exit-functions)
 (defvar ghostel--term)
+(defvar ghostel-ignore-cursor-change)
 
 (defun herdr-tests--start-server (handler)
   "Start a fake herdr API server answering with HANDLER.
@@ -914,11 +915,6 @@ looks for a replacement buffer runs into."
       (kill-buffer claude)
       (kill-buffer shell))))
 
-(ert-deftest herdr-ultra-scroll-down-stops-at-the-last-row-when-pinned ()
-  (with-temp-buffer
-    (let ((clamped 0)
-          (scroll (lambda (_delta) (signal 'end-of-buffer nil))))
-      (cl-letf (((symbol-function 'herdr--pin-bottom)
 (ert-deftest herdr-pin-bottom-skips-the-anchor-while-rows-fill-the-window ()
   (let ((anchored 0))
     (with-temp-buffer
@@ -935,6 +931,11 @@ looks for a replacement buffer runs into."
                                            (point)))
         (should (= anchored 1))))))
 
+(ert-deftest herdr-ultra-scroll-down-stops-at-the-last-row-when-pinned ()
+  (with-temp-buffer
+    (let ((clamped 0)
+          (scroll (lambda (_delta) (signal 'end-of-buffer nil))))
+      (cl-letf (((symbol-function 'herdr--pin-bottom)
                  (lambda (&rest _) (setq clamped (1+ clamped)))))
         (should-error (herdr--ultra-scroll-down scroll 10) :type 'end-of-buffer)
         (should (zerop clamped))
@@ -958,6 +959,16 @@ looks for a replacement buffer runs into."
       (should (equal (get-char-property 2 'face) '(:inverse-video t)))
       (herdr-hide-drawn-cursor-mode -1)
       (should (equal (get-char-property 3 'face) '(:inverse-video t))))))
+
+(ert-deftest herdr-hide-drawn-cursor-ignores-the-terminal-s-cursor-requests ()
+  (with-temp-buffer
+    (setq cursor-type 'box)
+    (herdr-hide-drawn-cursor-mode)
+    (should (local-variable-p 'ghostel-ignore-cursor-change))
+    (should ghostel-ignore-cursor-change)
+    (should (equal cursor-type (default-value 'cursor-type)))
+    (herdr-hide-drawn-cursor-mode -1)
+    (should-not (local-variable-p 'ghostel-ignore-cursor-change))))
 
 (ert-deftest herdr-terminal-buffer-needs-a-live-process ()
   (let ((buffer (get-buffer-create "*herdr: lookup*")))
