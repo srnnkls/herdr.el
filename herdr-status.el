@@ -1056,22 +1056,23 @@ agent this is as much as the tail of a name does."
 
 (defun herdr-status--recolour-labels (&rest _)
   "Relight every dashboard's names for the agent now in the foreground."
-  (dolist (buffer (herdr-status--buffers))
-    (with-current-buffer buffer
-      (setq herdr-status--foreground (herdr-status--foreground-target))
-      (let ((inhibit-read-only t)
-            (position (point-min))
-            match)
-        (with-silent-modifications
-          (while (setq match (text-property-not-all
-                              position (point-max) 'herdr-status-label nil))
-            (setq position (next-single-property-change
-                            match 'herdr-status-label nil (point-max)))
-            (put-text-property match position 'font-lock-face
-                               (herdr-status--label-face
-                                (get-text-property match 'herdr-status-label)
-                                herdr-status--foreground)))))
-      (herdr-status--shade-foreground))))
+  (herdr-with-terminal-buffer-index
+    (dolist (buffer (herdr-status--buffers))
+      (with-current-buffer buffer
+        (setq herdr-status--foreground (herdr-status--foreground-target))
+        (let ((inhibit-read-only t)
+              (position (point-min))
+              match)
+          (with-silent-modifications
+            (while (setq match (text-property-not-all
+                                position (point-max) 'herdr-status-label nil))
+              (setq position (next-single-property-change
+                              match 'herdr-status-label nil (point-max)))
+              (put-text-property match position 'font-lock-face
+                                 (herdr-status--label-face
+                                  (get-text-property match 'herdr-status-label)
+                                  herdr-status--foreground)))))
+        (herdr-status--shade-foreground)))))
 
 (defvar-local herdr-status--foreground-rows nil
   "Overlays shading the foreground agent's rows.")

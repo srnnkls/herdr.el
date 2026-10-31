@@ -971,35 +971,58 @@ cannot drift apart.  `herdr-buffer-functions' then sees the buffer."
     (run-hook-with-args 'herdr-buffer-functions buffer)
     buffer))
 
+(defvar herdr--terminal-buffer-index nil
+  "Live terminal buffers by (TERMINAL-ID . SERVER-KEY), or nil to search.
+Bound by `herdr-with-terminal-buffer-index'.")
+
+(defmacro herdr-with-terminal-buffer-index (&rest body)
+  "Run BODY looking terminal buffers up in one index of the live ones.
+BODY must not create or kill terminal buffers."
+  (declare (indent 0) (debug t))
+  `(let ((herdr--terminal-buffer-index
+          (or herdr--terminal-buffer-index
+              (let ((index (make-hash-table :test #'equal)))
+                (dolist (buffer (reverse (buffer-list)) index)
+                  (when-let* ((id (buffer-local-value 'herdr-terminal-id buffer))
+                              ((get-buffer-process buffer)))
+                    (puthash (cons id (buffer-local-value
+                                       'herdr-terminal-server-key buffer))
+                             buffer index)))))))
+     ,@body))
+
 (defun herdr-terminal-buffer (terminal-id &optional server-key)
   "Return the live buffer showing TERMINAL-ID on SERVER-KEY, if there is one."
   (when terminal-id
     (let ((server-key (or server-key (herdr-server-key))))
-      (cl-find-if (lambda (buffer)
-                    (and (equal (buffer-local-value 'herdr-terminal-id buffer) terminal-id)
-                         (equal (buffer-local-value 'herdr-terminal-server-key buffer)
-                                server-key)
-                         (get-buffer-process buffer)))
-                  (buffer-list)))))
+      (if herdr--terminal-buffer-index
+          (gethash (cons terminal-id server-key) herdr--terminal-buffer-index)
+        (cl-find-if (lambda (buffer)
+                      (and (equal (buffer-local-value 'herdr-terminal-id buffer) terminal-id)
+                           (equal (buffer-local-value 'herdr-terminal-server-key buffer)
+                                  server-key)
+                           (get-buffer-process buffer)))
+                    (buffer-list))))))
 
-(defun herdr--free-buffer-name (label terminal-id &optional server-key directory)
+(defun herdr--free-buffer-name (label terminal-id &optional server-key directory
+                                      pane agent)
   "Return a buffer name for LABEL that no other terminal answers to.
-SERVER-KEY identifies the server terminal identity belongs to and
-DIRECTORY is where the terminal works.  Tab labels repeat across herdr
-workspaces, so a taken name gets a counter.  Signals when TERMINAL-ID
-is the one already there."
-  (let ((name (funcall herdr-buffer-name-function label directory))
-        (server-key (or server-key (herdr-server-key)))
-        (counter 1))
+SERVER-KEY identifies the server terminal identity belongs to,
+DIRECTORY is where the terminal works, PANE its pane id and AGENT what
+runs there.  A taken name gets a counter.  Signals when TERMINAL-ID is
+the one already there."
+  (let* ((base (funcall herdr-buffer-name-function label directory pane agent))
+         (name base)
+         (server-key (or server-key (herdr-server-key)))
+         (counter 1))
     (while (when-let* ((buffer (get-buffer name))
                        ((get-buffer-process buffer)))
              (when (and (equal (buffer-local-value 'herdr-terminal-id buffer) terminal-id)
                         (equal (buffer-local-value 'herdr-terminal-server-key buffer)
                                server-key))
                (user-error "Buffer %s is already attached" name))
-             (setq name (funcall herdr-buffer-name-function
-                                 (format "%s<%d>" label (cl-incf counter))
-                                 directory))))
+             (setq name (if (string-suffix-p "*" base)
+                            (format "%s<%d>*" (substring base 0 -1) (cl-incf counter))
+                          (format "%s<%d>" base (cl-incf counter))))))
     name))
 
 (defun herdr-live-directory (directory)
