@@ -384,6 +384,7 @@ is `$XDG_CONFIG_HOME/herdr/sessions/NAME/herdr.sock`; `XDG_CONFIG_HOME` defaults
 | Hook | Called with | Runs |
 | --- | --- | --- |
 | `herdr-buffer-functions` | the buffer | when a buffer starts showing a herdr terminal |
+| `herdr-terminal-exit-functions` | the buffer, the process event | when an attached terminal ends on its own |
 | `herdr-attach-functions` | the entry | before an entry is attached as a plain terminal; the first to return a buffer claims it |
 | `herdr-terminal-focus-functions` | nothing, in the terminal buffer | once point is at the terminal's prompt |
 | `herdr-entry-annotation-functions` | the entry | when a completion annotation is built; return a string to append |

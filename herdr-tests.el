@@ -1575,6 +1575,72 @@ RESPOND is called with each connection and the request line it sent."
       (herdr--terminal-exited (current-buffer) "deleted\n")
       (should-not herdr--terminal-error-reported))))
 
+(defun herdr-tests--terminal-process (buffer)
+  "Return a live process showing BUFFER to end in a test."
+  (make-process :name "herdr-test-terminal" :buffer buffer
+                :command '("sh" "-c" "sleep 30") :noquery t))
+
+(ert-deftest herdr-terminal-exit-announces-a-process-that-ended ()
+  (let* ((buffer (generate-new-buffer " *herdr-ended*"))
+         (exits nil)
+         (herdr-terminal-exit-functions
+          (list (lambda (ended event) (push (cons ended event) exits))))
+         (process (herdr-tests--terminal-process buffer)))
+    (unwind-protect
+        (progn
+          (herdr--watch-terminal-exit buffer)
+          (should (process-get process 'herdr--terminal-exit-watched))
+          (delete-process process)
+          (accept-process-output process 1)
+          (should (equal (caar exits) buffer))
+          (should (equal (cdar exits) "killed: 9\n")))
+      (when (process-live-p process) (delete-process process))
+      (kill-buffer buffer))))
+
+(ert-deftest herdr-terminal-exit-keeps-a-deliberate-close-to-itself ()
+  (let* ((buffer (generate-new-buffer " *herdr-closed*"))
+         (exits nil)
+         (herdr-terminal-exit-functions
+          (list (lambda (&rest _) (push t exits))))
+         (process (herdr-tests--terminal-process buffer)))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer (herdr--terminal-closing))
+          (herdr--watch-terminal-exit buffer)
+          (delete-process process)
+          (accept-process-output process 1)
+          (should-not exits))
+      (when (process-live-p process) (delete-process process))
+      (kill-buffer buffer))))
+
+(ert-deftest herdr-terminal-exit-lets-the-backend-sentinel-run ()
+  (let* ((buffer (generate-new-buffer " *herdr-chain*"))
+         (events nil)
+         (process (herdr-tests--terminal-process buffer)))
+    (unwind-protect
+        (progn
+          (set-process-sentinel process
+                                (lambda (_process event) (push event events)))
+          (herdr--watch-terminal-exit buffer)
+          (delete-process process)
+          (accept-process-output process 1)
+          (should (equal events '("killed: 9\n"))))
+      (when (process-live-p process) (delete-process process))
+      (kill-buffer buffer))))
+
+(ert-deftest herdr-claim-buffer-watches-for-its-terminal-ending ()
+  (with-temp-buffer
+    (let ((process (herdr-tests--terminal-process (current-buffer))))
+      (unwind-protect
+          (progn
+            (cl-letf (((symbol-function 'herdr-session-server-key)
+                       (lambda (&rest _) "/tmp/herdr.sock"))
+                      ((symbol-function 'herdr-session-for-socket)
+                       (lambda (&rest _) 'shared)))
+              (herdr-claim-buffer (current-buffer) "term-1" 'shared))
+            (should (process-get process 'herdr--terminal-exit-watched)))
+        (when (process-live-p process) (delete-process process))))))
+
 (ert-deftest herdr-terminal-reason-keeps-a-fault-and-drops-a-plain-ending ()
   (should-not (herdr--terminal-error-reason
                "herdr: server shut down: terminal term_65ba exited\n"))

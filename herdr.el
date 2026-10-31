@@ -537,6 +537,38 @@ line matching none of these is reported."
           (setq reason (unless (herdr--terminal-quiet-exit-p line) line))))
       reason)))
 
+(defvar herdr-terminal-exit-functions nil
+  "Functions called when an attached terminal ends on its own.
+Each is called with the terminal buffer and the process event that
+ended it, while the buffer is still live.  A terminal Emacs closes
+itself ends under `herdr--terminal-closing' and does not call them.")
+
+(defun herdr--terminal-exit-event (buffer event)
+  "Announce EVENT ending a terminal in BUFFER, unless it was closed."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (unless herdr--terminal-closing
+        (run-hook-with-args 'herdr-terminal-exit-functions buffer event)))))
+
+(defun herdr--watch-terminal-exit (buffer)
+  "Announce the process showing BUFFER ending.
+The announcement comes before the backend's sentinel runs, which may
+delete the buffer.  A later wrapper keeps this one in its chain by
+calling the sentinel already in place."
+  (when-let* ((process (get-buffer-process buffer))
+              ((process-live-p process))
+              ((not (process-get process 'herdr--terminal-exit-watched))))
+    (process-put process 'herdr--terminal-exit-watched t)
+    (let ((sentinel (process-sentinel process)))
+      (process-put process 'herdr--terminal-exit-sentinel sentinel)
+      (set-process-sentinel
+       process
+       (lambda (process event)
+         (unless (process-live-p process)
+           (herdr--terminal-exit-event buffer event))
+         (when sentinel
+           (funcall sentinel process event)))))))
+
 (defun herdr--terminal-exited (buffer _event)
   "Retain BUFFER's Herdr CLI error before backend exit cleanup."
   (when (buffer-live-p buffer)
@@ -913,6 +945,7 @@ cannot drift apart.  `herdr-buffer-functions' then sees the buffer."
               herdr-terminal-server-key server))
       (when (or herdr-pinned-agents herdr-drawn-cursor-agents)
         (herdr--agent-modes buffer (or agent (herdr--terminal-agent terminal-id session)))))
+    (herdr--watch-terminal-exit buffer)
     (run-hook-with-args 'herdr-buffer-functions buffer)
     buffer))
 

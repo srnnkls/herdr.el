@@ -557,6 +557,9 @@
           (cancel-timer herdr-status--timer)
           (setq herdr-status--timer nil))))))
 
+(ert-deftest herdr-status-refreshes-when-an-attachment-ends ()
+  (should (memq #'herdr-status--on-event herdr-terminal-exit-functions)))
+
 (ert-deftest herdr-status-lists-every-known-session ()
   (herdr-status-tests--with-dashboard
     (let ((sessions (herdr-status-tests--section-text "Sessions ")))

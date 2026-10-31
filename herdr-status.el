@@ -2371,6 +2371,7 @@ Redraws coalesce on one idle timer, so calling this often is cheap."
 (add-hook 'herdr-agent-event-functions #'herdr-status--on-event)
 (add-hook 'herdr-agent-ready-functions #'herdr-status--on-event)
 (add-hook 'herdr-agent-handoff-functions #'herdr-status--on-event)
+(add-hook 'herdr-terminal-exit-functions #'herdr-status--on-event)
 (add-hook 'herdr-session-change-hook #'herdr-status-request-refresh)
 
 ;;;; Commands

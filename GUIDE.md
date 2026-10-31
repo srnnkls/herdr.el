@@ -750,6 +750,7 @@ records.
 | keep an agent's terminal hidden when the buffer shows the agent | `herdr-message-shown-functions` |
 | claim an entry before it is attached as a plain terminal | `herdr-attach-functions` |
 | act on every buffer that starts showing a terminal | `herdr-buffer-functions` |
+| act on every terminal that ends on its own | `herdr-terminal-exit-functions` |
 | run code once point is at a terminal's prompt | `herdr-terminal-focus-functions` |
 | add text to completion annotations | `herdr-entry-annotation-functions` |
 | add a section to the dashboard | `herdr-status-sections-functions` |
