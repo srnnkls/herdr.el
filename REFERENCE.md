@@ -502,4 +502,4 @@ recent one.
 | `*herdr-status*` | the dashboard, named by `herdr-status-buffer-name` |
 | `*herdr message*` | a message being written in full |
 | `*herdr-errors*` | CLI errors and output from failed Ghostel attachments |
-| `*herdr: PROJECT@BRANCH LABEL*` | an attached terminal |
+| `*herdr agent: PANE WORKTREE BRANCH*` | an attached agent's terminal; `*herdr pane: …*` for a plain pane |

@@ -1753,7 +1753,7 @@ RESPOND is called with each connection and the request line it sent."
 
 (ert-deftest herdr-follow-labels-renames-the-buffers-herdr-named ()
   (let* ((herdr-buffer-name-function
-          (lambda (label _directory) (format "*herdr-follow: %s*" label)))
+          (lambda (label &rest _) (format "*herdr-follow: %s*" label)))
          (placeholder (herdr-tests--terminal-buffer
                        "*herdr-follow: agent*" "t1" "*herdr-follow: agent*"))
          (by-hand (herdr-tests--terminal-buffer
