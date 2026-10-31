@@ -871,6 +871,8 @@ so the pixel-exact anchor is not needed."
                                     (herdr-agents))))
     (herdr-error nil)))
 
+(defvar herdr-pin-bottom-mode)
+
 (defun herdr--ultra-scroll-down (function delta)
   "Call FUNCTION with DELTA, stopping at the last row in a pinned buffer.
 Clamping before redisplay keeps the overscroll from ever showing, and
