@@ -474,6 +474,12 @@ again until every function answers nil.")
 herdr again, as the redraw that waited would have; a fetch waiting
 outlives a cached redraw deferred after it.")
 
+(defvar-local herdr-status--fetch-keys nil
+  "Reads the dashboard's last fetch asked herdr, as request cache keys.")
+
+(defvar-local herdr-status--fetching nil
+  "Non-nil while a prefetch is out; `again' when a refresh waits for it.")
+
 ;;;; Collection
 
 (defun herdr-status--session-record (session)
@@ -2199,7 +2205,11 @@ that section folds it away too."
       (herdr-with-request-cache
         (setq herdr-status--session-records (herdr-status--collect-sessions)
               herdr-status--entries (herdr-status--collect-entries)
-              herdr-status--details nil))
+              herdr-status--details nil
+              herdr-status--fetch-keys
+              (let (keys)
+                (maphash (lambda (key _) (push key keys)) herdr--request-cache)
+                keys)))
       (herdr-follow-labels herdr-status--entries))
     (herdr--prune-session-targets herdr-status--entries)
     (setq herdr-status--panes
@@ -2369,6 +2379,29 @@ the next idle spell instead."
       (herdr-status-request-refresh)
     (herdr-status--refresh-shown-buffers)))
 
+(defun herdr-status--refresh-prefetched ()
+  "Refresh the dashboard from the reads of its last fetch, asked at once.
+Emacs does not wait for herdr's answers: the dashboard redraws once they
+are all in.  A dashboard that has not fetched yet refreshes now."
+  (cond
+   (herdr-status--fetching (setq herdr-status--fetching 'again))
+   ((null herdr-status--fetch-keys) (herdr-status-refresh))
+   (t
+    (setq herdr-status--fetching t)
+    (let ((buffer (current-buffer)))
+      (herdr-prefetch
+       herdr-status--fetch-keys
+       (lambda (answers)
+         (when (buffer-live-p buffer)
+           (with-current-buffer buffer
+             (let ((again (eq herdr-status--fetching 'again)))
+               (setq herdr-status--fetching nil)
+               (condition-case nil
+                   (let ((herdr--request-cache answers))
+                     (herdr-status-refresh))
+                 (herdr-error nil))
+               (when again (herdr-status--refresh-prefetched)))))))))))
+
 (defun herdr-status--refresh-shown-buffers ()
   "Redraw every dashboard a window shows, and mark the others stale."
   (dolist (buffer (herdr-status--buffers))
@@ -2377,7 +2410,7 @@ the next idle spell instead."
           (setq herdr-status--stale t)
         (setq herdr-status--stale nil)
         (condition-case nil
-            (herdr-status-refresh)
+            (herdr-status--refresh-prefetched)
           (herdr-error nil))))))
 
 (defun herdr-status--shown (_window)

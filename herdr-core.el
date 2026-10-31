@@ -496,6 +496,26 @@ seconds, by default `herdr-request-timeout'."
      (when errback (funcall errback err))
      nil)))
 
+(defun herdr-prefetch (keys callback)
+  "Ask herdr every read in KEYS at once, then call CALLBACK without waiting.
+KEYS are keys of a `herdr-with-request-cache' table.  CALLBACK gets such
+a table holding the answers that came back; a read that failed is left
+out, so asking it again inside the cache goes to herdr."
+  (let ((answers (make-hash-table :test #'equal))
+        (pending (length keys)))
+    (if (zerop pending)
+        (funcall callback answers)
+      (dolist (key keys)
+        (pcase-let* ((`(,socket ,method ,params) key)
+                     (herdr-socket-path socket)
+                     (settle (lambda (answered result)
+                               (when answered (puthash key result answers))
+                               (when (zerop (cl-decf pending))
+                                 (funcall callback answers)))))
+          (herdr-request-async method params
+                               (lambda (result) (funcall settle t result))
+                               (lambda (_error) (funcall settle nil nil))))))))
+
 (defun herdr--send-request (method params timeout)
   "Send METHOD with PARAMS to herdr and return its result within TIMEOUT."
   (let ((proc (herdr--connect)))
