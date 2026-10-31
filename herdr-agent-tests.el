@@ -1860,6 +1860,21 @@ to be reached through the server it was found on."
       (herdr-agent-keep-names (list (herdr-agent-tests--kept-entry)))
       (should (= (length renames) 1)))))
 
+(ert-deftest herdr-agent-keep-names-gives-a-terminal-title-back-without-renaming ()
+  (let ((herdr-agent-names-file (make-temp-file "herdr-agent-names" nil ".eld"))
+        (herdr-agent--stored-names nil)
+        (herdr-agent--restored-names nil))
+    (cl-letf (((symbol-function 'herdr-agent-rename)
+               (lambda (&rest _) (error "A terminal title is no name"))))
+      (herdr-agent-keep-names
+       (list (herdr-agent-tests--kept-entry
+              '(terminal_title_stripped . "Session bindings"))))
+      (setq herdr-agent--stored-names nil)
+      (let ((entry (car (herdr-agent-keep-names
+                         (list (herdr-agent-tests--kept-entry))))))
+        (should-not (alist-get 'name entry))
+        (should (equal (herdr--entry-label entry) "Session bindings"))))))
+
 (ert-deftest herdr-agent-keep-names-leaves-a-placeholder-unkept ()
   (let ((herdr-agent-names-file (make-temp-file "herdr-agent-names" nil ".eld"))
         (herdr-agent--stored-names nil)

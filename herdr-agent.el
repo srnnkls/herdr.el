@@ -2110,11 +2110,18 @@ once the agent turns up nameless.  Nil keeps the file beside
         title
       name)))
 
+(defun herdr-agent--terminal-title (entry)
+  "Return the terminal title nameless ENTRY shows, or nil."
+  (let ((title (alist-get 'terminal_title_stripped entry)))
+    (and (stringp title) (not (string-blank-p title)) title)))
+
 (defun herdr-agent-keep-names (entries)
   "Keep the names ENTRIES go by, and give a kept one back to a nameless agent.
 ENTRIES come from one server, and are answered with what is given back
 already in them.  A name herdr.el holds as a placeholder is not kept,
-and an agent whose name was given back is not asked again."
+and an agent whose name was given back is not asked again.  A nameless
+agent's terminal title is kept as (terminal . TITLE) and given back to
+its entry only, since the harness that set it may set another."
   (let* ((names (herdr-agent--stored-names))
          (kept names))
     (prog1
@@ -2137,7 +2144,15 @@ and an agent whose name was given back is not asked again."
                    (setq kept (cons (cons id title)
                                     (cl-remove id kept :key #'car :test #'equal)))))
                entry)
-              ((and stored target
+              ((herdr-agent--terminal-title entry)
+               (let ((title (cons 'terminal (herdr-agent--terminal-title entry))))
+                 (unless (equal title stored)
+                   (setq kept (cons (cons id title)
+                                    (cl-remove id kept :key #'car :test #'equal)))))
+               entry)
+              ((eq (car-safe stored) 'terminal)
+               (cons (cons 'terminal_title_stripped (cdr stored)) entry))
+              ((and (stringp stored) target
                     (not (member target herdr-agent--restored-names)))
                (push target herdr-agent--restored-names)
                (if (ignore-error herdr-error
