@@ -520,8 +520,8 @@ the menu:
 The outer function runs when the filter is applied and may prompt. It returns a predicate of one
 entry, or nil to add nothing.
 
-`O` orders the agent list by the keys of `herdr-status-sorts` - state, name, harness, pane,
-session, model, context and directory - in the order they are chosen, each one ordering what the
+`O` orders the agent list by the keys of `herdr-status-sorts` - state, name, harness, pane, session,
+model, context, updated and directory - in the order they are chosen, each one ordering what the
 ones before it leave tied, and `r` reverses it. States sort in `herdr-status-state-order`.
 
 `u` draws the agent list in groups and `U` picks what to group by: project, directory, session,
@@ -578,9 +578,13 @@ Values come from three places. `pane` and `workspace` are fields herdr reports. 
 `directory` are computed from the working directory. `model`, `effort` and `context` are read from
 the entry's `tokens`, the metadata any program reports to its pane through herdr's
 `pane.report_metadata`; `herdr-status-model-token`, `herdr-status-effort-token` and
-`herdr-status-context-token` name the tokens. A model reported as `Opus 5.5/high` is split into
-model and effort when the suffix is one of `herdr-status-effort-levels`. Any package that reaches the herdr socket can report tokens of its own for a column to
-show.
+`herdr-status-context-token` name the tokens. `updated` is the time the dashboard saw the agent's
+herdr revision change, drawn by `herdr-status-updated-formats`; herdr reports no time of its own, so
+the field stays blank until an agent changes after the dashboard first saw it. A function on
+`herdr-status-updated-functions` answering with a time for an entry overrides that. A model reported
+as `Opus 5.5/high` is split into model and effort when the suffix is one of
+`herdr-status-effort-levels`. Any package that reaches the herdr socket can report tokens of its own
+for a column to show.
 
 | To change | Set |
 | --- | --- |

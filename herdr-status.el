@@ -207,6 +207,7 @@ preference, of which the first the display can show is drawn."
     (model "\U000F035B" "◆" "*")
     (effort "\U000F140B" "⚡" "~")
     (context "\U000F1278" "◔" "%")
+    (updated "\U000F0150" "◷" "")
     (directory "\uea83" "/" ""))
   "Glyphs leading the fields that trail a row, keyed by field.
 Each entry lists candidates in order of preference and the first one the
@@ -780,6 +781,7 @@ no filter.  Adding an element makes a custom filter available to
     ("session" . herdr-status--session-name)
     ("model" . herdr-status--model-key)
     ("context" . herdr-status--context-key)
+    ("updated" . herdr-status--updated-key)
     ("directory" . herdr-status--directory-key))
   "Keys the agent list can be ordered by, named after the column they read.
 Each value is a function of one entry answering with the string it sorts
@@ -1269,6 +1271,66 @@ a harness that reports none."
               ((not (string-empty-p context))))
     context))
 
+(defvar herdr-status--revisions (make-hash-table :test #'equal)
+  "Each agent's last seen revision and when it changed to it.
+Keyed by server and terminal.  The time is nil for the revision an
+agent was first seen at, as herdr does not say when it began.")
+
+(defun herdr-status--stamp-revisions (entries)
+  "Note the time each of ENTRIES is seen moving to a new revision."
+  (let ((now (current-time)))
+    (dolist (entry entries)
+      (when-let* ((revision (alist-get 'revision entry)))
+        (let* ((key (cons (herdr--entry-server entry) (alist-get 'terminal_id entry)))
+               (seen (gethash key herdr-status--revisions)))
+          (unless (equal (car seen) revision)
+            (puthash key (cons revision (and seen now)) herdr-status--revisions)))))))
+
+(defvar herdr-status-updated-functions nil
+  "Functions answering when an agent last changed, the first non-nil winning.
+Each receives the entry and returns a Lisp time or nil.  It runs for
+every row on every redraw, so it should answer from what it holds.
+When none answers, the time the dashboard saw the agent's herdr
+revision change stands in.")
+
+(defun herdr-status--updated-time (entry)
+  "Return when ENTRY last changed, or nil when that is not known."
+  (or (run-hook-with-args-until-success 'herdr-status-updated-functions entry)
+      (herdr-status--revision-time entry)))
+
+(defun herdr-status--revision-time (entry)
+  "Return when ENTRY was seen moving to its current revision, or nil."
+  (when-let* ((revision (alist-get 'revision entry))
+              (seen (gethash (cons (herdr--entry-server entry)
+                                   (alist-get 'terminal_id entry))
+                             herdr-status--revisions))
+              ((equal (car seen) revision)))
+    (cdr seen)))
+
+(defcustom herdr-status-updated-formats '("%H:%M" . "%b %e")
+  "How the updated field draws a time, a cons of `format-time-string' formats.
+The first draws a time from today, the second an earlier one."
+  :type '(cons string string)
+  :group 'herdr-status)
+
+(defun herdr-status--updated (entry)
+  "Return when ENTRY last changed, as far as the dashboard has seen, or nil.
+The time comes from `herdr-status-updated-functions', and failing
+those from the first redraw that saw the agent's revision change; an
+agent that has not changed since the dashboard first saw it has none."
+  (when-let* ((time (herdr-status--updated-time entry)))
+    (format-time-string
+     (if (equal (format-time-string "%F" time) (format-time-string "%F"))
+         (car herdr-status-updated-formats)
+       (cdr herdr-status-updated-formats))
+     time)))
+
+(defun herdr-status--updated-key (entry)
+  "Return the time ENTRY last changed, the most recent first, unseen ones last."
+  (if-let* ((time (herdr-status--updated-time entry)))
+      (format "%020d" (- most-positive-fixnum (floor (float-time time))))
+    "~"))
+
 (defcustom herdr-status-columns
   '((pane :value herdr-status-column-pane)
     (project :value herdr-status--project-group)
@@ -1277,6 +1339,7 @@ a harness that reports none."
     (model :value herdr-status--model)
     (effort :value herdr-status--effort)
     (context :value herdr-status--context)
+    (updated :value herdr-status--updated)
     (directory :value herdr-status--directory :face herdr-status-path
                :width own))
   "The fields drawn after an agent's name, in the order they are drawn.
@@ -1299,7 +1362,7 @@ a field added here is drawn whole without touching either."
   :group 'herdr-status)
 
 (defcustom herdr-status-workspace-columns
-  '(pane branch model effort context directory)
+  '(pane branch model effort context updated directory)
   "The fields of `herdr-status-columns' a project's dashboard draws.
 The project is left out, as every row would repeat it, and so is the
 workspace label: an agent's own workspace carries the agent's name,
@@ -1309,7 +1372,7 @@ hides each field."
   :group 'herdr-status)
 
 (defcustom herdr-status-global-columns
-  '(pane project branch model effort context directory)
+  '(pane project branch model effort context updated directory)
   "The fields of `herdr-status-columns' a global dashboard draws.
 \\[herdr-status-columns-menu] shows or hides each field."
   :type '(repeat symbol)
@@ -2237,7 +2300,8 @@ fails before inserting it, or partway through, would raise on each one."
               (let (keys)
                 (maphash (lambda (key _) (push key keys)) herdr--request-cache)
                 keys)))
-      (herdr-follow-labels herdr-status--entries))
+      (herdr-follow-labels herdr-status--entries)
+      (herdr-status--stamp-revisions herdr-status--entries))
     (herdr--prune-session-targets herdr-status--entries)
     (setq herdr-status--panes
           (herdr-status--orphan-panes herdr-status--session-records

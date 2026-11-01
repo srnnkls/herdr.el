@@ -315,7 +315,7 @@ is `$XDG_CONFIG_HOME/herdr/sessions/NAME/herdr.sock`; `XDG_CONFIG_HOME` defaults
 | `herdr-status-show-details` | boolean | nil | show metadata under expanded rows |
 | `herdr-status-counted-states` | list of strings | `("working" "blocked")` | states the `Agents` heading counts |
 | `herdr-status-state-order` | list of strings | `("working" "blocked" "idle" "done")` | the order states sort in |
-| `herdr-status-sorts` | alist of `(NAME . FUNCTION)` | state, name, harness, pane, session, model, context, directory | keys `herdr-status-sort-by` offers |
+| `herdr-status-sorts` | alist of `(NAME . FUNCTION)` | state, name, harness, pane, session, model, context, updated, directory | keys `herdr-status-sort-by` offers |
 | `herdr-status-groups` | alist of `(NAME . FUNCTION)` | project, directory, session, harness, model, state | units `herdr-status-group-by` offers, and the fields `f` filters by |
 | `herdr-status-preview-lines` | integer | 16 | lines of recent output a preview shows; 0 turns previews off |
 | `herdr-status-preview-read-lines` | integer | 160 | lines read to find them |
@@ -329,15 +329,16 @@ is `$XDG_CONFIG_HOME/herdr/sessions/NAME/herdr.sock`; `XDG_CONFIG_HOME` defaults
 | `herdr-status-effort-token` | string | `"effort"` | the pane metadata token the effort column reads |
 | `herdr-status-effort-levels` | list of strings | low, medium, high, xhigh, max | effort suffixes split off a reported model after a slash |
 | `herdr-status-context-token` | string | `"context"` | the pane metadata token the context column reads |
+| `herdr-status-updated-formats` | cons of two format strings | `("%H:%M" . "%b %e")` | how the updated column draws a time from today, and an earlier one |
 | `herdr-read-agent-name-width` | float or natnum | 0.4 | how wide a name may be while an agent is read: a share of the frame, or columns |
 
 ### Dashboard appearance
 
 | Option | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `herdr-status-columns` | alist of `(FIELD . PLIST)` | pane, project, workspace, branch, model, effort, context, directory | the fields after the harness; plist keys `:value`, `:face`, `:width` |
-| `herdr-status-workspace-columns` | list of fields | pane, branch, model, effort, context, directory | the fields of `herdr-status-columns` a project's dashboard draws; `c` toggles them there |
-| `herdr-status-global-columns` | list of fields | pane, project, branch, model, effort, context, directory | the fields a global dashboard draws; `c` toggles them there |
+| `herdr-status-columns` | alist of `(FIELD . PLIST)` | pane, project, workspace, branch, model, effort, context, updated, directory | the fields after the harness; plist keys `:value`, `:face`, `:width` |
+| `herdr-status-workspace-columns` | list of fields | pane, branch, model, effort, context, updated, directory | the fields of `herdr-status-columns` a project's dashboard draws; `c` toggles them there |
+| `herdr-status-global-columns` | list of fields | pane, project, branch, model, effort, context, updated, directory | the fields a global dashboard draws; `c` toggles them there |
 | `herdr-status-column-widths` | alist of `(FIELD . COLUMNS)` | `((project . 20) (workspace . 20) (branch . 20))` | the widest a field may be before it is cut |
 | `herdr-status-name-width` | natnum or nil | nil | the widest a name may be; nil allows a third of the window |
 | `herdr-status-echo-cut-fields` | boolean | t | echo a cut field's whole value as point crosses it |
@@ -395,6 +396,7 @@ is `$XDG_CONFIG_HOME/herdr/sessions/NAME/herdr.sock`; `XDG_CONFIG_HOME` defaults
 | `herdr-terminal-exit-functions` | the buffer, the process event | when an attached terminal ends on its own |
 | `herdr-attach-functions` | the entry | before an entry is attached as a plain terminal; the first to return a buffer claims it |
 | `herdr-terminal-focus-functions` | nothing, in the terminal buffer | once point is at the terminal's prompt |
+| `herdr-status-updated-functions` | the entry | when the updated column is drawn or sorted; the first time wins over the revision the dashboard saw change |
 | `herdr-entry-annotation-functions` | the entry | when a completion annotation is built; return a string to append |
 | `herdr-session-functions` | nothing | to list the entries of the session in scope; default `herdr-agent-sessions` |
 | `herdr-agent-event-functions` | server key, event type, event data | after each pane event |
