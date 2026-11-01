@@ -1989,7 +1989,22 @@ are bound by that package and unbound where it is not installed."
   "M-S" #'herdr-session-start
   "Z" #'herdr-status-restart-server
   "M-Z" #'herdr-update
-  "q" #'quit-window)
+  "q" #'herdr-status-quit)
+
+(defun herdr-status-quit ()
+  "Quit the dashboard's window the way `quit-window' does, past other dashboards.
+The window goes back to the buffer it showed before any dashboard, and
+is deleted when it was made to show one, as `magit-status' does."
+  (interactive)
+  (let ((window (selected-window))
+        seen)
+    (while (and (window-live-p window)
+                (not (memq (window-buffer window) seen))
+                (with-current-buffer (window-buffer window)
+                  (derived-mode-p 'herdr-status-mode)))
+      (push (window-buffer window) seen)
+      (with-selected-window window
+        (quit-window)))))
 
 (defun herdr-status--widen-fringe ()
   "Give every window showing the dashboard its own left fringe and margin."
@@ -2190,8 +2205,20 @@ that section folds it away too."
 
 (defun herdr-status--draw (cached)
   "Redraw the dashboard in the current buffer, asking herdr unless CACHED."
-  (herdr-with-directory-cache
-    (herdr-status--draw-1 cached)))
+  (unwind-protect
+      (herdr-with-directory-cache
+        (herdr-status--draw-1 cached))
+    (herdr-status--keep-root)))
+
+(defun herdr-status--keep-root ()
+  "Leave an empty root section unless a draw finished one.
+`magit-section-mode' reads the root after every command, so a draw that
+fails before inserting it, or partway through, would raise on each one."
+  (unless (and magit-root-section (oref magit-root-section end))
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (setq magit-root-section nil)
+      (magit-insert-section (herdr-status-root)))))
 
 (defun herdr-status--draw-1 (cached)
   "Redraw the dashboard in the current buffer, asking herdr unless CACHED."
@@ -3292,7 +3319,7 @@ Every suffix here is bound directly in `herdr-status-mode-map' as well."
    ]
   [:class transient-row
           ("?" "close" transient-quit-one)
-          ("q" "quit dashboard" quit-window)])
+          ("q" "quit dashboard" herdr-status-quit)])
 
 ;;;; Evil
 
@@ -3320,14 +3347,16 @@ The fresh prefix inherits evil's, so binding into it leaves evil's alone."
 (defun herdr-status-evil-setup ()
   "Put the dashboard's keys ahead of evil's normal state.
 Keys other packages add to `herdr-status-mode-map' later take effect
-too, since evil consults the keymap itself.  `Z' is bound in normal
-state as well, where a `ZZ' bound for `magit-section-mode' would win."
+too, since evil consults the keymap itself.  `Z' and `q' are bound in
+normal state as well, where a `ZZ' bound for `magit-section-mode' or a
+normal-state `quit-window' would win."
   (evil-make-overriding-map herdr-status-mode-map 'normal)
   (dolist (key '("d" "x"))
     (evil-define-key* 'visual herdr-status-mode-map (kbd key)
                       (keymap-lookup herdr-status-mode-map key)))
-  (evil-define-key* 'normal herdr-status-mode-map (kbd "Z")
-                    (keymap-lookup herdr-status-mode-map "Z"))
+  (dolist (key '("Z" "q"))
+    (evil-define-key* 'normal herdr-status-mode-map (kbd key)
+                      (keymap-lookup herdr-status-mode-map key)))
   (pcase-dolist (`(,key . ,_) herdr-status-evil-renames)
     (evil-define-key* 'normal herdr-status-mode-map (kbd key) (herdr-status--evil-own key)))
   (pcase-dolist (`(,key . ,moved) herdr-status-evil-renames)

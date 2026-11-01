@@ -204,7 +204,7 @@ on the agent at point; elsewhere they read one.
 | `S` | `herdr-session-dispatch` |
 | `Z` | `herdr-status-restart-server` |
 | `M-Z` | `herdr-update` |
-| `q` | `quit-window` |
+| `q` | `herdr-status-quit` |
 
 `s` and `m` are left free for memex.el, which binds them to its search and its menu when it is
 installed. `herdr-status-dispatch` mirrors the keys above and closes on `?`.

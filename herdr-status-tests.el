@@ -2586,3 +2586,47 @@ Emacs releases the attachment first and the two go together."
                      (if (string-prefix-p "Harness" prompt) "claude" "/tmp/proj/"))))
           (call-interactively #'herdr-status-new-agent-of-harness))
         (should (equal (car starts) '("claude" nil "/tmp/proj/" "alpha")))))))
+
+(ert-deftest herdr-status-keeps-a-root-section-when-a-first-draw-fails ()
+  (with-temp-buffer
+    (herdr-status-mode)
+    (cl-letf (((symbol-function 'herdr-status--widths)
+               (lambda (&rest _) (error "Broken column"))))
+      (should-error (herdr-status--draw t)))
+    (should (oref (magit-current-section) end))))
+
+(ert-deftest herdr-status-keeps-a-root-section-when-a-draw-fails-partway ()
+  (herdr-status-tests--with-dashboard
+    (cl-letf (((symbol-function 'herdr-status--insert-agents)
+               (lambda (&rest _) (error "Broken row"))))
+      (should-error (herdr-status--draw t)))
+    (should (oref (magit-current-section) end))))
+
+(ert-deftest herdr-status-quit-returns-past-other-dashboards ()
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((file (generate-new-buffer "*file*"))
+          (first (generate-new-buffer "*dashboard-1*"))
+          (second (generate-new-buffer "*dashboard-2*")))
+      (unwind-protect
+          (progn
+            (dolist (dashboard (list first second))
+              (with-current-buffer dashboard (herdr-status-mode)))
+            (switch-to-buffer file)
+            (switch-to-buffer first)
+            (switch-to-buffer second)
+            (herdr-status-quit)
+            (should (eq (window-buffer) file)))
+        (mapc #'kill-buffer (list file first second))))))
+
+(ert-deftest herdr-status-quit-deletes-a-window-made-for-the-dashboard ()
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((dashboard (generate-new-buffer " *dashboard*")))
+      (unwind-protect
+          (let ((window (display-buffer dashboard '(display-buffer-pop-up-window))))
+            (with-current-buffer dashboard (herdr-status-mode))
+            (select-window window)
+            (herdr-status-quit)
+            (should-not (window-live-p window)))
+        (kill-buffer dashboard)))))
