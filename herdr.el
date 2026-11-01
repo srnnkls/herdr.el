@@ -840,21 +840,21 @@ holds nothing, and every redraw would snap an overscrolled window back."
         (forward-line (- (if (bolp) 0 1) (floor (window-screen-lines))))
         (list (point) 0)))))
 
-(defun herdr--fills-window-p (start)
-  "Return non-nil when the rows from START overflow the selected window's body.
-Rows past the window's line count cannot leave space below the last row,
-so the pixel-exact anchor is not needed."
+(defun herdr--fills-window-p (window start)
+  "Return non-nil when the rows from START reach WINDOW's bottom.
+Every row is at least a default line tall, so enough of them prove it
+without the pixel-exact anchor, a window anchored there included."
   (save-excursion
     (goto-char start)
-    (and (zerop (forward-line (+ 2 (ceiling (window-screen-lines)))))
-         (< (point) (point-max)))))
+    (zerop (forward-line (ceiling (+ (window-body-height window t)
+                                     (window-vscroll window t))
+                                  (window-default-line-height window))))))
 
 (defun herdr--pin-bottom (window start)
   "Scroll WINDOW back when START shows space below the terminal's last row."
   (with-current-buffer (window-buffer window)
     (when-let* (((derived-mode-p 'ghostel-mode))
-                ((not (with-selected-window window
-                        (herdr--fills-window-p start))))
+                ((not (herdr--fills-window-p window start)))
                 (anchor (herdr--bottom-anchor window))
                 ((or (> start (car anchor))
                      (and (= start (car anchor))
