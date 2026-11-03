@@ -2535,14 +2535,18 @@ dashboard redrew.  Honours `herdr-status-auto-refresh'."
 
 (defun herdr-status-request-refresh ()
   "Schedule a redraw of every live dashboard buffer.
-Redraws coalesce on one idle timer, so calling this often is cheap."
+Redraws coalesce on one timer, so calling this often is cheap.  A
+request made while Emacs is idle, as an event from herdr is, runs on a
+plain timer: an idle timer waits for the next idle spell, which needs a
+keypress to begin."
   (when (and herdr-status-auto-refresh
              (null herdr-status--timer)
              (herdr-status--buffers))
-    (setq herdr-status--timer
-          (run-with-idle-timer (max herdr-status-refresh-delay
-                                    herdr-status-input-settle)
-                               nil #'herdr-status--refresh-buffers))))
+    (let ((delay (max herdr-status-refresh-delay herdr-status-input-settle)))
+      (setq herdr-status--timer
+            (if (current-idle-time)
+                (run-with-timer delay nil #'herdr-status--refresh-buffers)
+              (run-with-idle-timer delay nil #'herdr-status--refresh-buffers))))))
 
 (defun herdr-status--on-event (&rest _)
   "Schedule a redraw after a herdr lifecycle event."

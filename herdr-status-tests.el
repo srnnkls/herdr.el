@@ -576,6 +576,26 @@
 (ert-deftest herdr-status-refreshes-when-an-attachment-ends ()
   (should (memq #'herdr-status--on-event herdr-terminal-exit-functions)))
 
+(ert-deftest herdr-status-event-refresh-while-idle-runs-without-a-keypress ()
+  (let ((herdr-status-auto-refresh t)
+        (herdr-status-refresh-delay 0.4)
+        (herdr-status-input-settle 1.0)
+        (herdr-status--timer nil))
+    (herdr-status-tests--with-dashboard
+      (cl-letf (((symbol-function 'current-idle-time)
+                 (lambda () (seconds-to-time 600))))
+        (unwind-protect
+            (progn
+              (herdr-status-request-refresh)
+              (should (timerp herdr-status--timer))
+              (should-not (timer--idle-delay herdr-status--timer))
+              (should (< (float-time (time-subtract
+                                      (timer--time herdr-status--timer) nil))
+                         2)))
+          (when herdr-status--timer
+            (cancel-timer herdr-status--timer)
+            (setq herdr-status--timer nil)))))))
+
 (ert-deftest herdr-status-lists-every-known-session ()
   (herdr-status-tests--with-dashboard
     (let ((sessions (herdr-status-tests--section-text "Sessions ")))
