@@ -925,16 +925,43 @@ is on there."
 
 (advice-add 'ghostel--redraw-now :after #'herdr--hide-drawn-cursor)
 
-(defun herdr--pin-after-redraw (buffer &rest _)
-  "Pin BUFFER's windows a redraw left past the terminal's last row.
-A redraw that ends the rows above a window's bottom without moving its
-start runs no `window-scroll-functions', so the pin is redone here."
-  (when (and (buffer-live-p buffer)
-             (buffer-local-value 'herdr-pin-bottom-mode buffer))
-    (dolist (window (get-buffer-window-list buffer nil t))
-      (herdr--pin-bottom window (window-start window)))))
+(declare-function ghostel--anchor-window "ext:ghostel" (&optional window force following))
 
-(advice-add 'ghostel--redraw-now :after #'herdr--pin-after-redraw)
+(defun herdr--following-p (window)
+  "Return non-nil when WINDOW shows the terminal's last row.
+The rows from its start reach `point-max' within its height and a row of
+slack, as a window anchored there leaves for a partial top row."
+  (save-excursion
+    (goto-char (window-start window))
+    (not (zerop (forward-line (+ 2 (ceiling (+ (window-body-height window t)
+                                               (window-vscroll window t))
+                                            (window-default-line-height window))))))))
+
+(defun herdr--pin-around-redraw (redraw buffer &rest args)
+  "Call REDRAW with BUFFER and ARGS, keeping pinned windows at its last row.
+A redraw that ends the rows above a window's bottom without moving its
+start runs no `window-scroll-functions', so the pin is redone here.  A
+window that showed the last row before the redraw and is left behind it
+after is anchored again: ghostel leaves a window it took to be scrolled
+past the last row where it is, and stops following once output has
+grown under it.  A window scrolled up into history was not following
+and stays where it is."
+  (if (not (and (buffer-live-p buffer)
+                (buffer-local-value 'herdr-pin-bottom-mode buffer)))
+      (apply redraw buffer args)
+    (let ((following (with-current-buffer buffer
+                       (seq-filter #'herdr--following-p
+                                   (get-buffer-window-list buffer nil t)))))
+      (prog1 (apply redraw buffer args)
+        (when (buffer-live-p buffer)
+          (with-current-buffer buffer
+            (dolist (window (get-buffer-window-list buffer nil t))
+              (if (and (memq window following)
+                       (not (herdr--following-p window)))
+                  (ghostel--anchor-window window nil t)
+                (herdr--pin-bottom window (window-start window))))))))))
+
+(advice-add 'ghostel--redraw-now :around #'herdr--pin-around-redraw)
 
 (defvar ghostel-ignore-cursor-change)
 (declare-function evil-refresh-cursor "ext:evil-common" (&optional state buffer))
