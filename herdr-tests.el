@@ -915,6 +915,13 @@ looks for a replacement buffer runs into."
     (let ((clamped 0)
           (scroll (lambda (_delta) (signal 'end-of-buffer nil))))
       (cl-letf (((symbol-function 'herdr--pin-bottom)
+                 (lambda (&rest _) (setq clamped (1+ clamped)))))
+        (should-error (herdr--ultra-scroll-down scroll 10) :type 'end-of-buffer)
+        (should (zerop clamped))
+        (herdr-pin-bottom-mode)
+        (herdr--ultra-scroll-down scroll 10)
+        (should (= clamped 1))))))
+
 (ert-deftest herdr-pin-bottom-skips-the-anchor-while-rows-fill-the-window ()
   (let ((anchored 0))
     (with-temp-buffer
@@ -930,13 +937,6 @@ looks for a replacement buffer runs into."
                                            (forward-line -3)
                                            (point)))
         (should (= anchored 1))))))
-
-                 (lambda (&rest _) (setq clamped (1+ clamped)))))
-        (should-error (herdr--ultra-scroll-down scroll 10) :type 'end-of-buffer)
-        (should (zerop clamped))
-        (herdr-pin-bottom-mode)
-        (herdr--ultra-scroll-down scroll 10)
-        (should (= clamped 1))))))
 
 (ert-deftest herdr-hide-drawn-cursor-clears-the-cell-under-the-cursor ()
   (with-temp-buffer
