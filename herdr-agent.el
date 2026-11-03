@@ -3092,8 +3092,7 @@ the pane runs on."
          (label (herdr-message--target-label target)))
     (when (yes-or-no-p (format "Close %s? " label))
       (herdr-agent-let-go target)
-      (herdr-agent-stop target)
-      (message "Closed %s" label))))
+      (herdr-agent-stop target))))
 
 (defcustom herdr-agent-history-files
   '(("claude" . "~/.claude/history.jsonl")
