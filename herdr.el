@@ -817,6 +817,14 @@ so the pixel-exact anchor is not needed."
                                     (herdr-agents))))
     (herdr-error nil)))
 
+(define-minor-mode herdr-pin-bottom-mode
+  "Keep this terminal's window from scrolling past its last row.
+An attachment of one of `herdr-pinned-agents' starts with it on."
+  :lighter nil
+  (if herdr-pin-bottom-mode
+      (add-hook 'window-scroll-functions #'herdr--pin-bottom nil t)
+    (remove-hook 'window-scroll-functions #'herdr--pin-bottom t)))
+
 (defun herdr--ultra-scroll-down (function delta)
   "Call FUNCTION with DELTA, stopping at the last row in a pinned buffer.
 Clamping before redisplay keeps the overscroll from ever showing, and
@@ -830,14 +838,6 @@ buffer's end."
       (herdr--pin-bottom (selected-window) (window-start)))))
 
 (advice-add 'ultra-scroll-down :around #'herdr--ultra-scroll-down)
-
-(define-minor-mode herdr-pin-bottom-mode
-  "Keep this terminal's window from scrolling past its last row.
-An attachment of one of `herdr-pinned-agents' starts with it on."
-  :lighter nil
-  (if herdr-pin-bottom-mode
-      (add-hook 'window-scroll-functions #'herdr--pin-bottom nil t)
-    (remove-hook 'window-scroll-functions #'herdr--pin-bottom t)))
 
 (defcustom herdr-drawn-cursor-agents '("claude")
   "Agents whose attachment hides the cursor they paint into the screen.
