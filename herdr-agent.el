@@ -3101,6 +3101,12 @@ the pane runs on."
   :type '(alist :key-type string :value-type file)
   :group 'herdr-agent)
 
+(defcustom herdr-agent-history-ignore "\\`\\[herdr message "
+  "What a prompt in a harness's history that was not typed starts with.
+A message herdr delivered to the agent opens with such a header."
+  :type 'regexp
+  :group 'herdr-agent)
+
 (defun herdr-agent--history-text (record)
   "Return the prompt of the history RECORD, its pasted texts filled in."
   (let ((text (or (gethash "display" record) (gethash "text" record) ""))
@@ -3137,16 +3143,19 @@ A history that records each prompt's project keeps those of DIRECTORIES."
                                 projects))
               (when-let* ((record (ignore-errors (json-parse-string line)))
                           (text (herdr-agent--history-text record))
-                          ((not (string-blank-p text))))
+                          ((not (string-blank-p text)))
+                          ((not (string-match-p herdr-agent-history-ignore text))))
                 (push text prompts))))))
       (delete-dups (nreverse prompts)))))
 
 (defun herdr-agent-history-here ()
   "Put a prompt this agent's harness was sent before into its input.
-The prompts are those of this project in the harness's own history;
-the one chosen replaces the input and the terminal takes the keyboard."
+The prompts are those of this project in the harness's own history,
+and a draft standing in the input starts the search; the one chosen
+replaces the input and the terminal takes the keyboard."
   (interactive)
   (let* ((target (herdr-agent--here))
+         (draft (herdr-agent-draft target))
          (entry (herdr--entry-for-target target))
          (prompts (or (herdr-agent-prompt-history
                        (alist-get 'agent entry)
@@ -3160,7 +3169,7 @@ the one chosen replaces the input and the terminal takes the keyboard."
                     (if (eq action 'metadata)
                         '(metadata (display-sort-function . identity))
                       (complete-with-action action prompts string predicate)))
-                  nil t)))
+                  nil t draft)))
     (herdr-terminal-send herdr-agent-prompt-clear)
     (herdr-terminal-paste prompt)
     (when (fboundp 'evil-insert-state)

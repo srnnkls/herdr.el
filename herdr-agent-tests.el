@@ -3953,6 +3953,7 @@ A nil SCREEN stands for a session this Emacs holds no terminal for."
           (with-temp-file file
             (dolist (line '("{\"display\":\"fix the parser\",\"project\":\"/work/app\"}"
                             "{\"display\":\"elsewhere\",\"project\":\"/work/other\"}"
+                            "{\"display\":\"[herdr message msg_01 from w1:p1 (claude, ~/work/app)]\\nlook\",\"project\":\"/work/app\"}"
                             "{\"display\":\"see [Pasted text #1 +2 lines]\",\"pastedContents\":{\"1\":{\"id\":1,\"type\":\"text\",\"content\":\"a\\nb\"}},\"project\":\"/work/app\"}"
                             "{\"display\":\"fix the parser\",\"project\":\"/work/app\"}"
                             "{\"display\":\"in the worktree\",\"project\":\"/work/app-wt\"}"))
@@ -3961,6 +3962,27 @@ A nil SCREEN stands for a session this Emacs holds no terminal for."
                          '("in the worktree" "fix the parser" "see a\nb")))
           (should-not (herdr-agent-prompt-history "aider" '("/work/app"))))
       (delete-file file))))
+
+(ert-deftest herdr-agent-history-here-starts-from-the-draft ()
+  (let (initial sent pasted)
+    (cl-letf (((symbol-function 'herdr-agent--here) (lambda () '("server" . "term")))
+              ((symbol-function 'herdr--entry-for-target)
+               (lambda (_) '((agent . "claude") (cwd . "/work/app"))))
+              ((symbol-function 'herdr-entry-directory) (lambda (_) nil))
+              ((symbol-function 'herdr-agent-draft) (lambda (_) "fix the"))
+              ((symbol-function 'herdr-agent-prompt-history)
+               (lambda (&rest _) '("fix the parser")))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt _table _predicate _require initial-input &rest _)
+                 (setq initial initial-input)
+                 "fix the parser"))
+              ((symbol-function 'herdr-terminal-send) (lambda (text &rest _) (push text sent)))
+              ((symbol-function 'herdr-terminal-paste) (lambda (text &rest _) (push text pasted)))
+              ((symbol-function 'evil-insert-state) #'ignore))
+      (herdr-agent-history-here))
+    (should (equal initial "fix the"))
+    (should (equal sent (list herdr-agent-prompt-clear)))
+    (should (equal pasted '("fix the parser")))))
 
 (ert-deftest herdr-agent-text-objects-yank-a-message-in-normal-state ()
   "`y i m' yanks the block under point, `m' messages the terminal's agent,
