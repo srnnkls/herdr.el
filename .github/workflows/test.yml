@@ -35,7 +35,10 @@ jobs:
           version: snapshot
 
       - name: Install dependencies
-        run: eask install-deps --dev
+        run: |
+          eask install-deps --dev
+          # Eask counts the built-in transient as installed whatever its version.
+          eask install --force transient
 
       - name: Compile
         run: eask compile
