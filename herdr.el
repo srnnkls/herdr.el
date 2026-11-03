@@ -925,6 +925,17 @@ is on there."
 
 (advice-add 'ghostel--redraw-now :after #'herdr--hide-drawn-cursor)
 
+(defun herdr--pin-after-redraw (buffer &rest _)
+  "Pin BUFFER's windows a redraw left past the terminal's last row.
+A redraw that ends the rows above a window's bottom without moving its
+start runs no `window-scroll-functions', so the pin is redone here."
+  (when (and (buffer-live-p buffer)
+             (buffer-local-value 'herdr-pin-bottom-mode buffer))
+    (dolist (window (get-buffer-window-list buffer nil t))
+      (herdr--pin-bottom window (window-start window)))))
+
+(advice-add 'ghostel--redraw-now :after #'herdr--pin-after-redraw)
+
 (defvar ghostel-ignore-cursor-change)
 (declare-function evil-refresh-cursor "ext:evil-common" (&optional state buffer))
 
