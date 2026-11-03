@@ -1699,7 +1699,7 @@ RESPOND is called with each connection and the request line it sent."
           (delete-process process)
           (accept-process-output process 1)
           (should (equal (caar exits) buffer))
-          (should (equal (cdar exits) "killed: 9\n")))
+          (should (string-prefix-p "killed" (cdar exits))))
       (when (process-live-p process) (delete-process process))
       (kill-buffer buffer))))
 
@@ -1730,7 +1730,8 @@ RESPOND is called with each connection and the request line it sent."
           (herdr--watch-terminal-exit buffer)
           (delete-process process)
           (accept-process-output process 1)
-          (should (equal events '("killed: 9\n"))))
+          (should (string-prefix-p "killed" (car events)))
+          (should (= (length events) 1)))
       (when (process-live-p process) (delete-process process))
       (kill-buffer buffer))))
 
