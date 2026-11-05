@@ -2387,9 +2387,7 @@ Closes them when none of them is closed already."
     (unless sections
       (user-error "No agent row to open"))
     (dolist (section sections)
-      (if closed (magit-section-show section) (magit-section-hide section)))
-    (message "%s %d agent row%s" (if closed "Opened" "Closed")
-             (length sections) (if (= 1 (length sections)) "" "s"))))
+      (if closed (magit-section-show section) (magit-section-hide section)))))
 
 (defun herdr-status-toggle-details ()
   "Show or hide the metadata under the expanded agents of this dashboard."
@@ -2397,9 +2395,7 @@ Closes them when none of them is closed already."
   (unless (derived-mode-p 'herdr-status-mode)
     (user-error "Not a herdr status buffer"))
   (setq-local herdr-status-show-details (not herdr-status-show-details))
-  (herdr-status-refresh)
-  (message "Agent details %s"
-           (if herdr-status-show-details "shown" "hidden")))
+  (herdr-status-refresh))
 
 (defun herdr-status--show (&optional project-root)
   "Show the dashboard scoped to PROJECT-ROOT, or globally when nil."
@@ -2896,12 +2892,6 @@ afresh."
                                          :wait nil)))))
     (when herd (herdr-herd-enlist started herd))
     (herdr-status-request-refresh)
-    (message "%s %s in %s%s" (if reference "Resumed" "Started") kind
-             (abbreviate-file-name root)
-             (if herd
-                 (format " in herd %s, pane %s" (herdr-herd-label herd)
-                         (herdr-agent-session-pane started))
-               ""))
     started))
 
 (defun herdr-status-resume (kind)
@@ -2933,8 +2923,7 @@ ROOT and SESSION default to those a new agent from point takes."
   (let ((root (or root (herdr-status--new-agent-root))))
     (herdr-with-session (or session (herdr-status-new-agent-session))
       (herdr-open-tab :cwd root :workspace (herdr-workspace-label root)))
-    (herdr-status-request-refresh)
-    (message "Opened a pane in %s" (abbreviate-file-name root))))
+    (herdr-status-request-refresh)))
 
 (defun herdr-status--in-panes-p ()
   "Return non-nil when point is in the section of panes running no agent."
@@ -3063,8 +3052,7 @@ that lets go without closing anything."
         (herdr-with-session (alist-get 'session entry)
           (herdr-api-pane-close (alist-get 'pane_id entry))))
       (deactivate-mark)
-      (herdr-status-refresh)
-      (message "Closed %s %s" noun labels))))
+      (herdr-status-refresh))))
 
 (defun herdr-status--attachment-at-point ()
   "Return the Emacs session attached to the agent at point, or nil."
@@ -3094,8 +3082,7 @@ running.  Where no agent but a pane is meant, the pane is closed as
           (herdr-agent-detach session))
         (herdr-agent-stop (herdr--entry-target entry)))
       (deactivate-mark)
-      (herdr-status-refresh)
-      (message "Stopped %s" labels))))
+      (herdr-status-refresh))))
 
 (defun herdr-status-restart ()
   "Restart the agent at point in a fresh pane, resuming its conversation.
@@ -3111,8 +3098,7 @@ name; an agent in a herd rejoins it there."
     (when (yes-or-no-p (format "Restart %s? " label))
       (let ((started (herdr-status--relaunch entry (alist-get 'session entry))))
         (when herd (herdr-herd-enlist started herd)))
-      (herdr-status-refresh)
-      (message "Restarted %s" label))))
+      (herdr-status-refresh))))
 
 (defun herdr-status--resume-reference (entry)
   "Return the reference ENTRY's harness resumes its conversation by, or nil."
@@ -3163,11 +3149,8 @@ A herd stays behind, since it belongs to the session it was formed on."
         (herdr-status--relaunch entry session))
       (deactivate-mark)
       (herdr-status-refresh)
-      (message "Moved %s to %s%s" labels target
-               (if stuck
-                   (format "; %s reports no session to resume"
-                           (herdr-status--labels stuck))
-                 "")))))
+      (when stuck
+        (message "%s reports no session to resume" (herdr-status--labels stuck))))))
 
 (defun herdr-status--let-go (entry)
   "Let go of the agent or pane ENTRY, returning non-nil when Emacs held it."
@@ -3185,9 +3168,7 @@ as well when no Emacs session holds it."
     (deactivate-mark)
     (if (not held)
         (message "Emacs holds no attachment to %s" (herdr-status--labels entries))
-      (herdr-status-refresh)
-      (message "Detached %s, %s left running" (herdr-status--labels held)
-               (if (cdr held) "their panes" "its pane")))))
+      (herdr-status-refresh))))
 
 (defun herdr-status-add-filter (name)
   "Add the filter registered as NAME."
@@ -3287,10 +3268,7 @@ each filter of `herdr-status-predicates' turns on and off."
   (unless (derived-mode-p 'herdr-status-mode)
     (user-error "Not a herdr status buffer"))
   (setq-local herdr-status--grouping (not herdr-status--grouping))
-  (herdr-status-refresh)
-  (message "Agents %s" (if herdr-status--grouping
-                           (format "grouped by %s" (herdr-status-group-unit))
-                         "in one list")))
+  (herdr-status-refresh))
 
 (defun herdr-status-sort-reverse ()
   "Turn the agent list's order around."

@@ -296,15 +296,13 @@ ENTRIES are members herdr may not report as such yet."
   (member (alist-get 'agent_status entry) herdr-herd-busy-states))
 
 (defun herdr-herd--report (herd sent skipped verb)
-  "Say that VERB reached SENT members of HERD and SKIPPED the rest."
-  (if skipped
-      (message "herd %s: %s %d, skipped %s" (herdr-herd-label herd) verb sent
-               (string-join (mapcar (lambda (skip)
-                                      (format "%s (%s)" (car skip) (cdr skip)))
-                                    skipped)
-                            ", "))
-    (message "herd %s: %s %d member%s" (herdr-herd-label herd) verb sent
-             (if (= 1 sent) "" "s")))
+  "Say that VERB reached SENT members of HERD when it SKIPPED some."
+  (when skipped
+    (message "herd %s: %s %d, skipped %s" (herdr-herd-label herd) verb sent
+             (string-join (mapcar (lambda (skip)
+                                    (format "%s (%s)" (car skip) (cdr skip)))
+                                  skipped)
+                          ", ")))
   skipped)
 
 (defun herdr-herd--send (herd members text-function verb)
@@ -542,8 +540,6 @@ of HERD's session are offered for completion where there is not."
                   (user-error "%s is in no herd" (herdr--entry-label entry)))))
     (herdr-herd--put entry nil)
     (herdr-herd--refresh)
-    (message "herd %s: %s removed"
-             (herdr-herd-label herd) (herdr--entry-label entry))
     (when-let* ((members (seq-remove (lambda (member)
                                        (herdr-herd--same-pane-p member entry))
                                      (herdr-herd-member-entries herd))))
@@ -563,8 +559,7 @@ of HERD's session are offered for completion where there is not."
                                (if (= 1 (length members)) "" "s")))
       (dolist (entry members)
         (herdr-herd--put entry nil))
-      (herdr-herd--refresh)
-      (message "herd %s dissolved" (herdr-herd-label herd)))))
+      (herdr-herd--refresh))))
 
 ;;;###autoload
 (defun herdr-herd-announce (herd)

@@ -1221,13 +1221,10 @@ with \\[universal-argument]."
       (herdr-request-async
        "server.live_handoff"
        (herdr--params `((import_exe . ,(herdr-agent--installed-executable))))
-       (lambda (_)
-         (message "herdr: restarted %s with its panes running" name)
-         (herdr-agent--server-lost server))
+       (lambda (_) (herdr-agent--server-lost server))
        (lambda (err)
          (message "herdr: restarting %s failed: %s" name (error-message-string err)))
-       herdr-handoff-timeout)
-      (message "herdr: restarting %s..." name))))
+       herdr-handoff-timeout))))
 
 ;;;###autoload
 (defun herdr-session-restart (session)
@@ -1262,10 +1259,9 @@ their server answers again."
                     (lambda (process _event)
                       (unless (process-live-p process)
                         (mapc #'herdr-agent--server-lost servers)
-                        (message (if (zerop (process-exit-status process))
-                                     "herdr: updated"
-                                   "herdr: update failed; see %s")
-                                 (buffer-name buffer))))))
+                        (unless (zerop (process-exit-status process))
+                          (message "herdr: update failed; see %s"
+                                   (buffer-name buffer)))))))
     (pop-to-buffer buffer)))
 
 (defun herdr-agent-detach (session)
@@ -2534,7 +2530,6 @@ field is open where the backend can hold it."
                herdr-message-field-map))
             (herdr-message--pending (cons target context))
             (herdr-message--in-place nil))
-        (message "Message to %s" (herdr-message--target-label target))
         (herdr-message--show-target
          (herdr-message--send
           target
@@ -2734,12 +2729,8 @@ workspace's bindings."
       (let ((target (herdr--read-agent-target "Primary agent: "))
             (project (herdr--current-project-root)))
         (if project
-            (progn
-              (setf (alist-get project herdr--project-agents nil nil #'equal)
-                    target)
-              (message "Project %s now messages %s"
-                       (abbreviate-file-name project)
-                       (herdr-message--target-label target)))
+            (setf (alist-get project herdr--project-agents nil nil #'equal)
+                  target)
           (setq herdr-current-agent target))
         target)))
 

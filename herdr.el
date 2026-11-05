@@ -1286,8 +1286,9 @@ Each herdr session with an attachment hears Emacs's colors as well."
                               (buffer-list))))
     (condition-case err
         (herdr--report-host-theme name buffers)
-      (error (message "herdr: reporting colors to %s: %s"
-                      name (error-message-string err)))))
+      (error (let ((inhibit-message t))
+               (message "herdr: reporting colors to %s: %s"
+                        name (error-message-string err))))))
   (when-let* ((appearance (herdr--appearance)))
     (pcase-dolist (`(,session . ,buffers)
                    (seq-group-by (lambda (buffer)
@@ -2141,8 +2142,7 @@ herdr keeps the session, so `herdr-session-start' brings it back."
       (condition-case err
           (herdr--session-cli "stop" name)
         (herdr-error (user-error "%s" (error-message-string err))))
-      (run-hooks 'herdr-session-change-hook)
-      (message "Stopped herdr session %s" name))))
+      (run-hooks 'herdr-session-change-hook))))
 
 ;;;###autoload
 (defun herdr-session-cold-restart (session directory)
@@ -2177,8 +2177,7 @@ included."
       (condition-case err
           (herdr--session-cli "delete" name)
         (herdr-error (user-error "%s" (error-message-string err))))
-      (run-hooks 'herdr-session-change-hook)
-      (message "Deleted herdr session %s" name))))
+      (run-hooks 'herdr-session-change-hook))))
 
 (provide 'herdr)
 ;;; herdr.el ends here
