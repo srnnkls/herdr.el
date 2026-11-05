@@ -2052,6 +2052,14 @@ Emacs releases the attachment first and the two go together."
   (should (re-search-forward to nil t))
   (end-of-line))
 
+(ert-deftest herdr-status-reads-a-region-from-the-top-of-the-dashboard ()
+  (herdr-status-tests--with-dashboard
+    (transient-mark-mode 1)
+    (push-mark (point-min) t t)
+    (goto-char (point-max))
+    (should (eq (magit-section-at (point-min)) magit-root-section))
+    (should-not (magit-region-sections))))
+
 (ert-deftest herdr-status-stopping-a-region-stops-every-agent-it-shows ()
   (herdr-status-tests--with-dashboard
     (let (stopped questions)

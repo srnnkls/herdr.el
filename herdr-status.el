@@ -2351,6 +2351,9 @@ fails before inserting it, or partway through, would raise on each one."
                ('agents (herdr-status--insert-agents widths tabs workspaces))
                ('panes (herdr-status--insert-panes widths workspaces))
                ('sessions (herdr-status--insert-sessions)))))))
+      ;; Magit leaves the root's own text unowned, and a region starting
+      ;; there would hand `magit-region-sections' no section.
+      (magit-section--set-section-properties magit-root-section)
       (let ((magit-section-cache-visibility nil))
         (magit-section-show magit-root-section)))
     (goto-char (point-min))
