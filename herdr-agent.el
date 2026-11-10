@@ -1123,7 +1123,7 @@ server kept them.")
 `bin/herdr-yield' stands in for the herdr it runs."
   (when-let* ((program (if (equal (file-name-nondirectory herdr-executable)
                                   "herdr-yield")
-                           (or (getenv "HERDR_YIELD_HERDR") "herdr")
+                           (or (getenv "HERDR_YIELD_BIN") "herdr")
                          herdr-executable))
               (found (executable-find program)))
     (file-truename found)))

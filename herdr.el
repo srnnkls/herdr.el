@@ -272,7 +272,7 @@ or `detection'.  LINES limits how many lines are returned."
   "Return the herdr `bin/herdr-raw' runs.
 It is the herdr `bin/herdr-yield' stands in for, or `herdr-executable'."
   (if (equal (file-name-nondirectory herdr-executable) "herdr-yield")
-      (or (getenv "HERDR_YIELD_HERDR") "herdr")
+      (or (getenv "HERDR_YIELD_BIN") "herdr")
     herdr-executable))
 
 (defun herdr--raw-client-p (program)

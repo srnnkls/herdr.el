@@ -58,7 +58,7 @@ def supported():
 if not supported():
     fallback = os.environ.get("HERDR_RAW_FALLBACK") or os.path.join(
         os.path.dirname(os.path.realpath(__file__)), "herdr-yield")
-    os.environ.setdefault("HERDR_YIELD_HERDR", herdr)
+    os.environ.setdefault("HERDR_YIELD_BIN", herdr)
     os.execvp(fallback, [fallback, *args])
 RECONNECT = float(os.environ.get("HERDR_YIELD_RECONNECT", "30"))
 VISIBILITY = re.compile(rb"\x1b_herdr-yield;(show|hide)\x1b\\")

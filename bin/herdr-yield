@@ -22,7 +22,7 @@
 
 set -eu
 
-HERDR=${HERDR_YIELD_HERDR:-herdr}
+HERDR=${HERDR_YIELD_BIN:-herdr}
 
 case " $* " in
 *" terminal attach "*) ;;

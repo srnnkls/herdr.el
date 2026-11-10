@@ -107,7 +107,7 @@ alist.  Returns the socket path."
         (herdr-socket-path nil)
         (herdr-session 'shared)
         (herdr-raw-attach t)
-        (process-environment (cons "HERDR_YIELD_HERDR=/opt/herdr" process-environment))
+        (process-environment (cons "HERDR_YIELD_BIN=/opt/herdr" process-environment))
         (asked nil))
     (cl-letf (((symbol-function 'herdr--raw-program) (lambda () "/el/bin/herdr-raw"))
               ((symbol-function 'herdr--raw-client-p)
@@ -132,7 +132,7 @@ alist.  Returns the socket path."
 
 (ert-deftest herdr-raw-environment-runs-the-herdr-yield-stands-in-for ()
   (let ((herdr-executable "/el/bin/herdr-yield")
-        (process-environment (cons "HERDR_YIELD_HERDR=/opt/herdr" process-environment)))
+        (process-environment (cons "HERDR_YIELD_BIN=/opt/herdr" process-environment)))
     (should (equal (herdr--raw-environment)
                    '("HERDR_RAW_HERDR=/opt/herdr"
                      "HERDR_RAW_FALLBACK=/el/bin/herdr-yield"))))
