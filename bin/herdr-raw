@@ -5,8 +5,8 @@
 # rendered frames, so the terminal buffer holds the scrollback herdr
 # keeps and scrolls it locally.  It needs a server whose control stream
 # advertises pane_geometry, geometry_release and output_resume; against
-# any other server it runs HERDR_RAW_FALLBACK (default: herdr) with the
-# same arguments.
+# any other server it runs HERDR_RAW_FALLBACK (default: the herdr-yield
+# beside it, running HERDR_RAW_HERDR) with the same arguments.
 #
 # Like herdr-yield, the attach owns the pane's size until its input
 # carries `ESC _ herdr-yield;hide ESC \', and takes it back on
@@ -55,7 +55,9 @@ def supported():
 
 
 if not supported():
-    fallback = os.environ.get("HERDR_RAW_FALLBACK", herdr)
+    fallback = os.environ.get("HERDR_RAW_FALLBACK") or os.path.join(
+        os.path.dirname(os.path.realpath(__file__)), "herdr-yield")
+    os.environ.setdefault("HERDR_YIELD_HERDR", herdr)
     os.execvp(fallback, [fallback, *args])
 RECONNECT = float(os.environ.get("HERDR_YIELD_RECONNECT", "30"))
 VISIBILITY = re.compile(rb"\x1b_herdr-yield;(show|hide)\x1b\\")
