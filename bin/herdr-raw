@@ -10,7 +10,8 @@
 #
 # Like herdr-yield, the attach owns the pane's size until its input
 # carries `ESC _ herdr-yield;hide ESC \', and takes it back on
-# `ESC _ herdr-yield;show ESC \' or a key; a lost stream reconnects for
+# `ESC _ herdr-yield;show ESC \' or a key, and starts without it when
+# HERDR_YIELD_START is hide; a lost stream reconnects for
 # up to HERDR_YIELD_RECONNECT seconds (30), resuming the output it missed
 # when the server still holds it, to the terminal named by the last
 # `ESC _ herdr-yield;target;TERMINAL ESC \'.
@@ -218,7 +219,7 @@ class Stream:
 
 saved = termios.tcgetattr(tty_in)
 tty.setraw(tty_in)
-mode = "control"
+mode = "observe" if os.environ.get("HERDR_YIELD_START") == "hide" else "control"
 stream = Stream(mode)
 pending = b""
 reconnect_by = None

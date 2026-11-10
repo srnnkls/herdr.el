@@ -1105,8 +1105,12 @@ runs there, as `herdr-claim-buffer' takes it.  Returns the buffer."
                                         server directory pane agent)))
     (when-let* ((existing (get-buffer name)))
       (kill-buffer existing))
-    (let ((buffer (get-buffer-create name))
-          (command (herdr-attach-command terminal-id takeover session)))
+    (let* ((buffer (get-buffer-create name))
+           (command (herdr-attach-command terminal-id takeover session))
+           (start (and (string-match-p "herdr-\\(?:yield\\|raw\\)\\'" (car command))
+                       (if (and display (seq-some #'frame-focus-state (visible-frame-list)))
+                           'shown
+                         'hidden))))
       (with-current-buffer buffer
         (setq herdr-terminal-id terminal-id
               herdr-terminal-session session
@@ -1118,15 +1122,17 @@ runs there, as `herdr-claim-buffer' takes it.  Returns the buffer."
                      (or label terminal-id)
                      (abbreviate-file-name directory)))))
       (let ((process-environment
-             (if (string-suffix-p "herdr-raw" (car command))
-                 (append (herdr--raw-environment) process-environment)
-               process-environment)))
+             (append (and (string-suffix-p "herdr-raw" (car command))
+                          (herdr--raw-environment))
+                     (and start
+                          (list (concat "HERDR_YIELD_START="
+                                        (if (eq start 'shown) "show" "hide"))))
+                     process-environment)))
         (setq buffer (herdr--terminal-exec buffer (car command) (cdr command))))
       (with-current-buffer buffer
         (setq herdr--buffer-name (buffer-name))
         (setq herdr--raw (string-suffix-p "herdr-raw" (car command)))
-        (when (string-match-p "herdr-\\(?:yield\\|raw\\)\\'" (car command))
-          (setq herdr--yield 'unknown)))
+        (setq herdr--yield start))
       (herdr-claim-buffer buffer terminal-id session agent)
       (when display (herdr-display-buffer buffer))
       (herdr--yield-sync)
