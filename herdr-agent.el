@@ -1018,7 +1018,7 @@ returns without waiting for the agent to be ready, as in
   "Apply TYPE's event DATA to SERVER-KEY's indexes."
   (setq server-key (herdr-agent--canonical-server-key server-key))
   (pcase type
-    ((or "pane.updated" "pane.moved")
+    ((or "pane.created" "pane.updated" "pane.moved")
      (when (equal type "pane.moved")
        (when-let* ((previous (alist-get 'previous_pane_id data)))
          (remhash (cons server-key previous) herdr-agent--panes)))
@@ -1030,11 +1030,16 @@ returns without waiting for the agent to be ready, as in
      (herdr-agent--release-pane server-key (alist-get 'pane_id data))))
   (run-hook-with-args 'herdr-agent-event-functions server-key type data))
 
+(defconst herdr-agent--event-types
+  '("pane.created" "pane.agent_detected" "pane.exited" "pane.closed"
+    "pane.updated" "pane.moved")
+  "Pane lifecycle events `herdr-agent-subscribe' subscribes to.")
+
 (defun herdr-agent-subscribe (server-key)
   "Subscribe SERVER-KEY to generic agent lifecycle events."
   (let* ((server-key (herdr-agent--canonical-server-key server-key))
          (cached (gethash server-key herdr-agent--subscriptions)))
-    (if (and (= (length cached) 5)
+    (if (and (= (length cached) (length herdr-agent--event-types))
              (cl-every (lambda (process)
                          (and (processp process) (process-live-p process)))
                        cached))
@@ -1046,8 +1051,7 @@ returns without waiting for the agent to be ready, as in
       (let (candidates)
         (condition-case err
             (progn
-              (dolist (type '("pane.agent_detected" "pane.exited" "pane.closed"
-                              "pane.updated" "pane.moved"))
+              (dolist (type herdr-agent--event-types)
                 (let ((process
                        (herdr-agent--with-server server-key
                          (herdr-subscribe

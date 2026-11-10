@@ -896,8 +896,8 @@ to be reached through the server it was found on."
                                  subscriptions))
                         (lambda (left right)
                           (string-lessp (car left) (car right))))
-                       '(("pane.agent_detected") ("pane.closed") ("pane.exited")
-                         ("pane.moved") ("pane.updated")))))
+                       '(("pane.agent_detected") ("pane.closed") ("pane.created")
+                         ("pane.exited") ("pane.moved") ("pane.updated")))))
             (dolist (entry subscription-processes)
               (when (equal (car entry) server-a)
                 (delete-process (cdr entry))))
@@ -921,10 +921,10 @@ to be reached through the server it was found on."
             (should-not (herdr-agent-session-buffer startup-session))
             (should-not (herdr-agent-session-attachment-process startup-session))
             (should
-             (equal (cl-subseq (nreverse operations) 0 9)
-                    '(subscribe subscribe subscribe subscribe subscribe prepare topology
+             (equal (cl-subseq (nreverse operations) 0 10)
+                    '(subscribe subscribe subscribe subscribe subscribe subscribe prepare topology
                       agent-start attached)))
-            (should (equal (pop prepared-subscription-states) '(5 t)))
+            (should (equal (pop prepared-subscription-states) '(6 t)))
             (setq operations nil)
             (herdr-agent-detach startup-session)
             (should-not (memq 'tab-close operations))
@@ -937,10 +937,10 @@ to be reached through the server it was found on."
                                              :server-key server-a :project-root root
                                              :attach nil))
             (should
-             (equal (cl-subseq (nreverse operations) 0 9)
-                    '(subscribe subscribe subscribe subscribe subscribe prepare topology
+             (equal (cl-subseq (nreverse operations) 0 10)
+                    '(subscribe subscribe subscribe subscribe subscribe subscribe prepare topology
                       agent-start attached)))
-            (should (equal (pop prepared-subscription-states) '(5 t)))
+            (should (equal (pop prepared-subscription-states) '(6 t)))
             (funcall (gethash (cons server-a "pane.updated") callbacks)
                      `((pane . ,(herdr-agent-tests--pane "claude" "term-shared" "a:old" "a"))))
             (funcall (gethash (cons server-a "pane.moved") callbacks)
@@ -1195,9 +1195,9 @@ to be reached through the server it was found on."
                                     (start-process "herdr-agent-subscription" nil
                                                    "sleep" "30")))
                                (push process candidates)
-                               (when (<= subscription-calls 5)
+                               (when (<= subscription-calls 6)
                                  (push process first-attempt))
-                               (when (= subscription-calls 5)
+                               (when (= subscription-calls 6)
                                  (delete-process (car (last first-attempt))))
                                process))))
                   (setq first-error
@@ -1224,10 +1224,10 @@ to be reached through the server it was found on."
             (should (equal (car-safe first-error) 'herdr-error))
             (should (equal (cadr first-error)
                            "subscription batch contains a dead process"))
-            (should (= first-call-count 5))
+            (should (= first-call-count 6))
             (should (cl-every #'null first-attempt-liveness))
             (should-not first-cache-publication)
-            (should (= clean-retry-cache-length 5))
+            (should (= clean-retry-cache-length 6))
             (should (cl-every #'identity clean-retry-cache-liveness)))
           (let ((server-key (expand-file-name "subscription/herdr.sock" root))
                 (agent-starts 0)
@@ -1311,7 +1311,7 @@ to be reached through the server it was found on."
                   (herdr-agent-subscribe server-key)
                   (let ((cached (gethash (herdr-agent--canonical-server-key server-key)
                                          herdr-agent--subscriptions)))
-                    (should (= (length cached) 5))
+                    (should (= (length cached) 6))
                     (should (cl-every #'process-live-p cached))
                     (should-not (cl-intersection cached first-attempt :test #'eq))))
               (dolist (process candidates)
@@ -1545,7 +1545,7 @@ to be reached through the server it was found on."
                                           :server-key server-key
                                           :project-root root))
               (should (equal (reverse operations)
-                             '(subscribe subscribe subscribe subscribe subscribe
+                             '(subscribe subscribe subscribe subscribe subscribe subscribe
                                prepare workspace-create tab-rename
                                detach workspace-close)))
               (setq session (herdr-agent-find server-key nil))
@@ -1558,7 +1558,7 @@ to be reached through the server it was found on."
               (herdr-agent-detach session)
               (should-not (herdr-agent-find server-key nil))
               (should (equal (reverse operations)
-                             '(subscribe subscribe subscribe subscribe subscribe
+                             '(subscribe subscribe subscribe subscribe subscribe subscribe
                                prepare workspace-create tab-rename detach workspace-close
                                tab-close workspace-list workspace-close)))
               (setq cleanup-fault t)
