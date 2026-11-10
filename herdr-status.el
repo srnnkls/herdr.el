@@ -458,6 +458,9 @@ or closed across the refresh an agent event triggers.")
 (defvar herdr-status--timer nil
   "Idle timer coalescing event-driven redraws.")
 
+(defvar herdr-status--urgent nil
+  "Non-nil while the pending redraw answers a lifecycle event.")
+
 (defvar herdr-status-redraw-inhibit-functions nil
   "Functions called with no arguments in a dashboard about to be redrawn.
 A redraw erases the buffer and draws it again, which strands anything
@@ -2463,11 +2466,13 @@ have passed since their last input, and whenever Emacs is not idle."
 (defun herdr-status--refresh-buffers ()
   "Redraw every dashboard a window shows, and mark the others stale.
 While the user is typing or a minibuffer is open the redraw waits for
-the next idle spell instead."
-  (setq herdr-status--timer nil)
-  (if (herdr-status--input-busy-p)
-      (herdr-status-request-refresh)
-    (herdr-status--refresh-shown-buffers)))
+the next idle spell instead, unless a lifecycle event asked for it."
+  (let ((urgent herdr-status--urgent))
+    (setq herdr-status--timer nil
+          herdr-status--urgent nil)
+    (if (and (not urgent) (herdr-status--input-busy-p))
+        (herdr-status-request-refresh)
+      (herdr-status--refresh-shown-buffers))))
 
 (defun herdr-status--refresh-prefetched ()
   "Refresh the dashboard from the reads of its last fetch, asked at once.
@@ -2532,26 +2537,43 @@ dashboard redrew.  Honours `herdr-status-auto-refresh'."
             (herdr-status-request-refresh))))))
     complete))
 
-(defun herdr-status-request-refresh ()
+(defun herdr-status-request-refresh (&optional urgent)
   "Schedule a redraw of every live dashboard buffer.
 Redraws coalesce on one timer, so calling this often is cheap.  A
 request made while Emacs is idle, as an event from herdr is, runs on a
 plain timer: an idle timer waits for the next idle spell, which needs a
-keypress to begin."
+keypress to begin.  With URGENT the redraw runs after
+`herdr-status-refresh-delay' even while the user types."
   (when (and herdr-status-auto-refresh
-             (null herdr-status--timer)
+             (or (null herdr-status--timer)
+                 (and urgent (not herdr-status--urgent)))
              (herdr-status--buffers))
-    (let ((delay (max herdr-status-refresh-delay herdr-status-input-settle)))
+    (when herdr-status--timer
+      (cancel-timer herdr-status--timer))
+    (setq herdr-status--urgent (and urgent t))
+    (let ((delay (if urgent
+                     herdr-status-refresh-delay
+                   (max herdr-status-refresh-delay herdr-status-input-settle))))
       (setq herdr-status--timer
-            (if (current-idle-time)
+            (if (or urgent (current-idle-time))
                 (run-with-timer delay nil #'herdr-status--refresh-buffers)
               (run-with-idle-timer delay nil #'herdr-status--refresh-buffers))))))
+
+(defconst herdr-status--lifecycle-events
+  '("pane.created" "pane.agent_detected" "pane.exited" "pane.closed")
+  "Herdr events that redraw without waiting for typing to settle.")
 
 (defun herdr-status--on-event (&rest _)
   "Schedule a redraw after a herdr lifecycle event."
   (herdr-status-request-refresh))
 
-(add-hook 'herdr-agent-event-functions #'herdr-status--on-event)
+(defun herdr-status--on-agent-event (_server-key type _data)
+  "Schedule a redraw after herdr event TYPE.
+A pane that arrives or ends redraws at once; any other change waits for
+typing to settle."
+  (herdr-status-request-refresh (member type herdr-status--lifecycle-events)))
+
+(add-hook 'herdr-agent-event-functions #'herdr-status--on-agent-event)
 (add-hook 'herdr-agent-ready-functions #'herdr-status--on-event)
 (add-hook 'herdr-agent-handoff-functions #'herdr-status--on-event)
 (add-hook 'herdr-terminal-exit-functions #'herdr-status--on-event)

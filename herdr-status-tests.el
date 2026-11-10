@@ -545,6 +545,36 @@
             (cancel-timer herdr-status--timer)
             (setq herdr-status--timer nil)))))))
 
+(ert-deftest herdr-status-lifecycle-event-redraws-while-the-user-types ()
+  (let ((herdr-status-auto-refresh t)
+        (herdr-status--timer nil)
+        (herdr-status--urgent nil)
+        (refreshes 0))
+    (herdr-status-tests--with-dashboard
+      (cl-letf (((symbol-function 'get-buffer-window) (lambda (&rest _) t))
+                ((symbol-function 'herdr-status--input-busy-p) (lambda () t))
+                ((symbol-function 'herdr-status-refresh)
+                 (lambda () (cl-incf refreshes))))
+        (unwind-protect
+            (progn
+              (herdr-status--on-agent-event "server" "pane.updated" nil)
+              (let ((settling herdr-status--timer))
+                (herdr-status--on-agent-event "server" "pane.created" nil)
+                (should-not (eq herdr-status--timer settling))
+                (should-not (memq settling timer-idle-list)))
+              (cancel-timer herdr-status--timer)
+              (herdr-status--refresh-buffers)
+              (should (= refreshes 1))
+              (should-not herdr-status--timer)
+              (herdr-status--on-agent-event "server" "pane.updated" nil)
+              (cancel-timer herdr-status--timer)
+              (herdr-status--refresh-buffers)
+              (should (= refreshes 1))
+              (should (timerp herdr-status--timer)))
+          (when herdr-status--timer
+            (cancel-timer herdr-status--timer)
+            (setq herdr-status--timer nil)))))))
+
 (ert-deftest herdr-status-counts-a-pause-between-keystrokes-as-typing ()
   (let ((herdr-status-input-settle 1.0)
         idle)
