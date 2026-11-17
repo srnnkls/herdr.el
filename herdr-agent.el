@@ -2218,10 +2218,12 @@ context captured when the buffer opened; \\[herdr-message-cancel] discards it.")
 (defun herdr-message--context (entry)
   "Return message context for agent ENTRY from the current buffer.
 Providers on `herdr-send-context-functions' answer first; without one,
-only file-visiting buffers contribute their current line.  An active
-region is quoted with the message instead."
+the buffer contributes its current line, unless it shows the agent's own
+conversation.  An active region is quoted with the message instead."
   (or (run-hook-with-args-until-success 'herdr-send-context-functions entry)
-      (and buffer-file-name (not (use-region-p))
+      (and (not (use-region-p))
+           (not (when-let* ((target (herdr--entry-target entry)))
+                  (herdr-message--conversation-p target)))
            (herdr-default-send-context entry))))
 
 (defun herdr-message--compose (text context)
@@ -2591,11 +2593,12 @@ minibuffer moves the draft to a `herdr-message-mode' buffer instead."
          (entries (herdr-agent--send-scope-entries all scope))
          (entry (if last
                     (herdr-agent--last-send-entry entries scope)
-                  (herdr-read-agent
-                   "Message agent: " entries
-                   (and (eq scope 'all)
-                        (ignore-errors
-                          (herdr-agent--send-scope-entries entries 'workspace))))))
+                  (save-mark-and-excursion
+                    (herdr-read-agent
+                     "Message agent: " entries
+                     (and (eq scope 'all)
+                          (ignore-errors
+                            (herdr-agent--send-scope-entries entries 'workspace)))))))
          (target (herdr--entry-target entry)))
     (herdr-message--read target (herdr-message--context entry))))
 

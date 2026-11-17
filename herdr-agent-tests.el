@@ -3023,11 +3023,16 @@ functions scheduled, and `refusals', how many renames herdr turns down."
       (with-temp-buffer
         (rename-buffer "herdr message scratch" t)
         (insert "scratch")
-        (herdr-message--send target "  plain  " (herdr-message--context nil))))
+        (herdr-message--send target "  plain  " (herdr-message--context nil))
+        (cl-letf (((symbol-function 'herdr-message--conversation-p) (lambda (_) t)))
+          (herdr-message--send target "own" (herdr-message--context
+                                             '((server_key . "/servers/a.sock")
+                                               (terminal_id . "shared")))))))
     (should (equal (nreverse prompts)
                    `((,target "fix this\n\n---\nEmacs context\nfile: /tmp/herdr-message.el:2\nmode: fundamental-mode\n\n```\nbeta\n```")
-                     (,target "plain"))))
-    (should (equal herdr-message-history '("plain" "fix this")))))
+                     (,target "plain\n\n---\nEmacs context\nbuffer: herdr message scratch:1\nmode: fundamental-mode\n\n```\nscratch\n```")
+                     (,target "own"))))
+    (should (equal herdr-message-history '("own" "plain" "fix this")))))
 
 (ert-deftest herdr-message-compose-functions-replace-the-default-prompt ()
   (let ((herdr-message-history nil)
@@ -3162,6 +3167,28 @@ functions scheduled, and `refusals', how many renames herdr turns down."
                              (herdr-message--quote-selection "/tmp/project/")))
     (should (string-prefix-p "@elsewhere/notes.md:1-3\n"
                              (herdr-message--quote-selection "/srv/")))))
+
+;; Reading the agent in the minibuffer deactivates the region it is about.
+(ert-deftest herdr-message-session-keeps-the-region-across-the-agent-read ()
+  (with-temp-buffer
+    (insert "alpha\nbeta\n")
+    (setq buffer-file-name "/tmp/project/notes.txt")
+    (transient-mark-mode 1)
+    (set-mark (point-min))
+    (goto-char (point-max))
+    (activate-mark)
+    (let ((entry '((target . ("/s" . "t")))) seen)
+      (cl-letf (((symbol-function 'herdr-agent--send-candidates) (lambda () (list entry)))
+                ((symbol-function 'herdr--prune-session-targets) #'ignore)
+                ((symbol-function 'herdr-agent--send-scope-entries)
+                 (lambda (entries _scope) entries))
+                ((symbol-function 'herdr-read-agent)
+                 (lambda (&rest _) (deactivate-mark) entry))
+                ((symbol-function 'herdr--entry-target) (lambda (e) (alist-get 'target e)))
+                ((symbol-function 'herdr-message--read)
+                 (lambda (_target context) (setq seen (list (use-region-p) context)))))
+        (herdr-message--session 'all nil))
+      (should (equal seen '(t nil))))))
 
 (ert-deftest herdr-message-rejects-empty-text ()
   (let ((herdr-message-history nil))
