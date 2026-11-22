@@ -1881,6 +1881,48 @@ giving the panes the fixture agents occupy a herd."
                             ("--resume" "s1") nil))))
           (should (equal enlisted `((,started "alpha" . "refactor")))))))))
 
+(ert-deftest herdr-status-branch-forks-the-conversation-beside-the-agent ()
+  (herdr-status-tests--with-herds '(("api-review" . "refactor"))
+    (herdr-status-tests--with-dashboard
+      (let ((started (herdr-agent--make-session :pane "%9"))
+            stopped starts enlisted)
+        (cl-letf (((symbol-function 'herdr-agent-stop)
+                   (lambda (target) (push target stopped)))
+                  ((symbol-function 'herdr-agent-start-session)
+                   (lambda (kind name &rest arguments)
+                     (push (list kind name herdr-session
+                                 (plist-get arguments :project-root)
+                                 (plist-get arguments :args))
+                           starts)
+                     started))
+                  ((symbol-function 'herdr-herd-enlist)
+                   (lambda (session herd) (push (cons session herd) enlisted)))
+                  ((symbol-function 'herdr-status-request-refresh) #'ignore))
+          (goto-char (point-max))
+          (re-search-backward "api-review")
+          (should (eq (herdr-status-branch) started))
+          (should-not stopped)
+          (should (equal starts
+                         '(("claude" nil "alpha" "/tmp/proj/"
+                            ("--resume" "s1" "--fork-session")))))
+          (should (equal enlisted `((,started "alpha" . "refactor")))))))))
+
+(ert-deftest herdr-status-branch-refuses-a-harness-that-cannot-branch ()
+  (herdr-status-tests--with-dashboard
+    (let ((herdr-agent-harnesses
+           (cons '("claude" :arguments ((start) (resume "--resume" :reference)))
+                 herdr-agent-harnesses)))
+      (cl-letf (((symbol-function 'herdr-agent-start-session)
+                 (lambda (&rest _) (error "Started a branch"))))
+        (goto-char (point-max))
+        (re-search-backward "api-review")
+        (should-error (herdr-status-branch) :type 'user-error)))))
+
+(ert-deftest herdr-agent-harnesses-branch-by-their-native-fork ()
+  (should (equal (herdr-agent--native-args "codex" 'branch "s1") '("fork" "s1")))
+  (should (equal (herdr-agent--native-args "pi" 'branch "s1") '("--fork" "s1")))
+  (should (equal (herdr-agent--native-args "omp" 'branch "s1") '("--fork" "s1"))))
+
 (ert-deftest herdr-status-move-resumes-the-agent-on-another-session ()
   (herdr-status-tests--with-herds '(("api-review" . "refactor"))
     (herdr-status-tests--with-dashboard

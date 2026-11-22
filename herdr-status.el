@@ -2037,6 +2037,7 @@ are bound by that package and unbound where it is not installed."
   "d" #'herdr-status-detach
   "x" #'herdr-status-stop
   "X" #'herdr-status-restart
+  "B" #'herdr-status-branch
   "M" #'herdr-status-move
   "r" #'herdr-status-resume
   "f" #'herdr-status-filter
@@ -3122,6 +3123,32 @@ name; an agent in a herd rejoins it there."
         (when herd (herdr-herd-enlist started herd)))
       (herdr-status-refresh))))
 
+(defun herdr-status-branch ()
+  "Branch the conversation of the agent at point into a new agent.
+Its harness copies the conversation into a session of its own and
+resumes the copy in a new pane, in the same directory and on the same
+herdr session, while the agent at point runs on; a branch of an agent in
+a herd joins that herd.  Return the started agent session."
+  (interactive)
+  (let* ((entry (herdr-status--entry-at-point))
+         (label (herdr--entry-label entry))
+         (kind (alist-get 'agent entry))
+         (reference (herdr-status--resume-reference entry))
+         (herd (herdr-herd-of-entry entry)))
+    (unless (assq 'branch (plist-get (herdr-agent--harness kind t) :arguments))
+      (user-error "%s cannot branch a conversation" (or kind label)))
+    (unless reference
+      (user-error "%s reports no session to branch" label))
+    (let ((started (herdr-with-session (alist-get 'session entry)
+                     (herdr-agent-start-session
+                      kind nil
+                      :project-root (herdr-entry-directory entry)
+                      :args (herdr-agent--native-args kind 'branch reference)
+                      :wait nil))))
+      (when herd (herdr-herd-enlist started herd))
+      (herdr-status-request-refresh)
+      started)))
+
 (defun herdr-status--resume-reference (entry)
   "Return the reference ENTRY's harness resumes its conversation by, or nil."
   (alist-get 'value (alist-get 'agent_session entry)))
@@ -3364,6 +3391,7 @@ Every suffix here is bound directly in `herdr-status-mode-map' as well."
     ("d" "detach, pane runs on" herdr-status-detach)
     ("x" "stop, pane closes" herdr-status-stop)
     ("X" "restart, resuming in a fresh pane" herdr-status-restart)
+    ("B" "branch into a new agent" herdr-status-branch)
     ("M" "move to session" herdr-status-move)]
    ["List"
     ("f" "filter" herdr-status-filter)

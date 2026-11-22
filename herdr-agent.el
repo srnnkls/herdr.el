@@ -27,20 +27,25 @@
 (defvar herdr-agent-harnesses
   '(("claude" :label "Claude Code"
      :arguments ((start) (continue "--continue")
-                 (resume "--resume" :reference))
+                 (resume "--resume" :reference)
+                 (branch "--resume" :reference "--fork-session"))
      :sessions herdr-agent-claude-sessions)
     ("codex" :label "Codex"
      :arguments ((start) (continue "resume" "--last")
-                 (resume "resume" :reference))
+                 (resume "resume" :reference)
+                 (branch "fork" :reference))
      :sessions herdr-agent-codex-sessions)
     ("pi" :label "Pi"
      :arguments ((start) (continue "--continue")
-                 (resume "--session" :reference)))
+                 (resume "--session" :reference)
+                 (branch "--fork" :reference)))
     ("omp" :label "Oh My Pi"
      :arguments ((start) (continue "--continue")
-                 (resume "--session" :reference))))
+                 (resume "--session" :reference)
+                 (branch "--fork" :reference))))
   "Harness descriptors keyed by Herdr agent kind.
-`:arguments' says how the harness starts, continues and resumes;
+`:arguments' says how the harness starts, continues and resumes, and
+how it branches a copy of a session under a new one, where it can;
 `:sessions', where given, is a function of a directory returning the
 sessions started there, newest first, as lists of the reference `resume'
 takes, a title or nil, and the time the session was last written.")
