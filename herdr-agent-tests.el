@@ -2545,8 +2545,8 @@ functions scheduled, and `refusals', how many renames herdr turns down."
       (should (equal sent '("t1" . "api-review-v2")))
       (herdr-agent-rename "t1" "api-review-v2")
       (should (equal (reverse reported)
-                     '(("%7" "herdr-agent" ((title . "API Review: v2")))
-                       ("%7" "herdr-agent" ((title . :null))))))
+                     '(("%7" "herdr-agent" ((title . "API Review: v2") (branch_of . :null)))
+                       ("%7" "herdr-agent" ((title . :null) (branch_of . :null))))))
       (should-error (herdr-agent-rename "t1" "  ") :type 'user-error))))
 
 (ert-deftest herdr-agent-start-without-a-name-launches-under-a-placeholder ()
@@ -4081,6 +4081,20 @@ dashboard's keys over to evil for every test after this one."
                        "running 3 tests\n     ok"
                        evil-set-marker
                        evil-inner-tag))))))
+
+(ert-deftest herdr-agent-marks-a-branch-with-its-parent ()
+  (let (reported)
+    (cl-letf (((symbol-function 'herdr-api-pane-report-metadata)
+               (lambda (pane _source &rest arguments)
+                 (push (cons pane (plist-get arguments :tokens)) reported))))
+      (herdr-agent-mark-branch
+       (herdr-agent--make-session :server "/tmp/alpha.sock" :pane "%9") "API Review")
+      (should (equal reported
+                     '(("%9" (title . "Branch: API Review") (branch_of . "API Review")))))
+      (should (equal (herdr-agent-branch-of
+                      '((tokens (title . "Branch: API Review") (branch_of . "API Review"))))
+                     "API Review"))
+      (should-not (herdr-agent-branch-of '((tokens (title . "API Review"))))))))
 
 (provide 'herdr-agent-tests)
 ;;; herdr-agent-tests.el ends here

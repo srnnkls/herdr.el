@@ -3128,7 +3128,8 @@ name; an agent in a herd rejoins it there."
 Its harness copies the conversation into a session of its own and
 resumes the copy in a new pane, in the same directory and on the same
 herdr session, while the agent at point runs on; a branch of an agent in
-a herd joins that herd.  Return the started agent session."
+a herd joins that herd.  The branch goes by `herdr-agent-branch-title'
+until it is renamed.  Return the started agent session."
   (interactive)
   (let* ((entry (herdr-status--entry-at-point))
          (label (herdr--entry-label entry))
@@ -3141,10 +3142,12 @@ a herd joins that herd.  Return the started agent session."
       (user-error "%s reports no session to branch" label))
     (let ((started (herdr-with-session (alist-get 'session entry)
                      (herdr-agent-start-session
-                      kind nil
+                      kind (herdr-agent-name-slug (herdr-agent-branch-title label))
                       :project-root (herdr-entry-directory entry)
                       :args (herdr-agent--native-args kind 'branch reference)
                       :wait nil))))
+      (ignore-error herdr-error
+        (herdr-agent-mark-branch started label))
       (when herd (herdr-herd-enlist started herd))
       (herdr-status-request-refresh)
       started)))

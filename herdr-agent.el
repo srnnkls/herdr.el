@@ -1625,7 +1625,7 @@ for the reference instead, taken to belong to the first directory."
   "Rename TARGET to TITLE, which herdr takes as its slug.
 TITLE goes to the pane's `title' token as typed, for
 `herdr-agent-entry-title' to show; a TITLE that is its own slug clears
-the token."
+the token.  A renamed branch stops being one to `herdr-agent-branch-of'."
   (let* ((name (or (herdr-agent-name-slug title)
                    (user-error "No agent name in %S" title)))
          (title (string-trim title)))
@@ -1641,7 +1641,28 @@ the token."
            (lambda (pane)
              (herdr-api-pane-report-metadata
               pane herdr-agent-metadata-source
-              :tokens `((title . ,(if (equal name title) :null title)))))))))))
+              :tokens `((title . ,(if (equal name title) :null title))
+                        (branch_of . :null))))))))))
+
+(defun herdr-agent-branch-of (entry)
+  "Return the title of the agent ENTRY was branched from, or nil.
+A branch counts as one until it is renamed."
+  (let ((parent (alist-get 'branch_of (alist-get 'tokens entry))))
+    (and (stringp parent) (not (string-empty-p parent)) parent)))
+
+(defun herdr-agent-branch-title (parent)
+  "Return the title a branch of the agent titled PARENT starts under."
+  (format "Branch: %s" parent))
+
+(defun herdr-agent-mark-branch (session parent)
+  "Show the started agent SESSION as a branch of the agent titled PARENT.
+It goes by `herdr-agent-branch-title' and answers PARENT to
+`herdr-agent-branch-of' until it is renamed."
+  (herdr-agent--with-server (herdr-agent-session-server session)
+    (herdr-api-pane-report-metadata
+     (herdr-agent-session-pane session) herdr-agent-metadata-source
+     :tokens `((title . ,(herdr-agent-branch-title parent))
+               (branch_of . ,parent)))))
 
 (defun herdr-agent-status (target)
   "Return the status of TARGET."

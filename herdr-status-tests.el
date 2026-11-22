@@ -1885,9 +1885,11 @@ giving the panes the fixture agents occupy a herd."
   (herdr-status-tests--with-herds '(("api-review" . "refactor"))
     (herdr-status-tests--with-dashboard
       (let ((started (herdr-agent--make-session :pane "%9"))
-            stopped starts enlisted)
+            stopped starts enlisted marked)
         (cl-letf (((symbol-function 'herdr-agent-stop)
                    (lambda (target) (push target stopped)))
+                  ((symbol-function 'herdr-agent-mark-branch)
+                   (lambda (session parent) (push (cons session parent) marked)))
                   ((symbol-function 'herdr-agent-start-session)
                    (lambda (kind name &rest arguments)
                      (push (list kind name herdr-session
@@ -1903,8 +1905,9 @@ giving the panes the fixture agents occupy a herd."
           (should (eq (herdr-status-branch) started))
           (should-not stopped)
           (should (equal starts
-                         '(("claude" nil "alpha" "/tmp/proj/"
+                         '(("claude" "branch-api-review" "alpha" "/tmp/proj/"
                             ("--resume" "s1" "--fork-session")))))
+          (should (equal marked `((,started . "api-review"))))
           (should (equal enlisted `((,started "alpha" . "refactor")))))))))
 
 (ert-deftest herdr-status-branch-refuses-a-harness-that-cannot-branch ()
