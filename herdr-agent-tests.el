@@ -2949,6 +2949,47 @@ functions scheduled, and `refusals', how many renames herdr turns down."
           (should-not (herdr-agent-claude-sessions "/tmp/elsewhere")))
       (delete-directory root t))))
 
+(ert-deftest herdr-agent-titles-an-untitled-claude-session-by-its-first-prompt ()
+  (let* ((root (make-temp-file "herdr-claude" t))
+         (herdr-agent-claude-projects-directory root)
+         (herdr-agent-prompt-title-width 20)
+         (folder (expand-file-name "-tmp-proj" root))
+         (home (expand-file-name "~")))
+    (unwind-protect
+        (progn
+          (make-directory folder)
+          (with-temp-file (expand-file-name "plain.jsonl" folder)
+            (insert "{\"type\":\"user\",\"isMeta\":true,\"message\":{\"content\":\"caveat\"}}\n"
+                    "{\"type\":\"user\",\"message\":{\"content\":\"<command-name>/model</command-name>\"}}\n"
+                    "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"[herdr message m1 from w1:p1]\\nfix\\n  the "
+                    home "/x build\"}]}}\n"
+                    "{\"type\":\"user\",\"message\":{\"content\":\"later\"}}\n"))
+          (with-temp-file (expand-file-name "command.jsonl" folder)
+            (insert "{\"type\":\"user\",\"message\":{\"content\":\"<command-message>implement</command-message>\\n<command-name>/implement</command-name>\\n<command-args>task 3</command-args>\"}}\n"))
+          (should (equal (sort (mapcar (lambda (session) (seq-take session 2))
+                                       (herdr-agent-claude-sessions "/tmp/proj"))
+                               (lambda (a b) (string< (car a) (car b))))
+                         '(("command" "/implement task 3")
+                           ("plain" "fix the ~/x build")))))
+      (delete-directory root t))))
+
+(ert-deftest herdr-agent-offers-a-past-session-under-the-name-it-was-kept-by ()
+  (let ((herdr-agent-harnesses
+         `(("claude" :arguments ((start))
+            :sessions ,(lambda (_) '(("s1" "Generated" (0 2)) ("s2" "Other" (0 1)))))))
+        (offered nil))
+    (cl-letf (((symbol-function 'herdr-agent--stored-names)
+               (lambda () '((("herdr:claude" . "s1") . "Kept Name")
+                            (("herdr:claude" . "s2") terminal . "Claude Code"))))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _)
+                 (setq offered (all-completions "" collection))
+                 (car offered))))
+      (should (equal (herdr-agent-read-session-among "claude" '("/tmp/proj"))
+                     '("s1" . "/tmp/proj")))
+      (should (string-search "Kept Name" (car offered)))
+      (should (string-search "Other" (cadr offered))))))
+
 (ert-deftest herdr-agent-lists-codex-sessions-started-in-a-directory ()
   (let* ((root (make-temp-file "herdr-codex" t))
          (herdr-agent-codex-directory root)

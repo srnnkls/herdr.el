@@ -1412,11 +1412,57 @@ attachment; TIMEOUT-MS limits startup."
                   (lambda (a b) (time-less-p (cdr b) (cdr a))))
             herdr-agent-session-limit))
 
+(defcustom herdr-agent-prompt-title-width 60
+  "How many characters of a session's first prompt stand in for its title."
+  :type 'natnum
+  :group 'herdr-agent)
+
+(defun herdr-agent--claude-prompt (record)
+  "Return the prompt the Claude Code RECORD carries, or nil.
+A slash command reads as typed; other markup Claude Code wraps around a
+turn carries no prompt."
+  (when-let* (((equal (alist-get 'type record) "user"))
+              ((not (alist-get 'isMeta record)))
+              (content (alist-get 'content (alist-get 'message record)))
+              (text (if (stringp content)
+                        content
+                      (seq-some (lambda (part)
+                                  (and (equal (alist-get 'type part) "text")
+                                       (alist-get 'text part)))
+                                content)))
+              (text (string-trim
+                     (replace-regexp-in-string
+                      "\\`\\[herdr message [^]]*\\]" "" text))))
+    (cond
+     ((string-match "<command-name>\\([^<]*\\)</command-name>" text)
+      (let ((command (match-string 1 text)))
+        (and (string-match "<command-args>\\([^<]+\\)</command-args>" text)
+             (concat command " " (match-string 1 text)))))
+     ((string-prefix-p "<" text) nil)
+     ((not (string-empty-p text)) text))))
+
+(defun herdr-agent--claude-first-prompt (head)
+  "Return the first prompt in HEAD, the opening bytes of a session file."
+  (when-let* ((prompt
+               (seq-some (lambda (line)
+                           (and (string-search "\"type\":\"user\"" line)
+                                (herdr-agent--claude-prompt
+                                 (ignore-errors
+                                   (json-parse-string line :object-type 'alist
+                                                      :null-object nil
+                                                      :false-object nil)))))
+                         (split-string (decode-coding-string head 'utf-8) "\n" t))))
+    (truncate-string-to-width
+     (replace-regexp-in-string
+      (concat (regexp-quote (expand-file-name "~")) "/") "~/"
+      (replace-regexp-in-string "[[:space:]]+" " " prompt) t t)
+     herdr-agent-prompt-title-width nil nil "…")))
+
 (defun herdr-agent-claude-sessions (directory)
   "Return the Claude Code sessions started in DIRECTORY, newest first.
 A session is titled by the last title Claude Code gave it, which it
 writes again as the conversation goes on, so the tail of its file holds
-it."
+it.  A session Claude Code gave no title goes by its first prompt."
   (let ((folder (expand-file-name
                  (replace-regexp-in-string
                   "[^[:alnum:]]" "-"
@@ -1427,11 +1473,12 @@ it."
        (lambda (cell)
          (let* ((file (car cell))
                 (size (file-attribute-size (file-attributes file)))
-                (tail (herdr-agent--file-part file (max 0 (- size 65536)) size)))
+                (tail (herdr-agent--file-part file (max 0 (- size 65536)) size))
+                (head (herdr-agent--file-part file 0 65536)))
            (list (file-name-base file)
                  (or (herdr-agent--json-field "aiTitle" tail t)
-                     (herdr-agent--json-field
-                      "aiTitle" (herdr-agent--file-part file 0 65536) t))
+                     (herdr-agent--json-field "aiTitle" head t)
+                     (herdr-agent--claude-first-prompt head))
                  (cdr cell))))
        (herdr-agent--newest-files
         (directory-files folder t "\\`[^.].*\\.jsonl\\'"))))))
@@ -1499,13 +1546,18 @@ lists none asks for the reference instead."
   "Read one of the KIND sessions started in any of DIRECTORIES.
 Return a cons of its reference and the directory it was started in.
 Sessions are offered newest first by title and date, annotated with
-their directory when there are several; a harness that lists none asks
-for the reference instead, taken to belong to the first directory."
+their directory when there are several; a session an agent ran under a
+name goes by that name, kept in `herdr-agent-names-file'.  A harness
+that lists none asks for the reference instead, taken to belong to the
+first directory."
   (let* ((function (plist-get (cdr (assoc kind herdr-agent-harnesses)) :sessions))
+         (names (herdr-agent--stored-names))
          (sessions (and function
                         (sort (mapcan (lambda (directory)
                                         (mapcar (lambda (session)
-                                                  (append session (list directory)))
+                                                  (append (herdr-agent--kept-session-name
+                                                           session names)
+                                                          (list directory)))
                                                 (funcall function directory)))
                                       directories)
                               (lambda (a b) (time-less-p (nth 2 b) (nth 2 a)))))))
@@ -2127,6 +2179,19 @@ once the agent turns up nameless.  Nil keeps the file beside
     (when-let* (((listp session))
                 (value (alist-get 'value session)))
       (cons (alist-get 'source session) value))))
+
+(defun herdr-agent--kept-session-name (session names)
+  "Return SESSION titled by the name NAMES keep for its reference, if any.
+SESSION is a list of a reference, a title and a time; a kept terminal
+title does not count as a name."
+  (let ((name (seq-some (lambda (cell)
+                          (and (equal (cdar cell) (car session))
+                               (stringp (cdr cell))
+                               (cdr cell)))
+                        names)))
+    (if name
+        (cons (car session) (cons name (cddr session)))
+      session)))
 
 (defun herdr-agent--kept-title (entry)
   "Return the title named ENTRY shows, its `title' token or else its name."
