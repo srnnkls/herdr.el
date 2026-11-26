@@ -1932,21 +1932,20 @@ buffers it attached."
     (_ name)))
 
 (defun herdr-available-sessions ()
-  "Return the sessions with a socket on disk, the shared one first."
-  (let* ((shared (let ((herdr-socket-path nil) (herdr-session 'shared))
-                   (herdr-socket-file)))
-         (sessions (expand-file-name "sessions" (file-name-directory shared))))
-    (cons 'shared
-          (when (file-directory-p sessions)
-            (cl-remove-if-not
-             (lambda (name)
-               (file-exists-p (expand-file-name (format "%s/herdr.sock" name) sessions)))
-             (directory-files sessions nil "\\`[^.]"))))))
+  "Return the sessions herdr reports running, the shared one first.
+A socket left on disk by a server that died is no session."
+  (cons 'shared
+        (delq nil
+              (mapcar (lambda (record)
+                        (and (alist-get 'running record)
+                             (not (equal (alist-get 'name record) "default"))
+                             (alist-get 'name record)))
+                      (condition-case nil (herdr-session-list) (herdr-error nil))))))
 
 (defun herdr-all-sessions ()
   "Return every session Emacs may talk to, configured or merely running.
 `herdr-known-sessions' contributes the configured ones and
-`herdr-available-sessions' those a socket on disk reveals.  Designators
+`herdr-available-sessions' those herdr reports running.  Designators
 naming the same session appear once."
   (let ((seen (make-hash-table :test #'equal))
         (sessions nil))

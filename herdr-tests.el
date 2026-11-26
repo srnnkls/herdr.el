@@ -1401,7 +1401,20 @@ RESPOND is called with each connection and the request line it sent."
         (herdr-session-alist '(("/b" . "private") ("/c" . "work"))))
     (should (equal (herdr-known-sessions) '(shared "work" "private")))))
 
-(ert-deftest herdr-all-sessions-adds-the-servers-only-disk-knows ()
+(ert-deftest herdr-available-sessions-keeps-what-herdr-reports-running ()
+  (cl-letf (((symbol-function 'herdr-session-list)
+             (lambda ()
+               '(((name . "default") (running . t))
+                 ((name . "stale") (running))
+                 ((name . "work") (running . t))))))
+    (should (equal (herdr-available-sessions) '(shared "work")))))
+
+(ert-deftest herdr-available-sessions-falls-back-to-shared-without-herdr ()
+  (cl-letf (((symbol-function 'herdr-session-list)
+             (lambda () (signal 'herdr-error '("herdr executable not found")))))
+    (should (equal (herdr-available-sessions) '(shared)))))
+
+(ert-deftest herdr-all-sessions-adds-the-servers-only-herdr-knows ()
   (let ((herdr-session 'shared)
         (herdr-project-sessions nil)
         (herdr-session-alist '(("/b" . "work"))))
