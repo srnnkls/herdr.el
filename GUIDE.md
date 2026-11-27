@@ -575,15 +575,16 @@ A dashboard draws a field only when its scope's list, `herdr-status-workspace-co
   width of its own value.
 
 Values come from three places. `pane` and `workspace` are fields herdr reports. `branch` and
-`directory` are computed from the working directory. `model`, `effort` and `context` are read from
+`directory` are computed from the working directory. `model`, `effort` and `context` are the
+agent's usage, read with `herdr-usage`: a function on `herdr-usage-functions` answers first, and
 the entry's `tokens`, the metadata any program reports to its pane through herdr's
-`pane.report_metadata`; `herdr-status-model-token`, `herdr-status-effort-token` and
-`herdr-status-context-token` name the tokens. `updated` is the time the dashboard saw the agent's
+`pane.report_metadata`, stand in for what none answers; `herdr-usage-model-token`,
+`herdr-usage-effort-token` and `herdr-usage-context-token` name the tokens. `updated` is the time the dashboard saw the agent's
 herdr revision change, drawn by `herdr-status-updated-formats`; herdr reports no time of its own, so
 the field stays blank until an agent changes after the dashboard first saw it. A function on
 `herdr-status-updated-functions` answering with a time for an entry overrides that. A model reported
 as `Opus 5.5/high` is split into model and effort when the suffix is one of
-`herdr-status-effort-levels`. Any package that reaches the herdr socket can report tokens of its own
+`herdr-usage-effort-levels`. Any package that reaches the herdr socket can report tokens of its own
 for a column to show.
 
 | To change | Set |

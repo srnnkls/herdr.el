@@ -150,6 +150,7 @@ Where the code lives:
 - `herdr.el`: attaching terminals, buffer names and windows, reading entries, attaching sessions.
 - `herdr-terminal.el`: reading and driving an attached terminal, per backend.
 - `herdr-agent.el`: the agent lifecycle, adapters, messages, context, and the agent at hand.
+- `herdr-usage.el`: an agent's model, effort and context, and the functions answering them.
 - `herdr-status.el`: the dashboard.
 - `herdr-herd.el` and `bin/herdr-herd`: herds.
 - `bin/herdr-yield`: a `herdr` that lets an idle attachment give up the terminal's size.

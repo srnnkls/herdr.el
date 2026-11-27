@@ -27,6 +27,7 @@
 (require 'transient)
 (require 'herdr-agent)
 (require 'herdr-herd)
+(require 'herdr-usage)
 
 ;;;; Appearance
 
@@ -867,27 +868,13 @@ by each of them."
   "Return the model ENTRY sorts under, the ones reporting none last."
   (or (herdr-status--model entry) ""))
 
-(defconst herdr-status--context-scales '(("k" . 1000) ("M" . 1000000))
-  "What a figure's suffix multiplies it by.")
-
-(defun herdr-status--context-tokens (figure)
-  "Return the token count FIGURE stands for, or nil."
-  (when (and figure (string-match "\\`\\([0-9.]+\\)\\([kM]\\)?\\'" figure))
-    (* (string-to-number (match-string 1 figure))
-       (or (cdr (assoc (match-string 2 figure) herdr-status--context-scales))
-           1))))
-
-(defun herdr-status--context-share (context)
-  "Return the fraction of its window CONTEXT says is held, or nil."
-  (when-let* ((figures (split-string (or context "") "/"))
-              (held (herdr-status--context-tokens (car figures)))
-              (total (herdr-status--context-tokens (cadr figures)))
-              ((> total 0)))
-    (/ (float held) total)))
+(defun herdr-status--context-share (figure)
+  "Return the fraction of its window FIGURE says is held, or nil."
+  (herdr-usage-share (herdr-usage-parse figure)))
 
 (defun herdr-status--context-key (entry)
   "Return the share of its window ENTRY holds, the ones reporting none last."
-  (if-let* ((share (herdr-status--context-share (herdr-status--context entry))))
+  (if-let* ((share (herdr-usage-share (alist-get 'context (herdr-usage entry)))))
       (format "%03d" (round (* 100 share)))
     ""))
 
@@ -1211,68 +1198,18 @@ and a zero WIDTH means no row has the field, so nothing is drawn."
   "Return the git branch ENTRY's directory is on, or nil outside a repository."
   (herdr-directory-branch (herdr-entry-directory entry)))
 
-(defcustom herdr-status-model-token "model"
-  "Metadata token naming the model an agent is currently answering with.
-Herdr carries whatever a pane reports of itself, so the model arrives
-the way any other self-reported field does, and the column is blank for
-a harness that reports none."
-  :type 'string
-  :group 'herdr-status)
-
-(defcustom herdr-status-effort-token "effort"
-  "Metadata token naming the reasoning effort an agent answers at.
-A harness that reports no such token but writes its effort after the
-model, as in \"Opus 5.5/high\", has it read from there instead."
-  :type 'string
-  :group 'herdr-status)
-
-(defcustom herdr-status-effort-levels '("low" "medium" "high" "xhigh" "max")
-  "Effort levels a reported model may end in after a slash.
-Only these are split off the model, so a model named by provider and
-name, as in \"anthropic/claude\", stays whole."
-  :type '(repeat string)
-  :group 'herdr-status)
-
-(defun herdr-status--token (entry token)
-  "Return the non-empty string ENTRY reports under TOKEN, or nil."
-  (when-let* ((value (alist-get (intern token) (alist-get 'tokens entry)))
-              ((stringp value))
-              ((not (string-empty-p value))))
-    value))
-
-(defun herdr-status--model-effort (entry)
-  "Return the model and the effort ENTRY reports, as a cons of either or nil."
-  (let ((model (herdr-status--token entry herdr-status-model-token))
-        (effort (herdr-status--token entry herdr-status-effort-token)))
-    (if (and model
-             (string-match "\\`\\(.+\\)/\\([^/]+\\)\\'" model)
-             (member (match-string 2 model) herdr-status-effort-levels))
-        (cons (match-string 1 model) (or effort (match-string 2 model)))
-      (cons model effort))))
-
 (defun herdr-status--model (entry)
-  "Return the model ENTRY reports itself running, or nil."
-  (car (herdr-status--model-effort entry)))
+  "Return the model ENTRY runs, or nil."
+  (alist-get 'model (herdr-usage entry)))
 
 (defun herdr-status--effort (entry)
-  "Return the reasoning effort ENTRY reports itself answering at, or nil."
-  (cdr (herdr-status--model-effort entry)))
-
-(defcustom herdr-status-context-token "context"
-  "Metadata token naming how much of its context window an agent holds.
-Herdr carries whatever a pane reports of itself, so the figure arrives
-the way any other self-reported field does, and the column is blank for
-a harness that reports none."
-  :type 'string
-  :group 'herdr-status)
+  "Return the reasoning effort ENTRY answers at, or nil."
+  (alist-get 'effort (herdr-usage entry)))
 
 (defun herdr-status--context (entry)
-  "Return the context window ENTRY reports itself holding, or nil."
-  (when-let* ((context (alist-get (intern herdr-status-context-token)
-                                  (alist-get 'tokens entry)))
-              ((stringp context))
-              ((not (string-empty-p context))))
-    context))
+  "Return the context window ENTRY holds, as a figure, or nil."
+  (when-let* ((context (alist-get 'context (herdr-usage entry))))
+    (herdr-usage-figure context)))
 
 (defvar herdr-status--revisions (make-hash-table :test #'equal)
   "Each agent's last seen revision and when it changed to it.

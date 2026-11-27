@@ -325,10 +325,10 @@ is `$XDG_CONFIG_HOME/herdr/sessions/NAME/herdr.sock`; `XDG_CONFIG_HOME` defaults
 | `herdr-status-preview-status-regexp` | regexp | harness status and timing lines | lines drawn in `herdr-status-preview-status` |
 | `herdr-status-preview-rule` | string | `"┃"` | drawn down a preview's left edge in the agent's colour |
 | `herdr-status-preview-spacing` | natnum | 3 | pixels of space above a preview |
-| `herdr-status-model-token` | string | `"model"` | the pane metadata token the model column reads |
-| `herdr-status-effort-token` | string | `"effort"` | the pane metadata token the effort column reads |
-| `herdr-status-effort-levels` | list of strings | low, medium, high, xhigh, max | effort suffixes split off a reported model after a slash |
-| `herdr-status-context-token` | string | `"context"` | the pane metadata token the context column reads |
+| `herdr-usage-model-token` | string | `"model"` | the pane metadata token the model column reads |
+| `herdr-usage-effort-token` | string | `"effort"` | the pane metadata token the effort column reads |
+| `herdr-usage-effort-levels` | list of strings | low, medium, high, xhigh, max | effort suffixes split off a reported model after a slash |
+| `herdr-usage-context-token` | string | `"context"` | the pane metadata token the context column reads |
 | `herdr-status-updated-formats` | cons of two format strings | `("%H:%M" . "%b %e")` | how the updated column draws a time from today, and an earlier one |
 | `herdr-read-agent-name-width` | float or natnum | 0.4 | how wide a name may be while an agent is read: a share of the frame, or columns |
 
@@ -397,6 +397,7 @@ is `$XDG_CONFIG_HOME/herdr/sessions/NAME/herdr.sock`; `XDG_CONFIG_HOME` defaults
 | `herdr-attach-functions` | the entry | before an entry is attached as a plain terminal; the first to return a buffer claims it |
 | `herdr-terminal-focus-functions` | nothing, in the terminal buffer | once point is at the terminal's prompt |
 | `herdr-status-updated-functions` | the entry | when the updated column is drawn or sorted; the first time wins over the revision the dashboard saw change |
+| `herdr-usage-functions` | the entry | whenever an agent's model, effort or context is read; per key, the first answer wins over the pane's metadata tokens |
 | `herdr-entry-annotation-functions` | the entry | when a completion annotation is built; return a string to append |
 | `herdr-session-functions` | nothing | to list the entries of the session in scope; default `herdr-agent-sessions` |
 | `herdr-agent-event-functions` | server key, event type, event data | after each pane event |
@@ -488,6 +489,8 @@ recent one.
 | `herdr-status-redraw-cached` | redraw every dashboard from its last fetch |
 | `herdr-status-cached-agents`, `herdr-status-visible-agents` | the last redraw's agents, all or filtered |
 | `herdr-status-harness-glyph` | a harness's vendor mark |
+| `herdr-usage`, `herdr-usage-reported` | an agent's model, effort and context, as answered or as its pane reports them |
+| `herdr-usage-figure`, `herdr-usage-parse`, `herdr-usage-count`, `herdr-usage-share` | write and read a context figure such as `136k/200k` |
 | `herdr-status-label` | an agent's name in the dashboard's colour: foreground, attached or neither |
 | `herdr-status-state-mark` | an agent's state glyph in its state's colour, two columns wide |
 | `herdr-herds`, `herdr-herd-member-entries`, `herdr-herd-of-entry` | herds and their members |
