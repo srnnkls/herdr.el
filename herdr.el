@@ -850,17 +850,31 @@ without the pixel-exact anchor, a window anchored there included."
                                      (window-vscroll window t))
                                   (window-default-line-height window))))))
 
+(defun herdr--pin-key (window start)
+  "Return what WINDOW's bottom anchor depends on with START at its top.
+Output that rewrites a row in place, as typing and a spinner do, leaves
+it unchanged."
+  (list start (window-vscroll window t) (count-lines start (point-max))
+        (window-body-height window t) (window-body-width window t)))
+
 (defun herdr--pin-bottom (window start)
-  "Scroll WINDOW back when START shows space below the terminal's last row."
+  "Scroll WINDOW back when START shows space below the terminal's last row.
+The anchor is measured again only once the rows it was measured on
+changed."
   (with-current-buffer (window-buffer window)
     (when-let* (((derived-mode-p 'ghostel-mode))
                 ((not (herdr--fills-window-p window start)))
-                (anchor (herdr--bottom-anchor window))
-                ((or (> start (car anchor))
-                     (and (= start (car anchor))
-                          (> (window-vscroll window t) (nth 1 anchor))))))
-      (set-window-start window (car anchor) t)
-      (ghostel--set-window-vscroll window (nth 1 anchor) t t))))
+                ((not (equal (window-parameter window 'herdr--pinned)
+                             (herdr--pin-key window start)))))
+      (let ((anchor (herdr--bottom-anchor window)))
+        (when (and anchor
+                   (or (> start (car anchor))
+                       (and (= start (car anchor))
+                            (> (window-vscroll window t) (nth 1 anchor)))))
+          (set-window-start window (car anchor) t)
+          (ghostel--set-window-vscroll window (nth 1 anchor) t t))
+        (set-window-parameter window 'herdr--pinned
+                              (herdr--pin-key window (window-start window)))))))
 
 (defun herdr--terminal-agent (terminal-id session)
   "Return the agent herdr runs in TERMINAL-ID on SESSION, or nil."
